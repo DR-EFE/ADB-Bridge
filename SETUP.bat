@@ -13,5 +13,5 @@ echo.
 pause
 
 cd /d "%~dp0"
-powershell -ExecutionPolicy Bypass -File "android_setup.ps1"
+powershell -ExecutionPolicy Bypass -File "setup.ps1"
 pause

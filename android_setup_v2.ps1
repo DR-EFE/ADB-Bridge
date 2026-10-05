@@ -1,329 +1,238 @@
-# android_setup_v2.ps1 - Version Corregida (USB)
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "   ANDROID WiFi SETUP (Android 11+)     " -ForegroundColor Yellow
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+# Configuracion ADB por Wireless Debugging moderno o TCP/IP USB legado.
+# Compatible con Windows PowerShell 5.1.
 
-# Verificar ADB
-$adbPath = Get-Command adb -ErrorAction SilentlyContinue
-if (-not $adbPath) {
-    Write-Host "ERROR: ADB no encontrado en PATH" -ForegroundColor Red
+. (Join-Path -Path $PSScriptRoot -ChildPath 'android_config.ps1')
+
+function Write-SetupTitle {
+    param([string]$Text)
+    Write-Host ''
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host ("   {0}" -f $Text) -ForegroundColor Yellow
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host ''
+}
+
+function Read-ValidPort {
+    param([string]$Prompt)
+
+    do {
+        $value = Read-Host $Prompt
+        $port = 0
+        $valid = [int]::TryParse($value, [Globalization.NumberStyles]::Integer, [Globalization.CultureInfo]::InvariantCulture, [ref]$port)
+        if (-not $valid -or $port -lt 1 -or $port -gt 65535) {
+            Write-Host 'El puerto debe ser un numero entre 1 y 65535.' -ForegroundColor Red
+            $valid = $false
+        }
+    } while (-not $valid)
+
+    return $port
+}
+
+function Read-ValidHost {
+    param([string]$Prompt)
+
+    do {
+        $value = (Read-Host $Prompt).Trim()
+        if ([string]::IsNullOrWhiteSpace($value) -or ($value.Contains(':') -and -not $value.StartsWith('['))) {
+            Write-Host 'Indica un host o una direccion IPv4 valida, sin protocolo.' -ForegroundColor Red
+            $value = $null
+        }
+    } while ([string]::IsNullOrWhiteSpace($value))
+
+    return $value
+}
+
+function Get-ReadySerialFromUsb {
+    $records = @(Get-AndroidDeviceRecords | Where-Object {
+        $_.Status -ceq 'device' -and $_.Serial -notmatch '^[^:]+:\d+$'
+    })
+
+    if ($records.Count -eq 0) {
+        throw 'No se encontro un dispositivo USB autorizado en estado device.'
+    }
+
+    if ($records.Count -eq 1) {
+        return $records[0].Serial
+    }
+
+    Write-Host 'Hay varios dispositivos USB autorizados:' -ForegroundColor Yellow
+    for ($index = 0; $index -lt $records.Count; $index++) {
+        Write-Host ("[{0}] {1}" -f ($index + 1), $records[$index].Serial) -ForegroundColor Gray
+    }
+
+    do {
+        $selection = 0
+        $valid = [int]::TryParse((Read-Host 'Selecciona el dispositivo'), [ref]$selection)
+    } while (-not $valid -or $selection -lt 1 -or $selection -gt $records.Count)
+
+    return $records[$selection - 1].Serial
+}
+
+function Get-DeviceIpFromUsb {
+    param([string]$Serial)
+
+    $routeOutput = @(& adb -s $Serial shell ip route 2>$null)
+    foreach ($line in $routeOutput) {
+        $match = [regex]::Match([string]$line, '\bsrc\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})\b')
+        if ($match.Success) {
+            return $match.Groups['ip'].Value
+        }
+    }
+
+    $addressOutput = @(& adb -s $Serial shell ip addr 2>$null)
+    foreach ($line in $addressOutput) {
+        $match = [regex]::Match([string]$line, '\binet\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})/')
+        if ($match.Success -and $match.Groups['ip'].Value -notlike '127.*') {
+            return $match.Groups['ip'].Value
+        }
+    }
+
+    return $null
+}
+
+function Connect-And-Save {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HostName,
+
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('ModernPairing', 'LegacyTcpIp')]
+        [string]$Mode
+    )
+
+    $endpoint = if ($HostName.Contains(':')) {
+        "[{0}]:{1}" -f $HostName.Trim('[', ']'), $Port
+    } else {
+        "{0}:{1}" -f $HostName, $Port
+    }
+
+    Write-Host ("Conectando a {0}..." -f $endpoint) -ForegroundColor Green
+    $connectOutput = @(& adb connect $endpoint 2>&1)
+    Write-Host ($connectOutput -join [Environment]::NewLine) -ForegroundColor Gray
+    if ($LASTEXITCODE -ne 0) {
+        throw "adb connect fallo para $endpoint."
+    }
+
+    Start-Sleep -Seconds 2
+    $record = Get-AndroidDeviceRecord -Serial $endpoint
+    if ($null -eq $record -or $record.Status -cne 'device') {
+        $state = if ($null -eq $record) { 'no encontrado' } else { $record.Status }
+        throw "El endpoint $endpoint no quedo en estado device. Estado actual: $state"
+    }
+
+    $configPath = Save-AndroidConfig -HostName $HostName -Port $Port -Endpoint $endpoint -Mode $Mode -Serial $record.Serial
+    Write-Host ("Conexion valida. Estado: {0}" -f $record.Status) -ForegroundColor Green
+    Write-Host ("Configuracion JSON guardada en: {0}" -f $configPath) -ForegroundColor Green
+    return $record
+}
+
+Write-SetupTitle 'ANDROID WIFI SETUP'
+
+if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
+    Write-Host 'ERROR: adb no se encuentra en PATH.' -ForegroundColor Red
     exit 1
 }
 
-Write-Host "ADB Version: $(adb version)" -ForegroundColor Gray
-Write-Host ""
+Write-Host 'ADB disponible:' -ForegroundColor Gray
+adb version
+Write-Host ''
+Write-Host '[1] Wireless Debugging moderno (codigo de pairing)' -ForegroundColor Green
+Write-Host '[2] TCP/IP USB legado (usa adb tcpip 5555)' -ForegroundColor Yellow
+Write-Host ''
+$method = Read-Host 'Selecciona una opcion (1 o 2)'
 
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "   ELIGE UN METODO                      " -ForegroundColor Yellow
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+try {
+    switch ($method) {
+        '1' {
+            Write-SetupTitle 'PAIRING MODERNO'
+            Write-Host 'En el telefono abre Opciones de desarrollador > Depuracion inalambrica.' -ForegroundColor White
+            Write-Host 'Selecciona Vincular dispositivo con codigo de emparejamiento.' -ForegroundColor White
+            Write-Host 'El flujo QR no se ejecuta desde esta CLI; usa el codigo de pairing que muestra el telefono.' -ForegroundColor Yellow
+            Write-Host ''
 
-Write-Host "   [1] CODIGO QR (Android 11+)" -ForegroundColor Green
-Write-Host "   [2] CODIGO DE EMPAREJAMIENTO (Android 11+)" -ForegroundColor Cyan
-Write-Host "   [3] METODO USB TRADICIONAL" -ForegroundColor Yellow
-Write-Host ""
-$metodo = Read-Host "Selecciona opcion (1, 2 o 3)"
+            $pairingHost = Read-ValidHost 'Host/IP mostrado para pairing'
+            $pairingPort = Read-ValidPort 'Puerto de pairing'
+            $pairingCode = (Read-Host 'Codigo de pairing').Trim()
+            if ([string]::IsNullOrWhiteSpace($pairingCode)) {
+                throw 'El codigo de pairing no puede estar vacio.'
+            }
 
-switch ($metodo) {
-    "1" {
-        # Metodo QR
-        Write-Host ""
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host "   EMPAREJAMIENTO POR QR                " -ForegroundColor Yellow
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host ""
-        
-        Write-Host "PASOS EN EL TELEFONO:" -ForegroundColor White
-        Write-Host "1. Ajustes > Opciones de desarrollador" -ForegroundColor Gray
-        Write-Host "2. Activa 'Depuracion inalambrica'" -ForegroundColor Yellow
-        Write-Host "3. Toca 'Vincular dispositivo con codigo QR'" -ForegroundColor Green
-        Write-Host ""
-        
-        Write-Host "Presiona Enter para GENERAR EL CODIGO QR..."
-        Read-Host
-        
-        Write-Host ""
-        Write-Host "GENERANDO CODIGO QR..." -ForegroundColor Green
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host ""
-        
-        # Generar QR
-        $qrOutput = & adb pair --qr 2>&1
-        Write-Host $qrOutput -ForegroundColor White
-        
-        Write-Host ""
-        Write-Host "ESCANEA EL QR CON TU TELEFONO" -ForegroundColor Yellow
-        Write-Host ""
-        
-        # Esperar conexion
-        Write-Host "Esperando conexion..." -ForegroundColor Green
-        $ip = $null
-        for ($i = 1; $i -le 20; $i++) {
-            Start-Sleep -Seconds 2
-            $devices = adb devices
-            Write-Host "  Intentando $i/20..." -ForegroundColor Gray
-            
-            if ($devices -match "(\d+\.\d+\.\d+\.\d+):\d+\s+device") {
-                $fullMatch = $matches[0]
-                $ip = ($fullMatch -split ':')[0]
-                Write-Host ""
-                Write-Host "OK: Dispositivo conectado! IP: $ip" -ForegroundColor Green
-                break
+            $pairingEndpoint = if ($pairingHost.Contains(':')) {
+                "[{0}]:{1}" -f $pairingHost.Trim('[', ']'), $pairingPort
+            } else {
+                "{0}:{1}" -f $pairingHost, $pairingPort
             }
-        }
-        
-        if (-not $ip) {
-            Write-Host ""
-            Write-Host "No se detecto automaticamente." -ForegroundColor Yellow
-            $ip = Read-Host "Ingresa la IP manualmente"
-            adb connect "${ip}:5555"
-        }
-        
-        $global:ip_guardada = $ip
-    }
-    
-    "2" {
-        # Metodo codigo manual
-        Write-Host ""
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host "   EMPAREJAMIENTO POR CODIGO            " -ForegroundColor Yellow
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host ""
-        
-        Write-Host "PASOS EN EL TELEFONO:" -ForegroundColor White
-        Write-Host "1. Ajustes > Opciones de desarrollador" -ForegroundColor Gray
-        Write-Host "2. Activa 'Depuracion inalambrica'" -ForegroundColor Yellow
-        Write-Host "3. Toca 'Vincular dispositivo con codigo de emparejamiento'" -ForegroundColor Green
-        Write-Host ""
-        
-        $ip = Read-Host "IP del telefono"
-        $pairing_port = Read-Host "Puerto de emparejamiento"
-        $pairing_code = Read-Host "Codigo de 6 digitos"
-        
-        Write-Host ""
-        Write-Host "Emparejando..." -ForegroundColor Green
-        adb pair "${ip}:${pairing_port}" $pairing_code
-        Start-Sleep -Seconds 2
-        
-        Write-Host "Conectando..." -ForegroundColor Green
-        adb connect "${ip}:5555"
-        Start-Sleep -Seconds 2
-        
-        $global:ip_guardada = $ip
-    }
-    
-    "3" {
-        # METODO USB TRADICIONAL - CORREGIDO
-        Write-Host ""
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host "   METODO USB TRADICIONAL               " -ForegroundColor Yellow
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host ""
-        
-        # Matar servidor ADB para empezar limpio
-        Write-Host "Reiniciando servidor ADB..." -ForegroundColor Gray
-        adb kill-server
-        Start-Sleep -Seconds 2
-        adb start-server
-        Start-Sleep -Seconds 2
-        
-        Write-Host ""
-        Write-Host "INSTRUCCIONES:" -ForegroundColor Yellow
-        Write-Host "1. Conecta el telefono por USB" -ForegroundColor White
-        Write-Host "2. Activa 'Depuracion USB' en Opciones de desarrollador" -ForegroundColor White
-        Write-Host "3. Acepta el mensaje de depuracion en el telefono" -ForegroundColor White
-        Write-Host ""
-        Read-Host "Presiona Enter cuando estes listo"
-        
-        # Listar dispositivos correctamente
-        Write-Host ""
-        Write-Host "Buscando dispositivos USB..." -ForegroundColor Green
-        
-        $deviceOutput = adb devices -l
-        Write-Host $deviceOutput -ForegroundColor Gray
-        
-        # Extraer el serial correctamente
-        $usbDevice = $null
-        $lines = $deviceOutput -split "`r`n"
-        
-        foreach ($line in $lines) {
-            # Buscar linea que termine con "device" y no sea "unauthorized"
-            if ($line -match "^([a-zA-Z0-9_\-\.]+)\s+device\s" -or $line -match "^([a-zA-Z0-9_\-\.]+)\s+device$") {
-                $usbDevice = $matches[1]
-                Write-Host "Dispositivo encontrado: $usbDevice" -ForegroundColor Green
-                break
+
+            Write-Host ("Ejecutando: adb pair {0} <codigo>" -f $pairingEndpoint) -ForegroundColor Green
+            $pairOutput = @(& adb pair $pairingEndpoint $pairingCode 2>&1)
+            Write-Host ($pairOutput -join [Environment]::NewLine) -ForegroundColor Gray
+            if ($LASTEXITCODE -ne 0 -or ($pairOutput -join ' ') -match '(?i)failed|error') {
+                throw 'El pairing fallo. Revisa IP, puerto y codigo en el telefono.'
             }
-            # Algunos dispositivos tienen serial largo
-            if ($line -match "^([A-Z0-9]+)\s+device") {
-                $usbDevice = $matches[1]
-                Write-Host "Dispositivo encontrado: $usbDevice" -ForegroundColor Green
-                break
+
+            Write-Host ''
+            Write-Host 'Buscando el puerto de conexion mediante mDNS...' -ForegroundColor Cyan
+            $connectionParts = $null
+            for ($attempt = 1; $attempt -le 5 -and $null -eq $connectionParts; $attempt++) {
+                $connectionParts = Get-AndroidMdnsConnectionEndpoint -PreferredHost $pairingHost
+                if ($null -eq $connectionParts -and $attempt -lt 5) {
+                    Start-Sleep -Seconds 2
+                }
             }
-        }
-        
-        if (-not $usbDevice) {
-            Write-Host ""
-            Write-Host "ERROR: No se encontro dispositivo USB" -ForegroundColor Red
-            Write-Host ""
-            Write-Host "Verifica:" -ForegroundColor Yellow
-            Write-Host "- El cable USB esta conectado" -ForegroundColor White
-            Write-Host "- La depuracion USB esta activada" -ForegroundColor White
-            Write-Host "- Aceptaste el mensaje en el telefono" -ForegroundColor White
-            Write-Host ""
-            Write-Host "Ejecuta 'adb devices' manualmente para verificar" -ForegroundColor Gray
-            exit 1
-        }
-        
-        # Verificar que no este unauthorized
-        $authCheck = adb devices | Select-String "$usbDevice.*unauthorized"
-        if ($authCheck) {
-            Write-Host ""
-            Write-Host "ERROR: Dispositivo no autorizado!" -ForegroundColor Red
-            Write-Host "Revisa el telefono y acepta el mensaje de depuracion USB" -ForegroundColor Yellow
-            Write-Host "Marca 'Siempre permitir desde este equipo'" -ForegroundColor Yellow
-            exit 1
-        }
-        
-        # Activar modo TCPIP
-        Write-Host ""
-        Write-Host "Activando modo TCP/IP en puerto 5555..." -ForegroundColor Green
-        $tcpipResult = adb -s $usbDevice tcpip 5555
-        Write-Host $tcpipResult -ForegroundColor Gray
-        Start-Sleep -Seconds 5
-        
-        # OBTENER IP - Metodos mejorados
-        $ip = $null
-        
-        Write-Host ""
-        Write-Host "Obteniendo IP del dispositivo..." -ForegroundColor Green
-        
-        # Metodo 1: ip route (el mas confiable)
-        Write-Host "  Probando metodo 1 (ip route)..." -ForegroundColor Gray
-        $output = adb -s $usbDevice shell "ip route 2>/dev/null | grep -oP 'src \K[\d.]+'"
-        if (-not $output) {
-            $output = adb -s $usbDevice shell "ip route" 2>$null
-        }
-        
-        if ($output -match "src\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})") {
-            $ip = $matches[1]
-            Write-Host "  IP encontrada: $ip" -ForegroundColor Green
-        } elseif ($output -match "(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})") {
-            $ip = $matches[1]
-            Write-Host "  IP encontrada: $ip" -ForegroundColor Green
-        }
-        
-        # Metodo 2: ifconfig wlan0
-        if (-not $ip) {
-            Write-Host "  Probando metodo 2 (ifconfig)..." -ForegroundColor Gray
-            $output = adb -s $usbDevice shell "ifconfig wlan0" 2>$null
-            Write-Host "    Salida: $output" -ForegroundColor Gray
-            
-            if ($output -match "inet addr:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})") {
-                $ip = $matches[1]
-                Write-Host "  IP encontrada: $ip" -ForegroundColor Green
-            } elseif ($output -match "inet\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})") {
-                $ip = $matches[1]
-                Write-Host "  IP encontrada: $ip" -ForegroundColor Green
+
+            if ($null -eq $connectionParts) {
+                Write-Host 'mDNS no encontro el servicio de conexion.' -ForegroundColor Yellow
+                $connectionHost = Read-ValidHost 'Host/IP para conexion (normalmente el mismo del pairing)'
+                $connectionPort = Read-ValidPort 'Puerto de conexion mostrado en Depuracion inalambrica'
+            } else {
+                $connectionHost = $connectionParts.Host
+                $connectionPort = $connectionParts.Port
+                Write-Host ("mDNS encontro el endpoint de conexion: {0}" -f $connectionParts.Endpoint) -ForegroundColor Green
             }
+
+            Connect-And-Save -HostName $connectionHost -Port $connectionPort -Mode 'ModernPairing' | Out-Null
         }
-        
-        # Metodo 3: ip addr show wlan0
-        if (-not $ip) {
-            Write-Host "  Probando metodo 3 (ip addr)..." -ForegroundColor Gray
-            $output = adb -s $usbDevice shell "ip addr show wlan0" 2>$null
-            Write-Host "    Salida: $output" -ForegroundColor Gray
-            
-            if ($output -match "inet\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})") {
-                $ip = $matches[1]
-                Write-Host "  IP encontrada: $ip" -ForegroundColor Green
+
+        '2' {
+            Write-SetupTitle 'TCP/IP USB LEGADO'
+            Write-Host 'Conecta el telefono por USB y acepta la autorizacion ADB.' -ForegroundColor White
+            Read-Host 'Presiona Enter cuando el telefono este conectado'
+
+            $usbSerial = Get-ReadySerialFromUsb
+            Write-Host ("Dispositivo USB: {0}" -f $usbSerial) -ForegroundColor Green
+
+            Write-Host 'Activando TCP/IP legado en el puerto 5555...' -ForegroundColor Green
+            $tcpipOutput = @(& adb -s $usbSerial tcpip 5555 2>&1)
+            Write-Host ($tcpipOutput -join [Environment]::NewLine) -ForegroundColor Gray
+            if ($LASTEXITCODE -ne 0) {
+                throw 'No se pudo activar adb tcpip en el dispositivo USB.'
             }
-        }
-        
-        # Metodo 4: pedir manualmente
-        if (-not $ip) {
-            Write-Host ""
-            Write-Host "  No se pudo obtener la IP automaticamente." -ForegroundColor Yellow
-            Write-Host ""
-            Write-Host "Para ver la IP en el telefono:" -ForegroundColor White
-            Write-Host "  - Ajustes > Acerca del telefono > Estado > Direccion IP" -ForegroundColor Gray
-            Write-Host "  - O: Ajustes > WiFi > Tocar red actual" -ForegroundColor Gray
-            Write-Host ""
-            $ip = Read-Host "Ingresa la IP manualmente"
-        }
-        
-        # Conectar via WiFi
-        Write-Host ""
-        Write-Host "Conectando a $ip : 5555..." -ForegroundColor Green
-        $connectResult = adb connect "${ip}:5555"
-        Write-Host $connectResult -ForegroundColor Gray
-        Start-Sleep -Seconds 3
-        
-        # Verificar conexion
-        Write-Host ""
-        Write-Host "Verificando conexion..." -ForegroundColor Green
-        $devicesCheck = adb devices
-        
-        if ($devicesCheck -match "${ip}:5555.*device") {
-            Write-Host ""
-            Write-Host "========================================" -ForegroundColor Green
-            Write-Host "   CONEXION EXITOSA!" -ForegroundColor Yellow
-            Write-Host "========================================" -ForegroundColor Green
-            
-            $global:ip_guardada = $ip
-            
-            # Mostrar informacion del dispositivo
-            $modelo = adb -s "${ip}:5555" shell getprop ro.product.model 2>$null
-            if ($modelo) {
-                Write-Host "Modelo: $modelo" -ForegroundColor Gray
+
+            Start-Sleep -Seconds 3
+            $deviceIp = Get-DeviceIpFromUsb -Serial $usbSerial
+            if ([string]::IsNullOrWhiteSpace($deviceIp)) {
+                $deviceIp = Read-ValidHost 'No se pudo detectar la IP. Introduce la IP del telefono'
+            } else {
+                Write-Host ("IP detectada: {0}" -f $deviceIp) -ForegroundColor Green
             }
-        } else {
-            Write-Host ""
-            Write-Host "ERROR: No se pudo conectar" -ForegroundColor Red
-            Write-Host ""
-            Write-Host "Posibles problemas:" -ForegroundColor Yellow
-            Write-Host "1. El telefono y PC no estan en la misma red WiFi" -ForegroundColor White
-            Write-Host "2. El WiFi del telefono esta apagado" -ForegroundColor White
-            Write-Host "3. La IP es incorrecta" -ForegroundColor White
-            Write-Host ""
-            Write-Host "Dispositivos detectados:" -ForegroundColor Cyan
-            Write-Host $devicesCheck
-            exit 1
+
+            Connect-And-Save -HostName $deviceIp -Port 5555 -Mode 'LegacyTcpIp' | Out-Null
+        }
+
+        default {
+            throw 'Opcion no valida. Ejecuta el script y selecciona 1 o 2.'
         }
     }
+} catch {
+    Write-Host ''
+    Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    exit 1
 }
 
-# Guardar configuracion
-if ($global:ip_guardada) {
-    Write-Host ""
-    Write-Host "Guardando configuracion..." -ForegroundColor Green
-    $configDir = "$env:USERPROFILE\AndroidTools"
-    if (-not (Test-Path $configDir)) {
-        New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-    }
-    
-    $configContent = @"
-# Configuracion Android WiFi
-ANDROID_IP="$global:ip_guardada"
-ANDROID_PORT="5555"
-SETUP_DATE="$(Get-Date)"
-
-# Reconectar:
-adb connect $global:ip_guardada:5555
-"@
-    
-    $configContent | Out-File -FilePath "$configDir\android_config.txt" -Encoding ASCII
-    Write-Host "OK: Configuracion guardada en $configDir\android_config.txt" -ForegroundColor Green
-}
-
-Write-Host ""
-Write-Host "=================================================" -ForegroundColor Green
-Write-Host "   CONFIGURACION COMPLETADA!" -ForegroundColor Yellow
-Write-Host "=================================================" -ForegroundColor Green
-Write-Host ""
-Write-Host "IP del celular: $global:ip_guardada" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "Ya puedes desconectar el USB" -ForegroundColor Yellow
-Write-Host ""
-
-pause
+Write-Host ''
+Write-Host 'Configuracion completada. Ya puedes desconectar el USB si corresponde.' -ForegroundColor Green
+Read-Host 'Presiona Enter para salir'
+exit 0

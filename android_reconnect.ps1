@@ -1,92 +1,67 @@
-# android_reconnect.ps1 - Windows Version CORREGIDA
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "   RECONEXION RAPIDA ANDROID           " -ForegroundColor Yellow
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+# Reconecta usando exactamente el endpoint guardado en android_config.json.
+# Compatible con Windows PowerShell 5.1.
 
-# Verificar archivo de configuracion
-$configFile = "$env:USERPROFILE\AndroidTools\android_config.txt"
-if (-not (Test-Path $configFile)) {
-    Write-Host "ERROR: No hay configuracion guardada." -ForegroundColor Red
-    Write-Host "   Ejecuta primero: android_setup.ps1 (con USB)" -ForegroundColor Yellow
-    pause
+. (Join-Path -Path $PSScriptRoot -ChildPath 'android_config.ps1')
+
+Write-Host '========================================' -ForegroundColor Cyan
+Write-Host '   RECONEXION RAPIDA ANDROID' -ForegroundColor Yellow
+Write-Host '========================================' -ForegroundColor Cyan
+Write-Host ''
+
+try {
+    $configuration = Read-AndroidConfig
+} catch {
+    Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    Write-Host 'Ejecuta SETUP.bat para crear la configuracion.' -ForegroundColor Yellow
+    Read-Host 'Presiona Enter para salir'
     exit 1
 }
 
-# Leer IP del archivo de configuracion
-$ip = $null
-Get-Content $configFile | ForEach-Object {
-    if ($_ -match 'ANDROID_IP="(.+)"') {
-        $ip = $matches[1]
-    }
-}
+$endpoint = [string]$configuration.Endpoint
+Write-Host ("Endpoint guardado: {0}" -f $endpoint) -ForegroundColor White
+Write-Host ("Modo: {0} | Serial guardado: {1}" -f $configuration.Mode, $configuration.Serial) -ForegroundColor Gray
+Write-Host ''
 
-if (-not $ip) {
-    Write-Host "ERROR: No se encontro la IP en la configuracion" -ForegroundColor Red
-    pause
-    exit 1
-}
-
-Write-Host "Intentando conectar a: ${ip}:5555" -ForegroundColor White
-Write-Host ""
-
-# Intentar conexion
+$connected = $false
 $maxAttempts = 3
-for ($i = 1; $i -le $maxAttempts; $i++) {
-    Write-Host "Intento $i de $maxAttempts..." -ForegroundColor Gray
-    adb connect "${ip}:5555" 2>$null
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    Write-Host ("Intento {0} de {1}..." -f $attempt, $maxAttempts) -ForegroundColor Gray
+    $connectOutput = @(& adb connect $endpoint 2>&1)
+    if ($connectOutput.Count -gt 0) {
+        Write-Host ($connectOutput -join [Environment]::NewLine) -ForegroundColor DarkGray
+    }
+
     Start-Sleep -Seconds 2
-    
-    $devices = adb devices
-    if ($devices -match "${ip}:5555") {
-        Write-Host ""
-        Write-Host "OK: ¡Conectado exitosamente!" -ForegroundColor Green
-        Write-Host ""
-        Write-Host "Comandos disponibles:" -ForegroundColor White
-        Write-Host "   adb shell ls /sdcard/      - Listar archivos" -ForegroundColor Gray
-        Write-Host ""
-        
-        # Verificar si esta autorizado
-        Write-Host "Verificando autorizacion..." -ForegroundColor Cyan
-        $test = adb shell "echo test" 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "OK: Dispositivo autorizado y funcionando" -ForegroundColor Green
-        } else {
-            Write-Host "ADVERTENCIA: Conectado pero no autorizado" -ForegroundColor Yellow
-            Write-Host "   Revisa el celular para autorizar la conexion" -ForegroundColor White
-        }
-        
-        pause
-        exit 0
+    $record = Get-AndroidDeviceRecord -Serial $endpoint
+    if ($null -ne $record -and $record.Status -ceq 'device') {
+        $connected = $true
+        break
     }
-    
-    if ($i -lt $maxAttempts) {
-        Write-Host "Esperando 3 segundos antes de reintentar..." -ForegroundColor Yellow
-        Start-Sleep -Seconds 3
+
+    if ($null -ne $record) {
+        Write-Host ("Estado actual: {0}. Se requiere exactamente 'device'." -f $record.Status) -ForegroundColor Yellow
+    } else {
+        Write-Host 'El endpoint aun no aparece en adb devices.' -ForegroundColor Yellow
+    }
+
+    if ($attempt -lt $maxAttempts) {
+        Start-Sleep -Seconds 2
     }
 }
 
-Write-Host ""
-Write-Host "ERROR: No se pudo conectar despues de $maxAttempts intentos" -ForegroundColor Red
-Write-Host ""
-Write-Host "SOLUCION DE PROBLEMAS:" -ForegroundColor Yellow
-Write-Host "   1. Verifica que el celular esta ENCENDIDO" -ForegroundColor White
-Write-Host "   2. Asegurate que esta conectado a la misma red WiFi" -ForegroundColor White
-Write-Host "   3. El WiFi del celular debe estar ACTIVADO" -ForegroundColor White
-Write-Host "   4. Prueba reiniciar el celular" -ForegroundColor White
-Write-Host "   5. Si nada funciona, ejecuta el setup con USB de nuevo" -ForegroundColor White
-Write-Host ""
-
-# Verificar si la IP responde al ping
-Write-Host "Verificando red..." -ForegroundColor Cyan
-if (Test-Connection -ComputerName $ip -Count 1 -Quiet) {
-    Write-Host "   La IP $ip responde al ping" -ForegroundColor Green
-    Write-Host "   El problema es con ADB, no con la red" -ForegroundColor Yellow
-} else {
-    Write-Host "   La IP $ip NO responde al ping" -ForegroundColor Red
-    Write-Host "   Verifica que el celular esta en la misma red" -ForegroundColor White
+if ($connected) {
+    Write-Host ''
+    Write-Host 'OK: dispositivo conectado en estado exacto device.' -ForegroundColor Green
+    Write-Host ("Serial activo: {0}" -f $record.Serial) -ForegroundColor Gray
+    Read-Host 'Presiona Enter para salir'
+    exit 0
 }
 
-Write-Host ""
-pause
+Write-Host ''
+Write-Host ("ERROR: no se pudo conectar a {0} en estado device." -f $endpoint) -ForegroundColor Red
+Write-Host 'Verifica que el telefono este encendido, en la misma red y que Wireless Debugging este activo.' -ForegroundColor Yellow
+Write-Host ''
+Write-Host 'Estado de ADB:' -ForegroundColor Cyan
+adb devices
+Read-Host 'Presiona Enter para salir'
 exit 1
