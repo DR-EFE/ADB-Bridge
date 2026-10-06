@@ -1,4 +1,11 @@
 # android_advanced_backup.ps1 - Backup Avanzado SIN ROOT
+Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
+$script:AndroidDevice = Get-SingleReadyDevice
+function adb {
+    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Arguments)
+    if ($Arguments.Count -eq 1 -and [string]$Arguments[0] -ceq 'devices') { return Get-AdbDevices }
+    return Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments ([string[]]$Arguments)
+}
 # Extrae todo lo posible sin necesidad de root
 
 function Show-AdvancedMenu {
@@ -9,8 +16,7 @@ function Show-AdvancedMenu {
     Write-Host ""
     
     # Verificar conexion
-    $devices = adb devices
-    if ($devices -match "device`$") {
+    if ($null -ne $script:AndroidDevice) {
         Write-Host "OK: CONECTADO VIA WIFI" -ForegroundColor Green
         
         $model = adb shell getprop ro.product.model 2>$null

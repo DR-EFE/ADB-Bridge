@@ -2,6 +2,7 @@
 # Compatible con Windows PowerShell 5.1.
 
 . (Join-Path -Path $PSScriptRoot -ChildPath 'android_config.ps1')
+Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
 
 Write-Host '========================================' -ForegroundColor Cyan
 Write-Host '   RECONEXION RAPIDA ANDROID' -ForegroundColor Yellow
@@ -30,9 +31,13 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
     if ($connectOutput.Count -gt 0) {
         Write-Host ($connectOutput -join [Environment]::NewLine) -ForegroundColor DarkGray
     }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ("adb connect fallo con codigo {0}." -f $LASTEXITCODE) -ForegroundColor Yellow
+        continue
+    }
 
     Start-Sleep -Seconds 2
-    $record = Get-AndroidDeviceRecord -Serial $endpoint
+    $record = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $endpoint })[0]
     if ($null -ne $record -and $record.Status -ceq 'device') {
         $connected = $true
         break
@@ -62,6 +67,6 @@ Write-Host ("ERROR: no se pudo conectar a {0} en estado device." -f $endpoint) -
 Write-Host 'Verifica que el telefono este encendido, en la misma red y que Wireless Debugging este activo.' -ForegroundColor Yellow
 Write-Host ''
 Write-Host 'Estado de ADB:' -ForegroundColor Cyan
-adb devices
+Get-AdbDevices | Format-Table -AutoSize
 Read-Host 'Presiona Enter para salir'
 exit 1

@@ -1,4 +1,11 @@
 # android_download_all.ps1 - Descargar carpetas completas (INCLUYE CAPTURAS)
+Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
+$script:AndroidDevice = Get-SingleReadyDevice
+function adb {
+    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Arguments)
+    if ($Arguments.Count -eq 1 -and [string]$Arguments[0] -ceq 'devices') { return Get-AdbDevices }
+    return Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments ([string[]]$Arguments)
+}
 
 function Download-AndroidFolder {
     param(
@@ -53,8 +60,7 @@ function Show-Menu {
     Write-Host ""
     
     # Verificar conexion
-    $devices = adb devices
-    if (-not ($devices -match "device`$")) {
+    if ($null -eq $script:AndroidDevice) {
         Write-Host "ERROR: No hay dispositivo conectado" -ForegroundColor Red
         return $false
     }

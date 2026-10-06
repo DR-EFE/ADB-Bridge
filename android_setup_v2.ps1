@@ -2,6 +2,7 @@
 # Compatible con Windows PowerShell 5.1.
 
 . (Join-Path -Path $PSScriptRoot -ChildPath 'android_config.ps1')
+Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
 
 function Write-SetupTitle {
     param([string]$Text)
@@ -71,7 +72,7 @@ function Get-ReadySerialFromUsb {
 function Get-DeviceIpFromUsb {
     param([string]$Serial)
 
-    $routeOutput = @(& adb -s $Serial shell ip route 2>$null)
+    $routeOutput = @(Invoke-Adb -Serial $Serial -Arguments @('shell', 'ip', 'route'))
     foreach ($line in $routeOutput) {
         $match = [regex]::Match([string]$line, '\bsrc\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})\b')
         if ($match.Success) {
@@ -79,7 +80,7 @@ function Get-DeviceIpFromUsb {
         }
     }
 
-    $addressOutput = @(& adb -s $Serial shell ip addr 2>$null)
+    $addressOutput = @(Invoke-Adb -Serial $Serial -Arguments @('shell', 'ip', 'addr'))
     foreach ($line in $addressOutput) {
         $match = [regex]::Match([string]$line, '\binet\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})/')
         if ($match.Success -and $match.Groups['ip'].Value -notlike '127.*') {
@@ -205,7 +206,7 @@ try {
             Write-Host ("Dispositivo USB: {0}" -f $usbSerial) -ForegroundColor Green
 
             Write-Host 'Activando TCP/IP legado en el puerto 5555...' -ForegroundColor Green
-            $tcpipOutput = @(& adb -s $usbSerial tcpip 5555 2>&1)
+            $tcpipOutput = @(Invoke-Adb -Serial $usbSerial -Arguments @('tcpip', '5555'))
             Write-Host ($tcpipOutput -join [Environment]::NewLine) -ForegroundColor Gray
             if ($LASTEXITCODE -ne 0) {
                 throw 'No se pudo activar adb tcpip en el dispositivo USB.'

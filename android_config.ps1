@@ -1,6 +1,8 @@
 # Funciones comunes para la configuracion ADB de este proyecto.
 # Compatible con Windows PowerShell 5.1.
 
+Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
+
 function Get-AndroidConfigPath {
     $configDirectory = Join-Path -Path $env:USERPROFILE -ChildPath 'AndroidTools'
     return (Join-Path -Path $configDirectory -ChildPath 'android_config.json')
@@ -115,23 +117,7 @@ function Read-AndroidConfig {
 }
 
 function Get-AndroidDeviceRecords {
-    $output = @(& adb devices 2>&1)
-    $adbExitCode = $LASTEXITCODE
-    if ($adbExitCode -ne 0) {
-        throw "adb devices fallo con codigo $adbExitCode. Salida: $($output -join ' ')"
-    }
-
-    foreach ($line in $output) {
-        $text = [string]$line
-        $match = [regex]::Match($text, '^\s*(?<serial>\S+)\s+(?<status>\S+)(?:\s+.*)?$')
-        if ($match.Success -and $match.Groups['serial'].Value -ne 'List') {
-            [pscustomobject]@{
-                Serial = $match.Groups['serial'].Value
-                Status = $match.Groups['status'].Value
-                Raw    = $text.Trim()
-            }
-        }
-    }
+    return @(Get-AdbDevices)
 }
 
 function Get-AndroidDeviceRecord {

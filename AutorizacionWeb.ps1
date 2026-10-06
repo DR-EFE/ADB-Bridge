@@ -2,6 +2,7 @@
 # El archivo usa solo texto ASCII para ser seguro en Windows PowerShell 5.1.
 
 . (Join-Path -Path $PSScriptRoot -ChildPath 'android_config.ps1')
+Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
 
 Write-Host '=== SOLUCIONANDO ESTADO UNAUTHORIZED ===' -ForegroundColor Yellow
 Write-Host ''
@@ -31,7 +32,7 @@ Write-Host ($connectOutput -join [Environment]::NewLine) -ForegroundColor Gray
 Start-Sleep -Seconds 2
 
 Write-Host '3. Estado actual de ADB:' -ForegroundColor Cyan
-adb devices
+Get-AdbDevices | Format-Table -AutoSize
 $record = Get-AndroidDeviceRecord -Serial $endpoint
 
 if ($null -ne $record -and $record.Status -ceq 'device') {

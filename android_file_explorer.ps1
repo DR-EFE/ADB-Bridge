@@ -1,4 +1,11 @@
 # android_file_explorer.ps1 - Explorador de archivos para Android (Sin emojis)
+Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
+$script:AndroidDevice = Get-SingleReadyDevice
+function adb {
+    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Arguments)
+    if ($Arguments.Count -eq 1 -and [string]$Arguments[0] -ceq 'devices') { return Get-AdbDevices }
+    return Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments ([string[]]$Arguments)
+}
 
 function Show-FileExplorer {
     Clear-Host
@@ -8,8 +15,7 @@ function Show-FileExplorer {
     Write-Host ""
     
     # Verificar conexion
-    $devices = adb devices
-    if (-not ($devices -match "device`$")) {
+    if ($null -eq $script:AndroidDevice) {
         Write-Host "ERROR: No hay dispositivo conectado" -ForegroundColor Red
         Write-Host "Ejecuta android_setup.ps1 primero" -ForegroundColor Yellow
         pause
