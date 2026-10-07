@@ -10,7 +10,25 @@
       "LastEndpoint": "192.168.1.42:37123",
       "Mode": "wireless-debugging-tls",
       "LastConnectedUtc": "2026-10-06T19:55:20.0000000Z",
-      "IsPaired": true
+      "IsPaired": true,
+      "NetworkProfiles": [
+        {
+          "Id": "f5e9f7f31b3a4ef6b7c83c6a1a4d8f01",
+          "Name": "Casa",
+          "PreferredEndpoint": "192.168.1.42:37123",
+          "ForceUsbOnly": false,
+          "LastUsedUtc": "2026-10-06T19:55:20.0000000Z",
+          "Notes": "Red principal de casa"
+        },
+        {
+          "Id": "f8d68d8bbd7a4770a6b4d8d1e2e7f902",
+          "Name": "Café / Público",
+          "PreferredEndpoint": null,
+          "ForceUsbOnly": true,
+          "LastUsedUtc": null,
+          "Notes": "Forzar solo USB por seguridad"
+        }
+      ]
     },
     {
       "Id": "a206f6a3484b4d91aeb2977240972a85",
@@ -19,7 +37,17 @@
       "LastEndpoint": "192.168.1.73:5555",
       "Mode": "tcpip-5555",
       "LastConnectedUtc": "2026-10-05T16:30:00.0000000Z",
-      "IsPaired": false
+      "IsPaired": false,
+      "NetworkProfiles": [
+        {
+          "Id": "a4f1b5a733d64c9b81a37eec4c7d8a03",
+          "Name": "Oficina",
+          "PreferredEndpoint": "192.168.1.73:5555",
+          "ForceUsbOnly": false,
+          "LastUsedUtc": null,
+          "Notes": null
+        }
+      ]
     }
   ]
 }

@@ -163,7 +163,7 @@ function Get-CurrentAdbDevice {
                     if ($null -ne $ready -and $ready.Status -ceq 'device') {
                         $global:AndroidAdbCurrentDevice = [pscustomobject][ordered]@{
                             Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$ready.Serial; LastEndpoint=$saved.LastEndpoint; UsbSerial=$saved.UsbSerial
-                            Status=$ready.Status; Mode=$saved.Mode; Raw=$ready.Raw
+                            Status=$ready.Status; Mode=$saved.Mode; NetworkProfiles=@($saved.NetworkProfiles); Raw=$ready.Raw
                         }
                     }
                 }
@@ -201,6 +201,7 @@ function Set-CurrentAdbDevice {
     $mode = if ($Device.PSObject.Properties['Mode']) { [string]$Device.Mode } else { $null }
     $lastEndpoint = if ($Device.PSObject.Properties['LastEndpoint']) { [string]$Device.LastEndpoint } elseif ($serial -match ':\d+$') { $serial } else { $null }
     $usbSerial = if ($Device.PSObject.Properties['UsbSerial']) { [string]$Device.UsbSerial } else { $null }
+    $networkProfiles = if ($Device.PSObject.Properties['NetworkProfiles']) { @($Device.NetworkProfiles) } else { @() }
     $global:AndroidAdbCurrentDevice = [pscustomobject][ordered]@{
         Id           = $id
         FriendlyName = $friendlyName
@@ -209,6 +210,7 @@ function Set-CurrentAdbDevice {
         UsbSerial    = $usbSerial
         Status       = $record.Status
         Mode         = $mode
+        NetworkProfiles = $networkProfiles
         Raw          = $record.Raw
     }
 
@@ -261,20 +263,23 @@ function Test-AdbDeviceReady {
     $candidates = @()
     try {
         $lastEndpoint = if ($Device.PSObject.Properties['LastEndpoint']) { [string]$Device.LastEndpoint } else { $null }
-        if (-not [string]::IsNullOrWhiteSpace($lastEndpoint)) { $candidates += $lastEndpoint }
+        $profiles = if($Device.PSObject.Properties['NetworkProfiles']){@($Device.NetworkProfiles | Sort-Object LastUsedUtc -Descending)}else{@()}
+        foreach($profile in $profiles){if(-not $profile.ForceUsbOnly -and -not [string]::IsNullOrWhiteSpace([string]$profile.PreferredEndpoint)){$candidates += [pscustomobject]@{Endpoint=$profile.PreferredEndpoint;ProfileId=$profile.Id}}}
+        if (-not [string]::IsNullOrWhiteSpace($lastEndpoint)) { $candidates += [pscustomobject]@{Endpoint=$lastEndpoint;ProfileId=$null} }
 
         $mode = if ($Device.PSObject.Properties['Mode']) { [string]$Device.Mode } else { $null }
         if ($mode -eq 'wireless-debugging-tls') {
             $preferredHost = $null
             if ($lastEndpoint) { $preferredHost = (ConvertTo-AdbEndpoint $lastEndpoint).Host }
             $mdnsEndpoint = Get-AdbMdnsConnectionEndpoint -PreferredHost $preferredHost
-            if ($null -ne $mdnsEndpoint) { $candidates += $mdnsEndpoint.Endpoint }
+            if ($null -ne $mdnsEndpoint) { $candidates += [pscustomobject]@{Endpoint=$mdnsEndpoint.Endpoint;ProfileId=$null} }
         }
     } catch {
         Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message ("No se pudo descubrir un endpoint para reconexion: {0}" -f $_.Exception.Message)
     }
 
-    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+    foreach ($candidateInfo in @($candidates | Group-Object Endpoint | ForEach-Object { $_.Group[0] })) {
+        $candidate = [string]$candidateInfo.Endpoint
         try {
             Write-AdbLog -Level INFO -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $candidate -Message 'Intentando reconexion automatica.'
             $record = Connect-AdbEndpoint -Endpoint $candidate -TimeoutSeconds 10
@@ -283,11 +288,13 @@ function Test-AdbDeviceReady {
             if ($verifiedState -ceq 'device') {
                 if ($Device.PSObject.Properties['Id'] -and $Device.Id) {
                     try { Update-SavedAdbDevice -Id ([string]$Device.Id) -LastEndpoint $record.Serial -LastConnectedUtc ([DateTime]::UtcNow.ToString('o')) | Out-Null } catch { }
+                    if($candidateInfo.ProfileId){try{Update-SavedAdbNetworkProfile -DeviceId ([string]$Device.Id) -ProfileId ([string]$candidateInfo.ProfileId) -PreferredEndpoint $record.Serial -LastUsedUtc ([DateTime]::UtcNow.ToString('o'))|Out-Null}catch{}}
                 }
                 Set-CurrentAdbDevice -Device ([pscustomobject]@{
                     Id = if ($Device.PSObject.Properties['Id']) { $Device.Id } else { $null }
                     FriendlyName = if ($Device.PSObject.Properties['FriendlyName']) { $Device.FriendlyName } else { $record.Serial }
                     Mode = if ($Device.PSObject.Properties['Mode']) { $Device.Mode } else { $null }
+                    NetworkProfiles = if ($Device.PSObject.Properties['NetworkProfiles']) { @($Device.NetworkProfiles) } else { @() }
                     Serial = $record.Serial
                 }) | Out-Null
                 Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $record.Serial -Message 'Reconexión automática verificada: get-state=device.'
@@ -417,6 +424,143 @@ function Invoke-Adb {
     }
     Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Message ("ADB completado: {0}" -f $commandText)
     return $output
+}
+
+function Get-AdbMediaProcessArgumentString {
+    param([string[]]$Arguments)
+    return (($Arguments | ForEach-Object {
+        $value = [string]$_
+        if ($value -match '^[A-Za-z0-9_./:\[\]-]+$') { $value } else { '"' + ($value -replace '"','\\"') + '"' }
+    }) -join ' ')
+}
+
+function Capture-AdbScreenshot {
+    [CmdletBinding()]
+    param(
+        [object]$Device,
+        [string]$OutputPath,
+        [switch]$OpenAfterCapture
+    )
+
+    $selected = if ($PSBoundParameters.ContainsKey('Device')) { Set-CurrentAdbDevice -Device $Device } else { Get-CurrentAdbDevice }
+    if ($null -eq $selected) { throw 'No hay dispositivo seleccionado para capturar la pantalla.' }
+    if (-not (Test-AdbDeviceReady -Device $selected -AutoReconnect $true)) { throw 'El dispositivo no esta listo para capturar la pantalla.' }
+    $serial = Resolve-AdbSerial -DeviceOrEndpoint (Get-CurrentAdbDevice)
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        $directory = Join-Path (Join-Path $env:USERPROFILE 'AndroidTools') 'screenshots'
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        $OutputPath = Join-Path $directory ("screenshot-{0}.png" -f [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))
+        if (Test-Path -LiteralPath $OutputPath) { $OutputPath = Join-Path $directory ("screenshot-{0}-{1}.png" -f [DateTime]::Now.ToString('yyyyMMdd-HHmmss'),[guid]::NewGuid().ToString('N').Substring(0,6)) }
+    } else {
+        $OutputPath = [IO.Path]::GetFullPath($OutputPath)
+        New-Item -ItemType Directory -Path (Split-Path -Parent $OutputPath) -Force | Out-Null
+    }
+    $outputStream = $null
+    $process = $null
+    try {
+        Write-AdbLog -Level INFO -Source 'AndroidAdb.Capture-AdbScreenshot' -Serial $serial -Message ("Capturando pantalla en {0}." -f $OutputPath)
+        $psi = New-Object Diagnostics.ProcessStartInfo
+        $psi.FileName = 'adb'
+        $psi.Arguments = Get-AdbMediaProcessArgumentString @('-s',$serial,'exec-out','screencap','-p')
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $psi
+        if (-not $process.Start()) { throw 'No se pudo iniciar adb para capturar la pantalla.' }
+        $outputStream = [IO.File]::Open($OutputPath,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        $process.StandardOutput.BaseStream.CopyTo($outputStream)
+        $errorText = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw "adb exec-out screencap fallo con codigo $($process.ExitCode). $errorText" }
+        if ((Get-Item -LiteralPath $OutputPath).Length -eq 0) { throw 'adb no produjo datos de imagen.' }
+        Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Capture-AdbScreenshot' -Serial $serial -Message 'Captura completada.'
+        if ($OpenAfterCapture) { Start-Process -FilePath $OutputPath | Out-Null }
+        return (Get-Item -LiteralPath $OutputPath)
+    } catch {
+        if (Test-Path -LiteralPath $OutputPath -PathType Leaf) { Remove-Item -LiteralPath $OutputPath -Force -ErrorAction SilentlyContinue }
+        Write-AdbLog -Level ERROR -Source 'AndroidAdb.Capture-AdbScreenshot' -Serial $serial -Message $_.Exception.Message
+        throw
+    } finally {
+        if ($null -ne $outputStream) { $outputStream.Dispose() }
+        if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
+function Start-AdbScreenRecording {
+    [CmdletBinding()]
+    param(
+        [object]$Device,
+        [ValidateRange(1,86400)][int]$DurationSeconds = 180,
+        [string]$OutputPath
+    )
+
+    $selected = if ($PSBoundParameters.ContainsKey('Device')) { Set-CurrentAdbDevice -Device $Device } else { Get-CurrentAdbDevice }
+    if ($null -eq $selected) { throw 'No hay dispositivo seleccionado para grabar la pantalla.' }
+    if (-not (Test-AdbDeviceReady -Device $selected -AutoReconnect $true)) { throw 'El dispositivo no esta listo para grabar la pantalla.' }
+    $serial = Resolve-AdbSerial -DeviceOrEndpoint (Get-CurrentAdbDevice)
+    $directory = Join-Path (Join-Path $env:USERPROFILE 'AndroidTools') 'recordings'
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) { $OutputPath = Join-Path $directory ("recording-{0}.mp4" -f [DateTime]::Now.ToString('yyyyMMdd-HHmmss')) }
+    $OutputPath = [IO.Path]::GetFullPath($OutputPath)
+    New-Item -ItemType Directory -Path (Split-Path -Parent $OutputPath) -Force | Out-Null
+    $remotePath = '/sdcard/android-tools-recording-{0}.mp4' -f [guid]::NewGuid().ToString('N')
+    $process = $null
+    $stoppedByUser = $false
+    try {
+        Write-AdbLog -Level INFO -Source 'AndroidAdb.Start-AdbScreenRecording' -Serial $serial -Message ("Grabacion iniciada; limite {0}s." -f $DurationSeconds)
+        $psi = New-Object Diagnostics.ProcessStartInfo
+        $psi.FileName = 'adb'
+        $psi.Arguments = Get-AdbMediaProcessArgumentString @('-s',$serial,'shell','screenrecord','--time-limit',[string]$DurationSeconds,$remotePath)
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardError = $true
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $psi
+        if (-not $process.Start()) { throw 'No se pudo iniciar adb shell screenrecord.' }
+        $started = [DateTime]::UtcNow
+        while (-not $process.HasExited) {
+            $elapsed = ([DateTime]::UtcNow - $started).TotalSeconds
+            Write-Progress -Activity 'Grabando pantalla Android' -Status ("{0}s / {1}s. Ctrl+C para detener." -f [int]$elapsed,$DurationSeconds) -PercentComplete ([Math]::Min(100,[int](100 * $elapsed / $DurationSeconds)))
+            if ([Console]::IsInputRedirected -eq $false -and [Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                if ([int]$key.KeyChar -eq 3) { $stoppedByUser = $true; $process.Kill(); break }
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        $process.WaitForExit()
+        Write-Progress -Activity 'Grabando pantalla Android' -Completed
+        if (-not $stoppedByUser -and $process.ExitCode -ne 0) { $errorText = $process.StandardError.ReadToEnd(); throw "screenrecord fallo con codigo $($process.ExitCode). $errorText" }
+        Invoke-AdbCommand -Serial $serial -Arguments @('pull',$remotePath,$OutputPath) | Out-Null
+        if (-not (Test-Path -LiteralPath $OutputPath) -or (Get-Item -LiteralPath $OutputPath).Length -eq 0) { throw 'adb pull no produjo un video valido.' }
+        Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Start-AdbScreenRecording' -Serial $serial -Message ("Grabacion guardada en {0}." -f $OutputPath)
+        return (Get-Item -LiteralPath $OutputPath)
+    } catch {
+        Write-AdbLog -Level ERROR -Source 'AndroidAdb.Start-AdbScreenRecording' -Serial $serial -Message $_.Exception.Message
+        throw
+    } finally {
+        Write-Progress -Activity 'Grabando pantalla Android' -Completed
+        if ($null -ne $process) { $process.Dispose() }
+        try { Invoke-AdbCommand -Serial $serial -Arguments @('shell','rm','-f',$remotePath) | Out-Null } catch { Write-AdbLog -Level WARN -Source 'AndroidAdb.Start-AdbScreenRecording' -Serial $serial -Message ("No se pudo eliminar el temporal remoto: {0}" -f $_.Exception.Message) }
+    }
+}
+
+function Test-ScrcpyAvailable {
+    [CmdletBinding()]
+    param()
+    return ($null -ne (Get-Command scrcpy -ErrorAction SilentlyContinue))
+}
+
+function Start-AdbScrcpy {
+    [CmdletBinding()]
+    param([object]$Device)
+    if (-not (Test-ScrcpyAvailable)) { throw 'scrcpy no esta instalado o no esta en PATH.' }
+    $selected = if ($PSBoundParameters.ContainsKey('Device')) { Set-CurrentAdbDevice -Device $Device } else { Get-CurrentAdbDevice }
+    if ($null -eq $selected -or -not (Test-AdbDeviceReady -Device $selected -AutoReconnect $true)) { throw 'El dispositivo no esta listo para scrcpy.' }
+    $serial = Resolve-AdbSerial -DeviceOrEndpoint (Get-CurrentAdbDevice)
+    Write-AdbLog -Level INFO -Source 'AndroidAdb.Start-AdbScrcpy' -Serial $serial -Message 'Iniciando scrcpy.'
+    return Start-Process -FilePath 'scrcpy' -ArgumentList @('-s',$serial) -PassThru
 }
 
 function ConvertTo-SafeAdbSearchPattern {
@@ -705,6 +849,13 @@ function ConvertTo-AdbBoolean {
     throw "El campo '$FieldName' debe ser true o false."
 }
 
+function ConvertTo-AdbNetworkProfile {
+    param([object]$Profile)
+    foreach($field in @('Id','Name','PreferredEndpoint','ForceUsbOnly','LastUsedUtc','Notes')) { if($null -eq $Profile.PSObject.Properties[$field]) { throw "NetworkProfiles contiene un perfil sin el campo '$field'." } }
+    $endpoint=if([string]::IsNullOrWhiteSpace([string]$Profile.PreferredEndpoint)){$null}else{(ConvertTo-AdbEndpoint ([string]$Profile.PreferredEndpoint)).Endpoint}
+    [pscustomobject][ordered]@{Id=[string]$Profile.Id;Name=(Assert-AdbFriendlyName ([string]$Profile.Name));PreferredEndpoint=$endpoint;ForceUsbOnly=(ConvertTo-AdbBoolean $Profile.ForceUsbOnly 'ForceUsbOnly');LastUsedUtc=ConvertTo-AdbUtcTimestamp ([string]$Profile.LastUsedUtc);Notes=if($null -eq $Profile.Notes){$null}else{[string]$Profile.Notes}}
+}
+
 function ConvertTo-AdbStoredMode {
     param([string]$Mode)
     switch ($Mode) {
@@ -715,6 +866,75 @@ function ConvertTo-AdbStoredMode {
         'LegacyTcpIp'            { return 'tcpip-5555' }
         default { throw "Modo de dispositivo no admitido: $Mode" }
     }
+}
+
+function Get-AdbDeviceStoreBackupDirectory {
+    [CmdletBinding()]
+    param()
+    return (Join-Path (Join-Path $env:USERPROFILE 'AndroidTools') 'backups')
+}
+
+function Get-AdbDeviceStoreBackups {
+    [CmdletBinding()]
+    param()
+
+    $directory = Get-AdbDeviceStoreBackupDirectory
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) { return @() }
+    return @(Get-ChildItem -LiteralPath $directory -Filter 'devices-*.json' -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending)
+}
+
+function Backup-AdbDeviceStore {
+    [CmdletBinding()]
+    param([string]$SourcePath = (Get-AdbDeviceStorePath))
+
+    if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) { return $null }
+    $directory = Get-AdbDeviceStoreBackupDirectory
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+
+    $suffix = 0
+    do {
+        $stamp = [DateTime]::Now.AddSeconds($suffix).ToString('yyyyMMdd-HHmmss')
+        $backupPath = Join-Path $directory ("devices-{0}.json" -f $stamp)
+        $suffix++
+    } while (Test-Path -LiteralPath $backupPath)
+
+    Copy-Item -LiteralPath $SourcePath -Destination $backupPath -Force -ErrorAction Stop
+    $backups = @(Get-AdbDeviceStoreBackups)
+    foreach ($oldBackup in ($backups | Select-Object -Skip 20)) {
+        Remove-Item -LiteralPath $oldBackup.FullName -Force -ErrorAction Stop
+    }
+    return $backupPath
+}
+
+function Restore-AdbDeviceStore {
+    [CmdletBinding()]
+    param(
+        [string]$BackupPath,
+        [ValidateRange(1, 1000)][int]$Index,
+        [switch]$List
+    )
+
+    $backups = @(Get-AdbDeviceStoreBackups)
+    if ($List -or ([string]::IsNullOrWhiteSpace($BackupPath) -and $Index -eq 0)) {
+        return @($backups | Select-Object @{Name='Index';Expression={[array]::IndexOf($backups, $_) + 1}}, Name, FullName, Length, LastWriteTimeUtc)
+    }
+    if ($Index -gt 0) {
+        if ($Index -gt $backups.Count) { throw "No existe la copia de seguridad numero $Index." }
+        $BackupPath = $backups[$Index - 1].FullName
+    }
+    if ([string]::IsNullOrWhiteSpace($BackupPath)) { throw 'Indica -BackupPath o -Index para restaurar una copia.' }
+    $resolvedBackup = (Resolve-Path -LiteralPath $BackupPath -ErrorAction Stop).Path
+    if ($backups.FullName -notcontains $resolvedBackup) { throw 'La ruta no corresponde a una copia de devices.json administrada por el sistema.' }
+
+    try { $restored = Get-Content -LiteralPath $resolvedBackup -Raw -ErrorAction Stop | ConvertFrom-Json }
+    catch { throw "La copia no contiene JSON valido: $($_.Exception.Message)" }
+    if ($null -eq $restored -or $null -eq $restored.PSObject.Properties['Devices']) {
+        throw 'La copia no contiene una estructura valida de devices.json.'
+    }
+    $target = Get-AdbDeviceStorePath
+    Save-AdbDeviceStore -Store $restored | Out-Null
+    return (Read-AdbDeviceStore)
 }
 
 function Save-AdbDeviceStore {
@@ -737,6 +957,7 @@ function Save-AdbDeviceStore {
     $json = $document | ConvertTo-Json -Depth 8
     $temporaryPath = "{0}.{1}.tmp" -f $path,[guid]::NewGuid().ToString('N')
     try {
+        if (Test-Path -LiteralPath $path -PathType Leaf) { Backup-AdbDeviceStore -SourcePath $path | Out-Null }
         [IO.File]::WriteAllText($temporaryPath, $json, (New-Object Text.UTF8Encoding($false)))
         Move-Item -LiteralPath $temporaryPath -Destination $path -Force
     } finally {
@@ -812,6 +1033,8 @@ function Read-AdbDeviceStore {
         if (-not [string]::IsNullOrWhiteSpace([string]$device.LastEndpoint)) {
             $endpoint = (ConvertTo-AdbEndpoint ([string]$device.LastEndpoint)).Endpoint
         }
+        $networkProfiles=@()
+        if($null -ne $device.PSObject.Properties['NetworkProfiles']){foreach($networkProfile in @($device.NetworkProfiles)){$networkProfiles+=ConvertTo-AdbNetworkProfile $networkProfile}}
         $normalized += [pscustomobject][ordered]@{
             Id               = $id
             FriendlyName     = Assert-AdbFriendlyName ([string]$device.FriendlyName)
@@ -820,6 +1043,7 @@ function Read-AdbDeviceStore {
             Mode             = $mode
             LastConnectedUtc = ConvertTo-AdbUtcTimestamp ([string]$device.LastConnectedUtc)
             IsPaired         = ConvertTo-AdbBoolean $device.IsPaired 'IsPaired'
+            NetworkProfiles  = @($networkProfiles)
         }
     }
     $currentDeviceId = if ($null -eq $store.PSObject.Properties['CurrentDeviceId']) { $null } else { [string]$store.CurrentDeviceId }
@@ -840,7 +1064,8 @@ function Add-SavedAdbDevice {
         [string]$UsbSerial,
         [string]$LastEndpoint,
         [bool]$IsPaired = $false,
-        [string]$LastConnectedUtc
+        [string]$LastConnectedUtc,
+        [object[]]$NetworkProfiles = @()
     )
 
     $store = Read-AdbDeviceStore
@@ -860,6 +1085,7 @@ function Add-SavedAdbDevice {
         Mode             = $storedMode
         LastConnectedUtc = ConvertTo-AdbUtcTimestamp $LastConnectedUtc
         IsPaired         = $IsPaired
+        NetworkProfiles  = @($NetworkProfiles | ForEach-Object { ConvertTo-AdbNetworkProfile $_ })
     }
     $store.Devices = @($store.Devices) + $device
     Save-AdbDeviceStore -Store $store | Out-Null
@@ -909,6 +1135,28 @@ function Remove-SavedAdbDevice {
     return $true
 }
 
+function Get-SavedAdbNetworkProfiles {
+    [CmdletBinding()] param([Parameter(Mandatory=$true)][string]$DeviceId)
+    $device=@((Read-AdbDeviceStore).Devices|Where-Object Id -ceq $DeviceId)[0]
+    if($null -eq $device){throw "No existe un dispositivo con Id '$DeviceId'."}
+    return @($device.NetworkProfiles)
+}
+
+function Add-SavedAdbNetworkProfile {
+    [CmdletBinding()] param([Parameter(Mandatory=$true)][string]$DeviceId,[Parameter(Mandatory=$true)][string]$Name,[string]$PreferredEndpoint,[bool]$ForceUsbOnly=$false,[string]$LastUsedUtc,[string]$Notes)
+    $store=Read-AdbDeviceStore;$device=@($store.Devices|Where-Object Id -ceq $DeviceId)[0];if($null -eq $device){throw "No existe un dispositivo con Id '$DeviceId'."};$safeName=Assert-AdbFriendlyName $Name;if(@($device.NetworkProfiles|Where-Object Name -ceq $safeName).Count){throw "Ya existe el perfil '$safeName' en el dispositivo."};$profile=[pscustomobject][ordered]@{Id=[guid]::NewGuid().ToString('N');Name=$safeName;PreferredEndpoint=if([string]::IsNullOrWhiteSpace($PreferredEndpoint)){$null}else{(ConvertTo-AdbEndpoint $PreferredEndpoint).Endpoint};ForceUsbOnly=$ForceUsbOnly;LastUsedUtc=ConvertTo-AdbUtcTimestamp $LastUsedUtc;Notes=if($null -eq $Notes){$null}else{$Notes}};$device.NetworkProfiles=@($device.NetworkProfiles)+$profile;Save-AdbDeviceStore $store|Out-Null;return $profile
+}
+
+function Update-SavedAdbNetworkProfile {
+    [CmdletBinding()] param([Parameter(Mandatory=$true)][string]$DeviceId,[Parameter(Mandatory=$true)][string]$ProfileId,[string]$Name,[string]$PreferredEndpoint,[Nullable[bool]]$ForceUsbOnly,[string]$LastUsedUtc,[string]$Notes)
+    $store=Read-AdbDeviceStore;$device=@($store.Devices|Where-Object Id -ceq $DeviceId)[0];if($null -eq $device){throw "No existe un dispositivo con Id '$DeviceId'."};$profile=@($device.NetworkProfiles|Where-Object Id -ceq $ProfileId)[0];if($null -eq $profile){throw "No existe el perfil '$ProfileId'."};if($PSBoundParameters.ContainsKey('Name')){$profile.Name=Assert-AdbFriendlyName $Name};if($PSBoundParameters.ContainsKey('PreferredEndpoint')){$profile.PreferredEndpoint=if([string]::IsNullOrWhiteSpace($PreferredEndpoint)){$null}else{(ConvertTo-AdbEndpoint $PreferredEndpoint).Endpoint}};if($PSBoundParameters.ContainsKey('ForceUsbOnly')){$profile.ForceUsbOnly=[bool]$ForceUsbOnly};if($PSBoundParameters.ContainsKey('LastUsedUtc')){$profile.LastUsedUtc=ConvertTo-AdbUtcTimestamp $LastUsedUtc};if($PSBoundParameters.ContainsKey('Notes')){$profile.Notes=$Notes};Save-AdbDeviceStore $store|Out-Null;return $profile
+}
+
+function Remove-SavedAdbNetworkProfile {
+    [CmdletBinding()] param([Parameter(Mandatory=$true)][string]$DeviceId,[Parameter(Mandatory=$true)][string]$ProfileId)
+    $store=Read-AdbDeviceStore;$device=@($store.Devices|Where-Object Id -ceq $DeviceId)[0];if($null -eq $device){throw "No existe un dispositivo con Id '$DeviceId'."};$before=@($device.NetworkProfiles).Count;$device.NetworkProfiles=@($device.NetworkProfiles|Where-Object Id -cne $ProfileId);if($device.NetworkProfiles.Count -eq $before){throw "No existe el perfil '$ProfileId'."};Save-AdbDeviceStore $store|Out-Null;return $true
+}
+
 function Get-AdbMdnsServices {
     [CmdletBinding()]
     param()
@@ -944,4 +1192,87 @@ function Get-AdbDeviceIpv4 {
     return $null
 }
 
-Export-ModuleMember -Function Initialize-AdbLog, Write-AdbLog, Get-AdbLogPath, Get-AdbDevices, Get-SingleReadyDevice, Get-CurrentAdbDevice, Set-CurrentAdbDevice, Clear-CurrentAdbDevice, Select-CurrentAdbDevice, Test-AdbDeviceReady, Resolve-AdbSerial, Invoke-AdbCommand, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory
+function Get-AdbSyncProfilesPath {
+    return (Join-Path (Join-Path $env:USERPROFILE 'AndroidTools') 'sync-profiles.json')
+}
+
+function New-AdbSyncProfileStore {
+    return [pscustomobject][ordered]@{ SchemaVersion=1; UpdatedUtc=[DateTime]::UtcNow.ToString('o'); Profiles=@() }
+}
+
+function Read-AdbSyncProfiles {
+    $path = Get-AdbSyncProfilesPath
+    if (-not (Test-Path -LiteralPath $path)) { return (New-AdbSyncProfileStore) }
+    try { $store = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json } catch { throw "No se pudo leer sync-profiles.json: $($_.Exception.Message)" }
+    if ($null -eq $store.PSObject.Properties['Profiles']) { throw 'sync-profiles.json no contiene Profiles.' }
+    return $store
+}
+
+function Save-AdbSyncProfiles {
+    param([Parameter(Mandatory=$true)][object]$Store)
+    $path = Get-AdbSyncProfilesPath; $dir = Split-Path -Parent $path
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $document = [ordered]@{ SchemaVersion=1; UpdatedUtc=[DateTime]::UtcNow.ToString('o'); Profiles=@($Store.Profiles) }
+    $tmp = "$path.$([guid]::NewGuid().ToString('N')).tmp"
+    try { [IO.File]::WriteAllText($tmp,($document | ConvertTo-Json -Depth 10),(New-Object Text.UTF8Encoding($false))); Move-Item -LiteralPath $tmp -Destination $path -Force }
+    finally { if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue} }
+    return $path
+}
+
+function Get-AdbSyncProfiles { return @((Read-AdbSyncProfiles).Profiles) }
+
+function Add-AdbSyncProfile {
+    param([Parameter(Mandatory=$true)][string]$Name,[Parameter(Mandatory=$true)][string[]]$SourcePaths,[Parameter(Mandatory=$true)][string]$DestinationPath,[string[]]$Extensions,[Nullable[int]]$ModifiedWithinDays,[Nullable[long]]$MinSizeBytes,[Nullable[long]]$MaxSizeBytes,[bool]$Overwrite=$false)
+    $store=Read-AdbSyncProfiles; $safeName=Assert-AdbFriendlyName $Name; if(@($store.Profiles | Where-Object Name -ceq $safeName).Count){throw "Ya existe el perfil '$safeName'."}
+    $sources=@($SourcePaths | ForEach-Object { ConvertTo-SafeAndroidPath $_ }); if(-not $sources.Count){throw 'Debe existir al menos una ruta de origen.'}
+    $profile=[pscustomobject][ordered]@{Id=[guid]::NewGuid().ToString('N');Name=$safeName;SourcePaths=$sources;Filters=[pscustomobject][ordered]@{Extensions=@($Extensions);ModifiedWithinDays=$ModifiedWithinDays;MinSizeBytes=$MinSizeBytes;MaxSizeBytes=$MaxSizeBytes};DestinationPath=[IO.Path]::GetFullPath($DestinationPath);Overwrite=$Overwrite}
+    $store.Profiles=@($store.Profiles)+$profile; Save-AdbSyncProfiles $store|Out-Null; return $profile
+}
+
+function Update-AdbSyncProfile {
+    param([Parameter(Mandatory=$true)][string]$Id,[string]$Name,[string[]]$SourcePaths,[string]$DestinationPath,[string[]]$Extensions,[Nullable[int]]$ModifiedWithinDays,[Nullable[long]]$MinSizeBytes,[Nullable[long]]$MaxSizeBytes,[Nullable[bool]]$Overwrite)
+    $store=Read-AdbSyncProfiles; $p=@($store.Profiles|Where-Object Id -ceq $Id)[0]; if($null -eq $p){throw "No existe el perfil '$Id'."}
+    if($PSBoundParameters.ContainsKey('Name')){$p.Name=Assert-AdbFriendlyName $Name}; if($PSBoundParameters.ContainsKey('SourcePaths')){$p.SourcePaths=@($SourcePaths|ForEach-Object{ConvertTo-SafeAndroidPath $_})}; if($PSBoundParameters.ContainsKey('DestinationPath')){$p.DestinationPath=[IO.Path]::GetFullPath($DestinationPath)}; if(-not $p.PSObject.Properties['Filters']){$p|Add-Member Filters ([pscustomobject]@{})}; foreach($n in @('Extensions','ModifiedWithinDays','MinSizeBytes','MaxSizeBytes')){if($PSBoundParameters.ContainsKey($n)){$p.Filters.$n=Get-Variable $n -ValueOnly}}; if($PSBoundParameters.ContainsKey('Overwrite')){$p.Overwrite=[bool]$Overwrite}; $store.Profiles=@($store.Profiles); Save-AdbSyncProfiles $store|Out-Null; return $p
+}
+
+function Remove-AdbSyncProfile { param([Parameter(Mandatory=$true)][string]$Id) $store=Read-AdbSyncProfiles; $before=@($store.Profiles).Count; $store.Profiles=@($store.Profiles|Where-Object Id -cne $Id); if($store.Profiles.Count -eq $before){throw "No existe el perfil '$Id'."}; Save-AdbSyncProfiles $store|Out-Null; return $true }
+
+function Invoke-AdbSyncProfile {
+    [CmdletBinding()] param([Parameter(Mandatory=$true)][object]$Profile,[object]$Device)
+    $selected=if($PSBoundParameters.ContainsKey('Device')){Set-CurrentAdbDevice $Device}else{Get-CurrentAdbDevice}; if($null -eq $selected -or -not(Test-AdbDeviceReady $selected $true)){throw 'El dispositivo no esta listo para sincronizar.'}; $serial=Resolve-AdbSerial (Get-CurrentAdbDevice)
+    $filters=$Profile.Filters; $extensions=@($filters.Extensions|Where-Object{$_}|ForEach-Object{([string]$_).ToLowerInvariant()}); $cutoff=if($filters.ModifiedWithinDays){[DateTimeOffset]::UtcNow.AddDays(-[int]$filters.ModifiedWithinDays).ToUnixTimeSeconds()}else{$null}; $summary=[ordered]@{Profile=$Profile.Name;Copied=0;Skipped=0;Errors=0;Bytes=0;ErrorDetails=@()}; New-Item -ItemType Directory -Path $Profile.DestinationPath -Force|Out-Null
+    foreach($root in @($Profile.SourcePaths)){try{$files=@(Invoke-AdbCommand $serial @('shell','find',$root,'-type','f','-print'));foreach($line in $files){$remote=([string]$line).Trim();if([string]::IsNullOrWhiteSpace($remote)){continue};$stat=@(Invoke-AdbCommand $serial @('shell','stat','-c','%s|%Y|%n',$remote));$parts=([string]($stat -join '')).Split('|',3);if($parts.Count -lt 3){$summary.Errors++;continue};$size=[long]$parts[0];$mtime=[long]$parts[1];$name=$parts[2];$ext=[IO.Path]::GetExtension($name).ToLowerInvariant();if($extensions.Count -and $extensions -notcontains $ext){continue};if($null -ne $cutoff -and $mtime -lt $cutoff){continue};if($null -ne $filters.MinSizeBytes -and $size -lt [long]$filters.MinSizeBytes){continue};if($null -ne $filters.MaxSizeBytes -and $size -gt [long]$filters.MaxSizeBytes){continue};$relative=$remote.Substring($root.Length).TrimStart('/');$local=Join-Path $Profile.DestinationPath ($relative -replace '/','\');New-Item -ItemType Directory -Path (Split-Path -Parent $local) -Force|Out-Null;if((Test-Path -LiteralPath $local)-and -not $Profile.Overwrite){$summary.Skipped++;continue};try{Invoke-AdbCommand $serial @('pull',$remote,$local)|Out-Null;if(-not(Test-Path -LiteralPath $local)){throw 'adb pull no creo el archivo local.'};$summary.Copied++;$summary.Bytes+=$size}catch{$summary.Errors++;$summary.ErrorDetails+=('{0}: {1}'-f $remote,$_.Exception.Message)}}}catch{$summary.Errors++;$summary.ErrorDetails+=('{0}: {1}'-f $root,$_.Exception.Message)}}
+    $level=if($summary.Errors){'ERROR'}else{'SUCCESS'};Write-AdbLog -Level $level -Source 'AndroidAdb.Invoke-AdbSyncProfile' -Serial $serial -Message ("Perfil {0}: copiados={1}, omitidos={2}, errores={3}, bytes={4}"-f $Profile.Name,$summary.Copied,$summary.Skipped,$summary.Errors,$summary.Bytes);return [pscustomobject]$summary
+}
+
+function Invoke-AdbDiagnostics {
+    [CmdletBinding()]
+    param([switch]$NoPause)
+    Initialize-AdbLog | Out-Null
+    $result=[ordered]@{Recommendations=@();AdbPath=$null;AdbVersion=$null;Devices=@();Mdns=@();SavedCount=0;Selected=$null;LocalFreeBytes=$null;PhoneFreeBytes=$null;LogErrors=@()}
+    Write-Host '============================================================' -ForegroundColor Cyan
+    Write-Host '                 DIAGNOSTICO ANDROID ADB' -ForegroundColor Yellow
+    Write-Host '============================================================' -ForegroundColor Cyan
+    Write-Host "`n[1] ADB" -ForegroundColor Cyan
+    $adb=Get-Command adb -ErrorAction SilentlyContinue
+    if($null -eq $adb){Write-Host 'ERROR: adb no esta disponible en PATH.' -ForegroundColor Red;$result.Recommendations+='Instala Android Platform-Tools y agrega adb al PATH.'}else{$result.AdbPath=$adb.Source;try{$result.AdbVersion=@(Invoke-AdbHost -Arguments @('version'));Write-Host ($result.AdbVersion -join ' ') -ForegroundColor Green;Write-Host ("Ruta: {0}"-f $adb.Source);$versionText=$result.AdbVersion -join ' ';if($versionText -match 'Android Debug Bridge version 1\.0\.(\d+)' -and [int]$Matches[1] -lt 41){$result.Recommendations+='Actualiza Android SDK Platform-Tools: la version de ADB parece antigua.'}}catch{Write-Host $_ -ForegroundColor Red;$result.Recommendations+='No se pudo ejecutar adb version.'}}
+    Write-Host "`n[2] Dispositivos adb devices -l" -ForegroundColor Cyan
+    try{$result.Devices=@(Get-AdbDevices);if($result.Devices.Count){$result.Devices|Format-Table Serial,Status,TransportId -AutoSize}else{Write-Host 'No hay dispositivos detectados.' -ForegroundColor Yellow;$result.Recommendations+='Conecta o reconecta un dispositivo y verifica la autorizacion ADB.'}}catch{Write-Host ("ERROR: {0}"-f $_.Exception.Message)-ForegroundColor Red;$result.Recommendations+='No se pudo consultar adb devices.'}
+    Write-Host "`n[3] mDNS" -ForegroundColor Cyan
+    try{$result.Mdns=@(Get-AdbMdnsServices);if($result.Mdns.Count){$result.Mdns|Format-Table ServiceName,Endpoint -AutoSize}else{Write-Host 'No se encontraron servicios mDNS.' -ForegroundColor Yellow}}catch{Write-Host ("ERROR: {0}"-f $_.Exception.Message)-ForegroundColor Red}
+    Write-Host "`n[4] devices.json" -ForegroundColor Cyan
+    try{$saved=@(Get-SavedAdbDevices);$result.SavedCount=$saved.Count;Write-Host ("Dispositivos guardados: {0}"-f $saved.Count);$saved|Sort-Object LastConnectedUtc -Descending|Select-Object -First 5 FriendlyName,Mode,LastEndpoint,LastConnectedUtc|Format-Table -AutoSize}catch{Write-Host ("ERROR: {0}"-f $_.Exception.Message)-ForegroundColor Red;$result.Recommendations+='Revisa la integridad de devices.json.'}
+    Write-Host "`n[5] Seleccion actual" -ForegroundColor Cyan
+    try{$selected=Get-CurrentAdbDevice;if($null -eq $selected){Write-Host 'No hay dispositivo seleccionado.' -ForegroundColor Yellow;$result.Recommendations+='Ejecuta reconexion y selecciona un dispositivo.'}else{$serial=Resolve-AdbSerial (Get-CurrentAdbDevice);$record=@($result.Devices|Where-Object Serial -ceq $serial)[0];$state=if($record){$record.Status}else{'no encontrado'};$result.Selected=[pscustomobject]@{Name=$selected.FriendlyName;Serial=$serial;Endpoint=$selected.LastEndpoint;State=$state};Write-Host ("{0} | {1} | Estado: {2}"-f $selected.FriendlyName,$serial,$state) -ForegroundColor ($(if($state -ceq 'device'){'Green'}else{'Red'}));if($state -cne 'device'){$result.Recommendations+='El dispositivo seleccionado no esta en estado device; reconectalo antes de operar.'}}}catch{Write-Host $_ -ForegroundColor Red}
+    Write-Host "`n[6] Ultimos 10 errores del log" -ForegroundColor Cyan
+    try{$log=Get-AdbLogPath;$result.LogErrors=@(if(Test-Path -LiteralPath $log){Get-Content -LiteralPath $log|Where-Object{$_ -match '\[ERROR\]'}|Select-Object -Last 10});if($result.LogErrors.Count){$result.LogErrors|ForEach-Object{Write-Host $_ -ForegroundColor Red}}else{Write-Host 'No hay errores registrados.' -ForegroundColor Green}}catch{Write-Host 'No se pudo leer el log.' -ForegroundColor Yellow}
+    Write-Host "`n[7] Espacio" -ForegroundColor Cyan
+    try{$drive=Get-PSDrive -Name ([IO.Path]::GetPathRoot((Get-Location).Path).TrimEnd('\').Substring(0,1));$result.LocalFreeBytes=$drive.Free;Write-Host ("PC: {0:N2} GB libres"-f ($drive.Free/1GB))}catch{Write-Host 'No se pudo consultar el disco local.' -ForegroundColor Yellow}
+    if($result.Selected -and $result.Selected.State -ceq 'device'){try{$df=@(Invoke-AdbCommand -Serial $result.Selected.Serial -Arguments @('shell','df','-k','/sdcard'));$line=@($df|Where-Object{[string]$_ -match '/sdcard\s*$'})[0];if($line -match '^\s*\S+\s+(\d+)\s+(\d+)\s+(\d+)'){ $result.PhoneFreeBytes=[long]$Matches[3]*1KB;Write-Host ("Telefono /sdcard: {0:N2} GB libres"-f ($result.PhoneFreeBytes/1GB))}}catch{Write-Host ("No se pudo consultar almacenamiento del telefono: {0}"-f $_.Exception.Message)-ForegroundColor Yellow}}
+    if($result.Recommendations.Count){Write-Host "`n[8] Recomendaciones" -ForegroundColor Cyan;$result.Recommendations|Select-Object -Unique|ForEach-Object{Write-Host ("- {0}"-f $_) -ForegroundColor Yellow}}
+    else{Write-Host "`n[8] Recomendaciones`n- No se detectaron problemas basicos." -ForegroundColor Green}
+    Write-AdbLog -Level INFO -Source 'AndroidAdb.Invoke-AdbDiagnostics' -Message ("Diagnostico: dispositivos={0}, guardados={1}, recomendaciones={2}"-f $result.Devices.Count,$result.SavedCount,$result.Recommendations.Count)
+    if(-not $NoPause){Read-Host "`nPresiona Enter para continuar"|Out-Null};return [pscustomobject]$result
+}
+
+Export-ModuleMember -Function Initialize-AdbLog, Write-AdbLog, Get-AdbLogPath, Get-AdbDevices, Get-SingleReadyDevice, Get-CurrentAdbDevice, Set-CurrentAdbDevice, Clear-CurrentAdbDevice, Select-CurrentAdbDevice, Test-AdbDeviceReady, Resolve-AdbSerial, Invoke-AdbCommand, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, Get-SavedAdbNetworkProfiles, Add-SavedAdbNetworkProfile, Update-SavedAdbNetworkProfile, Remove-SavedAdbNetworkProfile, Get-AdbDeviceStoreBackupDirectory, Get-AdbDeviceStoreBackups, Backup-AdbDeviceStore, Restore-AdbDeviceStore, Capture-AdbScreenshot, Start-AdbScreenRecording, Test-ScrcpyAvailable, Start-AdbScrcpy, Get-AdbSyncProfilesPath, New-AdbSyncProfileStore, Read-AdbSyncProfiles, Save-AdbSyncProfiles, Get-AdbSyncProfiles, Add-AdbSyncProfile, Update-AdbSyncProfile, Remove-AdbSyncProfile, Invoke-AdbSyncProfile, Invoke-AdbDiagnostics, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory
