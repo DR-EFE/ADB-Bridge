@@ -147,8 +147,10 @@ Para la conexión actual usa:
 
 ```powershell
 $serial = '192.168.0.37:5555'
-adb -s $serial get-state
+ adb -s $serial get-state
 ```
+
+Los scripts del proyecto ejecutan automáticamente `Test-AdbDeviceReady` antes de cualquier operación crítica (`shell`, `pull` o `push`). Solo continúan si `get-state` devuelve exactamente `device`; si la reconexión automática falla, se detienen con un error claro.
 
 ### Información y almacenamiento
 

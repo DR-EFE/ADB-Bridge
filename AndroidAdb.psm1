@@ -162,7 +162,7 @@ function Get-CurrentAdbDevice {
                     })[0]
                     if ($null -ne $ready -and $ready.Status -ceq 'device') {
                         $global:AndroidAdbCurrentDevice = [pscustomobject][ordered]@{
-                            Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$ready.Serial
+                            Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$ready.Serial; LastEndpoint=$saved.LastEndpoint; UsbSerial=$saved.UsbSerial
                             Status=$ready.Status; Mode=$saved.Mode; Raw=$ready.Raw
                         }
                     }
@@ -199,10 +199,14 @@ function Set-CurrentAdbDevice {
     $id = if ($Device.PSObject.Properties['Id']) { [string]$Device.Id } else { $null }
     $friendlyName = if ($Device.PSObject.Properties['FriendlyName']) { [string]$Device.FriendlyName } else { $serial }
     $mode = if ($Device.PSObject.Properties['Mode']) { [string]$Device.Mode } else { $null }
+    $lastEndpoint = if ($Device.PSObject.Properties['LastEndpoint']) { [string]$Device.LastEndpoint } elseif ($serial -match ':\d+$') { $serial } else { $null }
+    $usbSerial = if ($Device.PSObject.Properties['UsbSerial']) { [string]$Device.UsbSerial } else { $null }
     $global:AndroidAdbCurrentDevice = [pscustomobject][ordered]@{
         Id           = $id
         FriendlyName = $friendlyName
         Serial       = $serial
+        LastEndpoint = $lastEndpoint
+        UsbSerial    = $usbSerial
         Status       = $record.Status
         Mode         = $mode
         Raw          = $record.Raw
@@ -229,6 +233,74 @@ function Clear-CurrentAdbDevice {
         $store | Add-Member -NotePropertyName CurrentDeviceId -NotePropertyValue $null -Force
         Save-AdbDeviceStore -Store $store | Out-Null
     }
+}
+
+function Test-AdbDeviceReady {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$Device,
+        [bool]$AutoReconnect = $false
+    )
+
+    $serial = $null
+    try {
+        $serial = Resolve-AdbSerial -DeviceOrEndpoint $Device
+        $stateOutput = @(Invoke-Adb -Serial $serial -Arguments @('get-state'))
+        $state = (($stateOutput | ForEach-Object { [string]$_ }) -join ' ').Trim()
+        if ($state -ceq 'device') {
+            Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message 'Dispositivo listo: get-state=device.'
+            return $true
+        }
+        Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message ("Dispositivo no listo: get-state={0}." -f $state)
+    } catch {
+        Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message $_.Exception.Message
+    }
+
+    if (-not $AutoReconnect) { return $false }
+
+    $candidates = @()
+    try {
+        $lastEndpoint = if ($Device.PSObject.Properties['LastEndpoint']) { [string]$Device.LastEndpoint } else { $null }
+        if (-not [string]::IsNullOrWhiteSpace($lastEndpoint)) { $candidates += $lastEndpoint }
+
+        $mode = if ($Device.PSObject.Properties['Mode']) { [string]$Device.Mode } else { $null }
+        if ($mode -eq 'wireless-debugging-tls') {
+            $preferredHost = $null
+            if ($lastEndpoint) { $preferredHost = (ConvertTo-AdbEndpoint $lastEndpoint).Host }
+            $mdnsEndpoint = Get-AdbMdnsConnectionEndpoint -PreferredHost $preferredHost
+            if ($null -ne $mdnsEndpoint) { $candidates += $mdnsEndpoint.Endpoint }
+        }
+    } catch {
+        Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message ("No se pudo descubrir un endpoint para reconexion: {0}" -f $_.Exception.Message)
+    }
+
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        try {
+            Write-AdbLog -Level INFO -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $candidate -Message 'Intentando reconexion automatica.'
+            $record = Connect-AdbEndpoint -Endpoint $candidate -TimeoutSeconds 10
+            $verified = @(Invoke-Adb -Serial $record.Serial -Arguments @('get-state'))
+            $verifiedState = (($verified | ForEach-Object { [string]$_ }) -join ' ').Trim()
+            if ($verifiedState -ceq 'device') {
+                if ($Device.PSObject.Properties['Id'] -and $Device.Id) {
+                    try { Update-SavedAdbDevice -Id ([string]$Device.Id) -LastEndpoint $record.Serial -LastConnectedUtc ([DateTime]::UtcNow.ToString('o')) | Out-Null } catch { }
+                }
+                Set-CurrentAdbDevice -Device ([pscustomobject]@{
+                    Id = if ($Device.PSObject.Properties['Id']) { $Device.Id } else { $null }
+                    FriendlyName = if ($Device.PSObject.Properties['FriendlyName']) { $Device.FriendlyName } else { $record.Serial }
+                    Mode = if ($Device.PSObject.Properties['Mode']) { $Device.Mode } else { $null }
+                    Serial = $record.Serial
+                }) | Out-Null
+                Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $record.Serial -Message 'Reconexión automática verificada: get-state=device.'
+                return $true
+            }
+            Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $candidate -Message ("Reconexion no lista: get-state={0}." -f $verifiedState)
+        } catch {
+            Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $candidate -Message ("Fallo de reconexion: {0}" -f $_.Exception.Message)
+        }
+    }
+
+    Write-AdbLog -Level ERROR -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message 'El dispositivo sigue sin estar listo después de la reconexión automática.'
+    return $false
 }
 
 function Select-CurrentAdbDevice {
@@ -278,7 +350,7 @@ function Select-CurrentAdbDevice {
         throw "'$($selected.FriendlyName)' no esta conectado en estado device. Ejecuta android_reconnect.ps1 antes de continuar."
     }
     return Set-CurrentAdbDevice -Device ([pscustomobject][ordered]@{
-        Id=$selected.Id; FriendlyName=$selected.FriendlyName; Mode=$selected.Mode; Serial=$active.Serial
+        Id=$selected.Id; FriendlyName=$selected.FriendlyName; Mode=$selected.Mode; UsbSerial=$selected.UsbSerial; LastEndpoint=$selected.LastEndpoint; Serial=$active.Serial
     }) -Persist:$Persist
 }
 
@@ -311,6 +383,11 @@ function Invoke-AdbCommand {
         $state = if ($null -eq $record) { 'no encontrado' } else { $record.Status }
         throw "El dispositivo seleccionado '$serial' no esta listo. Estado: $state"
     }
+    if (-not (Test-AdbDeviceReady -Device $selected -AutoReconnect $true)) {
+        throw "El dispositivo seleccionado '$serial' no esta listo. No se ejecutara el comando ADB."
+    }
+    $selected = Get-CurrentAdbDevice
+    $serial = Resolve-AdbSerial -DeviceOrEndpoint $selected
     if ($null -eq $Arguments) { $Arguments = @() }
     return Invoke-Adb -Serial $serial -Arguments $Arguments
 }
@@ -867,4 +944,4 @@ function Get-AdbDeviceIpv4 {
     return $null
 }
 
-Export-ModuleMember -Function Initialize-AdbLog, Write-AdbLog, Get-AdbLogPath, Get-AdbDevices, Get-SingleReadyDevice, Get-CurrentAdbDevice, Set-CurrentAdbDevice, Clear-CurrentAdbDevice, Select-CurrentAdbDevice, Resolve-AdbSerial, Invoke-AdbCommand, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory
+Export-ModuleMember -Function Initialize-AdbLog, Write-AdbLog, Get-AdbLogPath, Get-AdbDevices, Get-SingleReadyDevice, Get-CurrentAdbDevice, Set-CurrentAdbDevice, Clear-CurrentAdbDevice, Select-CurrentAdbDevice, Test-AdbDeviceReady, Resolve-AdbSerial, Invoke-AdbCommand, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory

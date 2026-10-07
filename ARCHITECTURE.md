@@ -26,6 +26,7 @@ El registro activo se guarda fuera del repositorio en `%USERPROFILE%\AndroidTool
 
 - `Invoke-Adb -Serial ...`: única vía para comandos dirigidos a un dispositivo. Siempre usa `adb -s` y falla si ADB devuelve un código distinto de cero.
 - `Get-CurrentAdbDevice`, `Set-CurrentAdbDevice`, `Clear-CurrentAdbDevice` y `Resolve-AdbSerial`: selección global durante la sesión de PowerShell.
+- `Test-AdbDeviceReady`: verifica `get-state=device`, registra el resultado y puede intentar la reconexión automática.
 - `Invoke-AdbCommand`: wrapper obligatorio para comandos de trabajo; resuelve el dispositivo seleccionado y siempre ejecuta con `adb -s`.
 - `Select-CurrentAdbDevice`: muestra los dispositivos guardados y obliga a elegir uno en estado exacto `device`.
 - `Invoke-AdbHost`: única vía para comandos sin serial: `pair`, `connect` y `mdns services`.

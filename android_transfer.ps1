@@ -3,7 +3,7 @@ Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
 Initialize-AdbLog | Out-Null
 Write-AdbLog -Level INFO -Source 'android_transfer.ps1' -Message 'Inicio de transferencias.'
 
-try { $script:AndroidDevice = Select-CurrentAdbDevice -Persist } catch { Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
+try { $script:AndroidDevice = Select-CurrentAdbDevice -Persist; if (-not (Test-AdbDeviceReady -Device $script:AndroidDevice -AutoReconnect $true)) { throw 'El dispositivo seleccionado no esta listo despues de la reconexion.' } } catch { Write-AdbLog -Level ERROR -Source 'android_transfer.ps1' -Message $_.Exception.Message; Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
 
 function Get-TransferDevice { try { $device = Get-CurrentAdbDevice; if ($null -eq $device -or $device.Status -cne 'device') { $device = Select-CurrentAdbDevice -Persist }; $device } catch { Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red; $null } }
 function Invoke-Transfer {

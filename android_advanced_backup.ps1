@@ -4,7 +4,7 @@
 Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
 Initialize-AdbLog | Out-Null
 Write-AdbLog -Level INFO -Source 'android_advanced_backup.ps1' -Message 'Inicio de backup avanzado.'
-try { $script:AndroidDevice = Select-CurrentAdbDevice -Persist } catch { Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
+try { $script:AndroidDevice = Select-CurrentAdbDevice -Persist; if (-not (Test-AdbDeviceReady -Device $script:AndroidDevice -AutoReconnect $true)) { throw 'El dispositivo seleccionado no esta listo despues de la reconexion.' } } catch { Write-AdbLog -Level ERROR -Source 'android_advanced_backup.ps1' -Message $_.Exception.Message; Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
 
 function Write-Utf8File {
     param([string]$Path, [object[]]$Lines)
