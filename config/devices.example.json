@@ -1,0 +1,24 @@
+{
+  "SchemaVersion": 1,
+  "UpdatedUtc": "2026-10-06T20:00:00.0000000Z",
+  "Devices": [
+    {
+      "Id": "d17cc71127464e2a89f87589ec0fe713",
+      "FriendlyName": "Pixel personal",
+      "UsbSerial": "1A2B3C4D5E6F",
+      "LastEndpoint": "192.168.1.42:37123",
+      "Mode": "wireless-debugging-tls",
+      "LastConnectedUtc": "2026-10-06T19:55:20.0000000Z",
+      "IsPaired": true
+    },
+    {
+      "Id": "a206f6a3484b4d91aeb2977240972a85",
+      "FriendlyName": "Tablet oficina",
+      "UsbSerial": "R58M123456A",
+      "LastEndpoint": "192.168.1.73:5555",
+      "Mode": "tcpip-5555",
+      "LastConnectedUtc": "2026-10-05T16:30:00.0000000Z",
+      "IsPaired": false
+    }
+  ]
+}

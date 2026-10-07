@@ -1,4 +1,5 @@
-# Funciones comunes para la configuracion ADB de este proyecto.
+# Compatibilidad con el antiguo archivo de una sola conexion android_config.json.
+# El registro principal multi-dispositivo vive en AndroidAdb.psm1 y devices.json.
 # Compatible con Windows PowerShell 5.1.
 
 Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force

@@ -170,6 +170,7 @@ function ConvertTo-AdbEndpoint {
     $port = [int]$match.Groups['port'].Value
     if ($port -lt 1 -or $port -gt 65535) { throw "Puerto ADB invalido: $Endpoint" }
     $host = $match.Groups['host'].Value
+    if ([string]::IsNullOrWhiteSpace($host) -or $host -match '\s') { throw "Host ADB invalido: $Endpoint" }
     $normalized = if ($host.Contains(':')) { "[{0}]:{1}" -f $host,$port } else { "{0}:{1}" -f $host,$port }
     return [pscustomobject]@{ Host=$host; Port=$port; Endpoint=$normalized }
 }
@@ -262,7 +263,11 @@ function Connect-AdbEndpoint {
     )
 
     $parts = ConvertTo-AdbEndpoint $Endpoint
-    Invoke-AdbHost -Arguments @('connect', $parts.Endpoint) | Out-Null
+    $connectOutput = @(Invoke-AdbHost -Arguments @('connect', $parts.Endpoint))
+    $connectText = ($connectOutput | ForEach-Object { [string]$_ }) -join ' '
+    if ($connectText -match '(?i)cannot connect|failed to connect|unable to connect|connection refused|timed out|no route|10013') {
+        throw "adb connect no pudo alcanzar $($parts.Endpoint). Salida: $connectText"
+    }
     return Wait-AdbDevice -Serial $parts.Endpoint -TimeoutSeconds $TimeoutSeconds
 }
 
@@ -285,4 +290,288 @@ function Get-AdbMdnsConnectionEndpoint {
     return $null
 }
 
-Export-ModuleMember -Function Get-AdbDevices, Get-SingleReadyDevice, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory
+function Get-AdbDeviceStorePath {
+    [CmdletBinding()]
+    param()
+    return (Join-Path (Join-Path $env:USERPROFILE 'AndroidTools') 'devices.json')
+}
+
+function New-AdbDeviceStore {
+    [CmdletBinding()]
+    param()
+    return [pscustomobject][ordered]@{
+        SchemaVersion = 1
+        UpdatedUtc    = [DateTime]::UtcNow.ToString('o')
+        Devices       = @()
+    }
+}
+
+function Assert-AdbFriendlyName {
+    param([string]$FriendlyName)
+    $value = if ($null -eq $FriendlyName) { '' } else { $FriendlyName.Trim() }
+    if ([string]::IsNullOrWhiteSpace($value) -or $value.Length -gt 80 -or $value -match '[\x00-\x1F]') {
+        throw 'El nombre amigable debe tener entre 1 y 80 caracteres y no contener caracteres de control.'
+    }
+    return $value
+}
+
+function ConvertTo-AdbUtcTimestamp {
+    param([AllowNull()][string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $parsed = [DateTimeOffset]::MinValue
+    $valid = [DateTimeOffset]::TryParse(
+        $Value,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$parsed
+    )
+    if (-not $valid) { throw "Fecha UTC invalida en devices.json: $Value" }
+    return $parsed.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+}
+
+function ConvertTo-AdbBoolean {
+    param([object]$Value,[string]$FieldName)
+    if ($Value -is [bool]) { return [bool]$Value }
+    $parsed = $false
+    if ($null -ne $Value -and [bool]::TryParse([string]$Value,[ref]$parsed)) { return $parsed }
+    throw "El campo '$FieldName' debe ser true o false."
+}
+
+function ConvertTo-AdbStoredMode {
+    param([string]$Mode)
+    switch ($Mode) {
+        'wireless-debugging-tls' { return 'wireless-debugging-tls' }
+        'WirelessTls'            { return 'wireless-debugging-tls' }
+        'ModernPairing'          { return 'wireless-debugging-tls' }
+        'tcpip-5555'             { return 'tcpip-5555' }
+        'LegacyTcpIp'            { return 'tcpip-5555' }
+        default { throw "Modo de dispositivo no admitido: $Mode" }
+    }
+}
+
+function Save-AdbDeviceStore {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object]$Store)
+
+    $path = Get-AdbDeviceStorePath
+    $directory = Split-Path -Parent $path
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    if ($null -eq $Store -or $null -eq $Store.PSObject.Properties['Devices']) {
+        throw 'El registro de dispositivos no contiene la propiedad Devices.'
+    }
+    $devices = @($Store.Devices)
+    $document = [ordered]@{
+        SchemaVersion = 1
+        UpdatedUtc    = [DateTime]::UtcNow.ToString('o')
+        Devices       = $devices
+    }
+    $json = $document | ConvertTo-Json -Depth 8
+    $temporaryPath = "{0}.{1}.tmp" -f $path,[guid]::NewGuid().ToString('N')
+    try {
+        [IO.File]::WriteAllText($temporaryPath, $json, (New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $temporaryPath -Destination $path -Force
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
+    }
+    return $path
+}
+
+function Import-LegacyAdbDeviceConfig {
+    param()
+    $legacyPath = Get-AndroidToolsConfigPath
+    if (-not (Test-Path -LiteralPath $legacyPath)) { return $null }
+    try { $legacy = Get-Content -LiteralPath $legacyPath -Raw -ErrorAction Stop | ConvertFrom-Json }
+    catch { return $null }
+    if ([string]::IsNullOrWhiteSpace([string]$legacy.Endpoint)) { return $null }
+    try { $endpoint = (ConvertTo-AdbEndpoint ([string]$legacy.Endpoint)).Endpoint }
+    catch { return $null }
+    try { $mode = ConvertTo-AdbStoredMode ([string]$legacy.Mode) }
+    catch { return $null }
+    try {
+        $lastConnectedUtc = if ($legacy.UpdatedUtc) { ConvertTo-AdbUtcTimestamp ([string]$legacy.UpdatedUtc) } else { $null }
+    } catch { $lastConnectedUtc = $null }
+    $hostName = (ConvertTo-AdbEndpoint $endpoint).Host
+    return [pscustomobject][ordered]@{
+        Id               = [guid]::NewGuid().ToString('N')
+        FriendlyName     = "Android $hostName"
+        UsbSerial        = $null
+        LastEndpoint     = $endpoint
+        Mode             = $mode
+        LastConnectedUtc = $lastConnectedUtc
+        IsPaired         = ($mode -eq 'wireless-debugging-tls')
+    }
+}
+
+function Read-AdbDeviceStore {
+    [CmdletBinding()]
+    param()
+
+    $path = Get-AdbDeviceStorePath
+    if (-not (Test-Path -LiteralPath $path)) {
+        $store = New-AdbDeviceStore
+        $legacyDevice = Import-LegacyAdbDeviceConfig
+        if ($null -ne $legacyDevice) {
+            $store.Devices = @($legacyDevice)
+        }
+        Save-AdbDeviceStore -Store $store | Out-Null
+        return $store
+    }
+    try { $store = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json }
+    catch { throw "No se pudo leer '$path': $($_.Exception.Message)" }
+    if ($null -eq $store -or $null -eq $store.PSObject.Properties['SchemaVersion']) {
+        throw 'devices.json no contiene SchemaVersion.'
+    }
+    if ([int]$store.SchemaVersion -ne 1) { throw "Version de devices.json no admitida: $($store.SchemaVersion)" }
+    if ($null -eq $store.PSObject.Properties['Devices']) { throw 'devices.json no contiene Devices.' }
+    $updatedUtc = if ($null -eq $store.PSObject.Properties['UpdatedUtc']) { $null } else { ConvertTo-AdbUtcTimestamp ([string]$store.UpdatedUtc) }
+    $normalized = @()
+    $seenIds = @{}
+    foreach ($device in @($store.Devices)) {
+        foreach ($field in @('Id','FriendlyName','UsbSerial','LastEndpoint','Mode','LastConnectedUtc','IsPaired')) {
+            if ($null -eq $device.PSObject.Properties[$field]) {
+                throw "devices.json contiene un dispositivo sin el campo '$field'."
+            }
+        }
+        $id = [string]$device.Id
+        if ([string]::IsNullOrWhiteSpace($id) -or [string]::IsNullOrWhiteSpace([string]$device.FriendlyName)) {
+            throw 'devices.json contiene un dispositivo sin Id o FriendlyName.'
+        }
+        if ($seenIds.ContainsKey($id)) { throw "devices.json contiene el Id duplicado '$id'." }
+        $seenIds[$id] = $true
+        $mode = ConvertTo-AdbStoredMode ([string]$device.Mode)
+        $endpoint = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$device.LastEndpoint)) {
+            $endpoint = (ConvertTo-AdbEndpoint ([string]$device.LastEndpoint)).Endpoint
+        }
+        $normalized += [pscustomobject][ordered]@{
+            Id               = $id
+            FriendlyName     = Assert-AdbFriendlyName ([string]$device.FriendlyName)
+            UsbSerial        = if ([string]::IsNullOrWhiteSpace([string]$device.UsbSerial)) { $null } else { [string]$device.UsbSerial }
+            LastEndpoint     = $endpoint
+            Mode             = $mode
+            LastConnectedUtc = ConvertTo-AdbUtcTimestamp ([string]$device.LastConnectedUtc)
+            IsPaired         = ConvertTo-AdbBoolean $device.IsPaired 'IsPaired'
+        }
+    }
+    return [pscustomobject][ordered]@{ SchemaVersion=1; UpdatedUtc=$updatedUtc; Devices=@($normalized) }
+}
+
+function Get-SavedAdbDevices {
+    [CmdletBinding()]
+    param()
+    return @((Read-AdbDeviceStore).Devices)
+}
+
+function Add-SavedAdbDevice {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$FriendlyName,
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [string]$UsbSerial,
+        [string]$LastEndpoint,
+        [bool]$IsPaired = $false,
+        [string]$LastConnectedUtc
+    )
+
+    $store = Read-AdbDeviceStore
+    $name = Assert-AdbFriendlyName $FriendlyName
+    $storedMode = ConvertTo-AdbStoredMode $Mode
+    $endpoint = if ([string]::IsNullOrWhiteSpace($LastEndpoint)) { $null } else { (ConvertTo-AdbEndpoint $LastEndpoint).Endpoint }
+    $usb = if ([string]::IsNullOrWhiteSpace($UsbSerial)) { $null } else { $UsbSerial.Trim() }
+    $duplicate = @($store.Devices | Where-Object {
+        ($usb -and $_.UsbSerial -ceq $usb) -or ($endpoint -and $_.LastEndpoint -ieq $endpoint)
+    })[0]
+    if ($null -ne $duplicate) { throw "El dispositivo ya existe: $($duplicate.FriendlyName) [$($duplicate.Id)]" }
+    $device = [pscustomobject][ordered]@{
+        Id               = [guid]::NewGuid().ToString('N')
+        FriendlyName     = $name
+        UsbSerial        = $usb
+        LastEndpoint     = $endpoint
+        Mode             = $storedMode
+        LastConnectedUtc = ConvertTo-AdbUtcTimestamp $LastConnectedUtc
+        IsPaired         = $IsPaired
+    }
+    $store.Devices = @($store.Devices) + $device
+    Save-AdbDeviceStore -Store $store | Out-Null
+    return $device
+}
+
+function Update-SavedAdbDevice {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Id,
+        [string]$FriendlyName,
+        [string]$UsbSerial,
+        [string]$LastEndpoint,
+        [string]$Mode,
+        [Nullable[bool]]$IsPaired,
+        [string]$LastConnectedUtc
+    )
+
+    $store = Read-AdbDeviceStore
+    $device = @($store.Devices | Where-Object { $_.Id -ceq $Id })[0]
+    if ($null -eq $device) { throw "No existe un dispositivo con Id '$Id'." }
+    if ($PSBoundParameters.ContainsKey('FriendlyName')) { $device.FriendlyName = Assert-AdbFriendlyName $FriendlyName }
+    if ($PSBoundParameters.ContainsKey('UsbSerial')) { $device.UsbSerial = if ([string]::IsNullOrWhiteSpace($UsbSerial)) { $null } else { $UsbSerial.Trim() } }
+    if ($PSBoundParameters.ContainsKey('LastEndpoint')) { $device.LastEndpoint = if ([string]::IsNullOrWhiteSpace($LastEndpoint)) { $null } else { (ConvertTo-AdbEndpoint $LastEndpoint).Endpoint } }
+    if ($PSBoundParameters.ContainsKey('Mode')) { $device.Mode = ConvertTo-AdbStoredMode $Mode }
+    if ($PSBoundParameters.ContainsKey('IsPaired')) { $device.IsPaired = [bool]$IsPaired }
+    if ($PSBoundParameters.ContainsKey('LastConnectedUtc')) { $device.LastConnectedUtc = ConvertTo-AdbUtcTimestamp $LastConnectedUtc }
+    $conflict = @($store.Devices | Where-Object {
+        $_.Id -cne $device.Id -and (
+            ($device.UsbSerial -and $_.UsbSerial -ceq $device.UsbSerial) -or
+            ($device.LastEndpoint -and $_.LastEndpoint -ieq $device.LastEndpoint)
+        )
+    })[0]
+    if ($null -ne $conflict) { throw "La actualizacion coincide con '$($conflict.FriendlyName)' [$($conflict.Id)]." }
+    Save-AdbDeviceStore -Store $store | Out-Null
+    return $device
+}
+
+function Remove-SavedAdbDevice {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Id)
+    $store = Read-AdbDeviceStore
+    $before = @($store.Devices).Count
+    $store.Devices = @($store.Devices | Where-Object { $_.Id -cne $Id })
+    if (@($store.Devices).Count -eq $before) { throw "No existe un dispositivo con Id '$Id'." }
+    Save-AdbDeviceStore -Store $store | Out-Null
+    return $true
+}
+
+function Get-AdbMdnsServices {
+    [CmdletBinding()]
+    param()
+    $services = @()
+    foreach ($line in @(Invoke-AdbHost -Arguments @('mdns','services'))) {
+        $text = [string]$line
+        if ($text -notmatch 'adb-tls-connect') { continue }
+        $endpointMatch = [regex]::Match($text, '(?<endpoint>\[[^\]]+\]:\d{1,5}|[A-Za-z0-9._-]+:\d{1,5})')
+        if (-not $endpointMatch.Success) { continue }
+        try { $parts = ConvertTo-AdbEndpoint $endpointMatch.Groups['endpoint'].Value } catch { continue }
+        $tokens = $text.Trim() -split '\s+'
+        $services += [pscustomobject]@{
+            ServiceName = if ($tokens.Count -gt 0) { $tokens[0] } else { $null }
+            Type        = 'adb-tls-connect'
+            Host        = $parts.Host
+            Port        = $parts.Port
+            Endpoint    = $parts.Endpoint
+            Raw         = $text.Trim()
+        }
+    }
+    return @($services)
+}
+
+function Get-AdbDeviceIpv4 {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Serial)
+    foreach ($arguments in @(@('shell','ip','route'), @('shell','ip','addr'))) {
+        foreach ($line in @(Invoke-Adb -Serial $Serial -Arguments $arguments)) {
+            $match = [regex]::Match([string]$line, '(?:\bsrc\s+|\binet\s+)(?<ip>\d{1,3}(?:\.\d{1,3}){3})(?:/\d+)?')
+            if ($match.Success -and $match.Groups['ip'].Value -notlike '127.*') { return $match.Groups['ip'].Value }
+        }
+    }
+    return $null
+}
+
+Export-ModuleMember -Function Get-AdbDevices, Get-SingleReadyDevice, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory

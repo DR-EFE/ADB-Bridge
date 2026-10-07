@@ -6,14 +6,14 @@ No es una aplicación Android instalada en el teléfono; es una herramienta de a
 
 | Archivo | Para qué sirve |
 |---|---|
-| [android_setup_v2.ps1](C:/Users/pipe6/Downloads/Android/android_setup_v2.ps1) | Configura la conexión ADB por Wi‑Fi. Incluye métodos mediante código QR, código de emparejamiento y USB. Guarda la IP del teléfono para futuras conexiones. |
+| [android_setup_v2.ps1](C:/Users/pipe6/Downloads/Android/android_setup_v2.ps1) | Configura Wireless Debugging mediante código de pairing o TCP/IP 5555 mediante USB, y registra el dispositivo en `devices.json`. |
 | [setup.ps1](C:/Users/pipe6/Downloads/Android/setup.ps1) | Punto de entrada de configuración. Delega en `android_setup_v2.ps1` para pairing moderno o TCP/IP USB legado. |
-| [android_reconnect.ps1](C:/Users/pipe6/Downloads/Android/android_reconnect.ps1) | Lee la configuración guardada e intenta reconectar automáticamente el teléfono por Wi‑Fi. |
+| [android_reconnect.ps1](C:/Users/pipe6/Downloads/Android/android_reconnect.ps1) | Lista, agrega, renombra y elimina dispositivos; reconecta usando el último endpoint, mDNS o datos nuevos. |
 | [android_transfer.ps1](C:/Users/pipe6/Downloads/Android/android_transfer.ps1) | Menú principal para transferir fotos, videos y documentos, subir archivos al celular, hacer respaldos, buscar archivos y revisar el espacio disponible. |
 | [android_file_explorer.ps1](C:/Users/pipe6/Downloads/Android/android_file_explorer.ps1) | Explorador interactivo de archivos del teléfono. Permite navegar carpetas, descargar/subir archivos, buscar elementos y consultar información. |
 | [android_list_downloadable.ps1](C:/Users/pipe6/Downloads/Android/android_list_downloadable.ps1) | Descarga carpetas completas desde Android, incluyendo capturas de pantalla, fotos, videos, documentos, música y otras rutas seleccionadas. |
 | [android_advanced_backup.ps1](C:/Users/pipe6/Downloads/Android/android_advanced_backup.ps1) | Realiza respaldos avanzados sin root de contactos, SMS, llamadas, calendario, aplicaciones, configuraciones, Wi‑Fi, Bluetooth, diccionario y portapapeles. |
-| [AutorizacionWeb.ps1](C:/Users/pipe6/Downloads/Android/AutorizacionWeb.ps1) | Reinicia ADB y ayuda a resolver el estado `unauthorized`, solicitando autorización en el teléfono. Usa una IP fija configurada dentro del script. |
+| [AutorizacionWeb.ps1](C:/Users/pipe6/Downloads/Android/AutorizacionWeb.ps1) | Ayuda a resolver el estado `unauthorized` usando la configuración de compatibilidad, sin una IP fija. |
 
 ## Archivos de acceso rápido
 
@@ -53,6 +53,6 @@ ADB: adb devices / adb connect
 
 - El respaldo avanzado no garantiza acceso completo a datos privados de todas las aplicaciones; muchas funciones dependen de la versión de Android y de los permisos disponibles.
 - El script guarda información sensible, como contactos, SMS, llamadas, redes Wi‑Fi y posibles datos del portapapeles.
-- [AutorizacionWeb.ps1](C:/Users/pipe6/Downloads/Android/AutorizacionWeb.ps1) contiene una IP fija (`192.168.1.70`), por lo que puede requerir modificación.
+- El registro multi-dispositivo se guarda en `%USERPROFILE%\AndroidTools\devices.json`; no es necesario recordar la IP anterior para usar el descubrimiento mDNS.
 - Los respaldos normalmente se guardan dentro de `Downloads\AndroidBackup`.
-- En esta carpeta no encontré README ni documentación formal; la explicación anterior se basa en los nombres, menús y comandos implementados en los scripts.
+- La arquitectura y los contratos del módulo están documentados en [ARCHITECTURE.md](C:/Users/pipe6/Downloads/Android/ARCHITECTURE.md).

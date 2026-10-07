@@ -43,6 +43,12 @@ function Read-ValidHost {
     return $value
 }
 
+function Read-FriendlyName {
+    do { $value = (Read-Host 'Nombre amigable para recordar este dispositivo').Trim() }
+    while ([string]::IsNullOrWhiteSpace($value))
+    return $value
+}
+
 function Get-ReadySerialFromUsb {
     $records = @(Get-AndroidDeviceRecords | Where-Object {
         $_.Status -ceq 'device' -and $_.Serial -notmatch '^[^:]+:\d+$'
@@ -101,7 +107,14 @@ function Connect-And-Save {
 
         [Parameter(Mandatory = $true)]
         [ValidateSet('ModernPairing', 'LegacyTcpIp')]
-        [string]$Mode
+        [string]$Mode,
+
+        [Parameter(Mandatory = $true)]
+        [string]$FriendlyName,
+
+        [string]$UsbSerial,
+
+        [bool]$IsPaired = $false
     )
 
     $endpoint = if ($HostName.Contains(':')) {
@@ -111,22 +124,29 @@ function Connect-And-Save {
     }
 
     Write-Host ("Conectando a {0}..." -f $endpoint) -ForegroundColor Green
-    $connectOutput = @(& adb connect $endpoint 2>&1)
-    Write-Host ($connectOutput -join [Environment]::NewLine) -ForegroundColor Gray
-    if ($LASTEXITCODE -ne 0) {
-        throw "adb connect fallo para $endpoint."
-    }
-
-    Start-Sleep -Seconds 2
-    $record = Get-AndroidDeviceRecord -Serial $endpoint
-    if ($null -eq $record -or $record.Status -cne 'device') {
-        $state = if ($null -eq $record) { 'no encontrado' } else { $record.Status }
-        throw "El endpoint $endpoint no quedo en estado device. Estado actual: $state"
-    }
+    $connectTimeout = if ($Mode -eq 'LegacyTcpIp') { 30 } else { 15 }
+    $record = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds $connectTimeout
 
     $configPath = Save-AndroidConfig -HostName $HostName -Port $Port -Endpoint $endpoint -Mode $Mode -Serial $record.Serial
+    $storedMode = if ($Mode -eq 'ModernPairing') { 'wireless-debugging-tls' } else { 'tcpip-5555' }
+    $savedDevices = @(Get-SavedAdbDevices)
+    $existing = @($savedDevices | Where-Object {
+        ($UsbSerial -and $_.UsbSerial -ceq $UsbSerial) -or $_.LastEndpoint -ieq $record.Serial
+    })[0]
+    if ($null -eq $existing) {
+        $sameName = @($savedDevices | Where-Object { $_.FriendlyName -ieq $FriendlyName })
+        if ($sameName.Count -eq 1) { $existing = $sameName[0] }
+    }
+    if ($null -eq $existing) {
+        $saved = Add-SavedAdbDevice -FriendlyName $FriendlyName -Mode $storedMode -UsbSerial $UsbSerial -LastEndpoint $record.Serial -IsPaired $IsPaired -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+    } elseif ($UsbSerial) {
+        $saved = Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -UsbSerial $UsbSerial -LastEndpoint $record.Serial -Mode $storedMode -IsPaired $IsPaired -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+    } else {
+        $saved = Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -LastEndpoint $record.Serial -Mode $storedMode -IsPaired $IsPaired -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+    }
     Write-Host ("Conexion valida. Estado: {0}" -f $record.Status) -ForegroundColor Green
     Write-Host ("Configuracion JSON guardada en: {0}" -f $configPath) -ForegroundColor Green
+    Write-Host ("Dispositivo guardado en devices.json: {0} [{1}]" -f $saved.FriendlyName,$saved.Id) -ForegroundColor Green
     return $record
 }
 
@@ -149,6 +169,7 @@ try {
     switch ($method) {
         '1' {
             Write-SetupTitle 'PAIRING MODERNO'
+            $friendlyName = Read-FriendlyName
             Write-Host 'En el telefono abre Opciones de desarrollador > Depuracion inalambrica.' -ForegroundColor White
             Write-Host 'Selecciona Vincular dispositivo con codigo de emparejamiento.' -ForegroundColor White
             Write-Host 'El flujo QR no se ejecuta desde esta CLI; usa el codigo de pairing que muestra el telefono.' -ForegroundColor Yellow
@@ -157,8 +178,8 @@ try {
             $pairingHost = Read-ValidHost 'Host/IP mostrado para pairing'
             $pairingPort = Read-ValidPort 'Puerto de pairing'
             $pairingCode = (Read-Host 'Codigo de pairing').Trim()
-            if ([string]::IsNullOrWhiteSpace($pairingCode)) {
-                throw 'El codigo de pairing no puede estar vacio.'
+            if ($pairingCode -notmatch '^\d{6}$') {
+                throw 'El codigo de pairing debe contener exactamente 6 digitos.'
             }
 
             $pairingEndpoint = if ($pairingHost.Contains(':')) {
@@ -168,9 +189,9 @@ try {
             }
 
             Write-Host ("Ejecutando: adb pair {0} <codigo>" -f $pairingEndpoint) -ForegroundColor Green
-            $pairOutput = @(& adb pair $pairingEndpoint $pairingCode 2>&1)
+            $pairOutput = @(Invoke-AdbHost -Arguments @('pair',$pairingEndpoint,$pairingCode))
             Write-Host ($pairOutput -join [Environment]::NewLine) -ForegroundColor Gray
-            if ($LASTEXITCODE -ne 0 -or ($pairOutput -join ' ') -match '(?i)failed|error') {
+            if (($pairOutput -join ' ') -match '(?i)failed|error') {
                 throw 'El pairing fallo. Revisa IP, puerto y codigo en el telefono.'
             }
 
@@ -178,7 +199,7 @@ try {
             Write-Host 'Buscando el puerto de conexion mediante mDNS...' -ForegroundColor Cyan
             $connectionParts = $null
             for ($attempt = 1; $attempt -le 5 -and $null -eq $connectionParts; $attempt++) {
-                $connectionParts = Get-AndroidMdnsConnectionEndpoint -PreferredHost $pairingHost
+                $connectionParts = Get-AdbMdnsConnectionEndpoint -PreferredHost $pairingHost
                 if ($null -eq $connectionParts -and $attempt -lt 5) {
                     Start-Sleep -Seconds 2
                 }
@@ -194,7 +215,7 @@ try {
                 Write-Host ("mDNS encontro el endpoint de conexion: {0}" -f $connectionParts.Endpoint) -ForegroundColor Green
             }
 
-            Connect-And-Save -HostName $connectionHost -Port $connectionPort -Mode 'ModernPairing' | Out-Null
+            Connect-And-Save -HostName $connectionHost -Port $connectionPort -Mode 'ModernPairing' -FriendlyName $friendlyName -IsPaired $true | Out-Null
         }
 
         '2' {
@@ -204,15 +225,8 @@ try {
 
             $usbSerial = Get-ReadySerialFromUsb
             Write-Host ("Dispositivo USB: {0}" -f $usbSerial) -ForegroundColor Green
+            $friendlyName = Read-FriendlyName
 
-            Write-Host 'Activando TCP/IP legado en el puerto 5555...' -ForegroundColor Green
-            $tcpipOutput = @(Invoke-Adb -Serial $usbSerial -Arguments @('tcpip', '5555'))
-            Write-Host ($tcpipOutput -join [Environment]::NewLine) -ForegroundColor Gray
-            if ($LASTEXITCODE -ne 0) {
-                throw 'No se pudo activar adb tcpip en el dispositivo USB.'
-            }
-
-            Start-Sleep -Seconds 3
             $deviceIp = Get-DeviceIpFromUsb -Serial $usbSerial
             if ([string]::IsNullOrWhiteSpace($deviceIp)) {
                 $deviceIp = Read-ValidHost 'No se pudo detectar la IP. Introduce la IP del telefono'
@@ -220,7 +234,12 @@ try {
                 Write-Host ("IP detectada: {0}" -f $deviceIp) -ForegroundColor Green
             }
 
-            Connect-And-Save -HostName $deviceIp -Port 5555 -Mode 'LegacyTcpIp' | Out-Null
+            Write-Host 'Activando TCP/IP legado en el puerto 5555...' -ForegroundColor Green
+            $tcpipOutput = @(Invoke-Adb -Serial $usbSerial -Arguments @('tcpip', '5555'))
+            Write-Host ($tcpipOutput -join [Environment]::NewLine) -ForegroundColor Gray
+
+            Start-Sleep -Seconds 5
+            Connect-And-Save -HostName $deviceIp -Port 5555 -Mode 'LegacyTcpIp' -FriendlyName $friendlyName -UsbSerial $usbSerial -IsPaired $false | Out-Null
         }
 
         default {

@@ -6,7 +6,8 @@
 Android/
 ├── AndroidAdb.psm1                  # Núcleo: ADB, selección, configuración, seguridad
 ├── config/
-│   └── android_config.example.json  # Plantilla, nunca datos reales
+│   ├── devices.example.json         # Plantilla del registro multi-dispositivo
+│   └── android_config.example.json  # Plantilla antigua, solo compatibilidad
 ├── setup.ps1                        # Punto de entrada público: Setup
 ├── android_setup_v2.ps1             # Implementación de Setup moderno/legado
 ├── android_reconnect.ps1            # Punto de entrada: Reconnect
@@ -19,7 +20,7 @@ Android/
 └── TRANSFER.bat                     # Lanzador de android_transfer.ps1
 ```
 
-La configuración activa se guarda fuera del repositorio en `%USERPROFILE%\AndroidTools\android_config.json`.
+El registro activo se guarda fuera del repositorio en `%USERPROFILE%\AndroidTools\devices.json`. Puede contener varios teléfonos y tablets. Si aún existe el antiguo `%USERPROFILE%\AndroidTools\android_config.json`, el módulo lo migra automáticamente al crear el registro nuevo; Setup también lo mantiene por compatibilidad con herramientas antiguas.
 
 ## Contratos del módulo
 
@@ -27,7 +28,9 @@ La configuración activa se guarda fuera del repositorio en `%USERPROFILE%\Andro
 - `Invoke-AdbHost`: única vía para comandos sin serial: `pair`, `connect` y `mdns services`.
 - `Get-SingleReadyDevice`: falla ante cero o más de un dispositivo `device`; no selecciona silenciosamente.
 - `Wait-AdbDevice`: considera éxito solo el estado exacto `device`.
-- `Read-AdbConnectionConfig` y `Save-AdbConnectionConfig`: único contrato del JSON.
+- `Read-AdbDeviceStore` y `Save-AdbDeviceStore`: lectura validada y escritura segura del registro multi-dispositivo.
+- `Get-SavedAdbDevices`, `Add-SavedAdbDevice`, `Update-SavedAdbDevice` y `Remove-SavedAdbDevice`: operaciones CRUD sobre `devices.json`.
+- `Get-AdbMdnsServices`: descubre endpoints `adb-tls-connect` antes de solicitar IP y puerto al usuario.
 
 ## Flujos de conexión
 
@@ -54,8 +57,8 @@ El puerto de conexión TLS no se asume como `5555`.
 | Script | Responsabilidad |
 |---|---|
 | `setup.ps1` | Entrada pública y delegación al setup implementado. |
-| `android_setup_v2.ps1` | Pairing TLS y activación TCP/IP USB legado; guarda configuración solo después de `device`. |
-| `android_reconnect.ps1` | Lee el JSON, conecta su `Endpoint` completo y exige `device`. |
+| `android_setup_v2.ps1` | Pairing TLS y activación TCP/IP USB legado; agrega o actualiza el dispositivo en `devices.json` solo después de `device`. |
+| `android_reconnect.ps1` | Administra dispositivos guardados y ejecuta reconexión inteligente: último endpoint, mDNS/USB y captura manual. |
 | `android_transfer.ps1` | Operaciones pull/push y backup de medios; recibe y valida resultados de jobs. |
 | `android_file_explorer.ps1` | Navegación y búsqueda segura por rutas validadas. |
 | `android_advanced_backup.ps1` | Respaldo de datos disponibles y manifiesto por categoría. |
