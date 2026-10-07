@@ -15,9 +15,30 @@ function Show-Menu {
     if($d){try{$m=Invoke-Adb $d.Serial @('shell','getprop','ro.product.model');$a=Invoke-Adb $d.Serial @('shell','getprop','ro.build.version.release');Write-Host "OK: estado device | Serial: $($d.Serial)" -ForegroundColor Green;Write-Host "Modelo: $($m -join ' ') | Android: $($a -join ' ')"}catch{Write-Host $_ -ForegroundColor Red}}
     Write-Host '1. Fotos/videos';Write-Host '2. Documentos';Write-Host '3. Subir archivos';Write-Host '4. Backup completo';Write-Host '5. Buscar';Write-Host '6. Espacio';Write-Host '7. Reconectar';Write-Host '8. Salir'
 }
+function Transfer-RecentPhotos {
+    param([string]$Serial,[string]$Directory)
+    $target = Join-Path $Directory 'DCIM\Camera'
+    New-Item -ItemType Directory -Path $target -Force | Out-Null
+    try {
+        $files = @(Invoke-Adb -Serial $Serial -Arguments @('shell','find','/sdcard/DCIM/Camera','-type','f','-mtime','-7','-print') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    } catch {
+        Write-Host ("ERROR: no se pudieron buscar fotos recientes: {0}" -f $_.Exception.Message) -ForegroundColor Red
+        return $false
+    }
+    if ($files.Count -eq 0) {
+        Write-Host 'EMPTY: no hay fotos de los ultimos 7 dias.' -ForegroundColor Yellow
+        return $false
+    }
+    $ok = $true
+    foreach ($file in $files) {
+        $ok = (Invoke-Transfer -Serial $Serial -Arguments @('pull',([string]$file).Trim(),$target)) -and $ok
+    }
+    return $ok
+}
+
 function Transfer-Photos {
     $d=Get-TransferDevice;if(!$d){Read-Host 'Presiona Enter';return};$c=Read-Host '1 recientes, 2 fotos, 3 videos, 4 ambos, 5 volver';if($c -eq '5'){return};$dir=New-TransferDir (Join-Path $env:USERPROFILE 'Downloads\AndroidBackup');$ok=$true
-    switch($c){'1'{$ok=Invoke-Transfer $d.Serial @('pull','/sdcard/DCIM/Camera/',$dir)};'2'{$ok=Invoke-Transfer $d.Serial @('pull','/sdcard/DCIM/',$dir)};'3'{$ok=Invoke-Transfer $d.Serial @('pull','/sdcard/DCIM/Camera/*.mp4',$dir);$ok=(Invoke-Transfer $d.Serial @('pull','/sdcard/Movies/',$dir)) -and $ok};'4'{$x=Join-Path $dir DCIM;$y=Join-Path $dir Movies;New-Item -ItemType Directory -Path $x,$y -Force|Out-Null;$ok=Invoke-Transfer $d.Serial @('pull','/sdcard/DCIM/',$x);$ok=(Invoke-Transfer $d.Serial @('pull','/sdcard/Movies/',$y))-and $ok};default{Write-Host 'ERROR: opcion invalida' -ForegroundColor Red;return}}
+    switch($c){'1'{$ok=Transfer-RecentPhotos -Serial $d.Serial -Directory $dir};'2'{$ok=Invoke-Transfer $d.Serial @('pull','/sdcard/DCIM/',$dir)};'3'{$ok=Invoke-Transfer $d.Serial @('pull','/sdcard/DCIM/Camera/*.mp4',$dir);$ok=(Invoke-Transfer $d.Serial @('pull','/sdcard/Movies/',$dir))-and $ok};'4'{$x=Join-Path $dir DCIM;$y=Join-Path $dir Movies;New-Item -ItemType Directory -Path $x,$y -Force|Out-Null;$ok=Invoke-Transfer $d.Serial @('pull','/sdcard/DCIM/',$x);$ok=(Invoke-Transfer $d.Serial @('pull','/sdcard/Movies/',$y))-and $ok};default{Write-Host 'ERROR: opcion invalida' -ForegroundColor Red;return}}
     if($ok){Write-Host "OK: transferencia completada en $dir" -ForegroundColor Green};Read-Host 'Presiona Enter'
 }
 function Transfer-Documents {
@@ -29,7 +50,7 @@ function Upload-Files {
     $d=Get-TransferDevice;if(!$d){Read-Host 'Presiona Enter';return};$c=Read-Host '1 archivo, 2 carpeta, 3 listar Upload, 4 volver';switch($c){'1'{$p=Read-Host 'Ruta';if(Test-Path $p -PathType Leaf){if(Invoke-Transfer $d.Serial @('push',$p,'/sdcard/Upload/')){Write-Host 'OK: archivo subido' -ForegroundColor Green}}else{Write-Host 'ERROR: archivo no encontrado' -ForegroundColor Red}};'2'{$p=Read-Host 'Ruta';if(Test-Path $p -PathType Container){if(Invoke-Transfer $d.Serial @('push',$p,'/sdcard/Upload/')){Write-Host 'OK: carpeta subida' -ForegroundColor Green}}else{Write-Host 'ERROR: carpeta no encontrada' -ForegroundColor Red}};'3'{Invoke-Transfer $d.Serial @('shell','ls','-la','/sdcard/Upload/')|Out-Null}};if($c -ne '4'){Read-Host 'Presiona Enter'}
 }
 function Backup-Complete {
-    $d=Get-TransferDevice;if(!$d){Read-Host 'Presiona Enter';return};if((Read-Host 'Continuar? (s/n)') -ne 's'){return};$dir=Join-Path (Join-Path $env:USERPROFILE 'Downloads\AndroidFullBackup') ("backup_{0}" -f (Get-Date -Format yyyyMMdd_HHmmss));$folders=@('DCIM','Download','Documents','Music');New-Item -ItemType Directory -Path $dir -Force|Out-Null;Protect-BackupDirectory -Path $dir|Out-Null;$module=Join-Path $PSScriptRoot 'AndroidAdb.psm1';$jobs=@()
+    $d=Get-TransferDevice;if(!$d){Read-Host 'Presiona Enter';return};if((Read-Host 'Continuar? (s/n)') -ne 's'){return};$dir=Join-Path (Join-Path $env:USERPROFILE 'Downloads\AndroidFullBackup') ("backup_{0}" -f (Get-Date -Format yyyyMMdd_HHmmss));$folders=@('DCIM','Download','Documents','Music','Pictures');New-Item -ItemType Directory -Path $dir -Force|Out-Null;Protect-BackupDirectory -Path $dir|Out-Null;$module=Join-Path $PSScriptRoot 'AndroidAdb.psm1';$jobs=@()
     foreach($f in $folders){$local=Join-Path $dir $f;New-Item -ItemType Directory -Path $local -Force|Out-Null;$jobs+=Start-Job -ScriptBlock{param($m,$s,$r,$l,$n)try{Import-Module $m -Force;Invoke-Adb $s @('pull',$r,$l)|Out-Null;[pscustomobject]@{Name=$n;Success=$true;Error=$null}}catch{[pscustomobject]@{Name=$n;Success=$false;Error=$_.Exception.Message}}} -ArgumentList $module,$d.Serial,"/sdcard/$f/",$local,$f}
     Wait-Job $jobs|Out-Null;$results=@(Receive-Job $jobs -ErrorAction SilentlyContinue);Remove-Job $jobs -Force -ErrorAction SilentlyContinue;$bad=@($results|Where-Object{-not $_.Success});if($bad.Count -eq 0 -and $results.Count -eq $jobs.Count){Write-Host "OK: backup completado en $dir" -ForegroundColor Green}else{Write-Host 'ERROR: fallo el backup:' -ForegroundColor Red;$bad|ForEach-Object{Write-Host "$($_.Name): $($_.Error)" -ForegroundColor Red}};Read-Host 'Presiona Enter'
 }

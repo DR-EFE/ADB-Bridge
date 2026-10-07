@@ -13,6 +13,40 @@ La documentación oficial indica que Android 11+ usa pairing mediante código/QR
 
 ## Tabla de problemas encontrados
 
+## Estado verificado — 2026-10-06
+
+Las incidencias resueltas aparecen tachadas. La tabla histórica completa se conserva debajo para mantener el contexto de la auditoría original.
+
+| Estado | Severidad | Problema | Evidencia actual |
+|---|---|---|---|
+| ~~RESUELTO~~ | ~~Crítica~~ | ~~`SETUP.bat` apuntaba a `android_setup.ps1`.~~ | `SETUP.bat` ejecuta `setup.ps1`. |
+| ~~RESUELTO~~ | ~~Crítica~~ | ~~Error de análisis de `AutorizacionWeb.ps1` en PowerShell 5.1.~~ | El script parsea correctamente. |
+| ~~RESUELTO~~ | ~~Crítica~~ | ~~Uso de `adb pair --qr`.~~ | El setup usa `adb pair HOST:PUERTO codigo`. |
+| ~~RESUELTO~~ | ~~Crítica~~ | ~~El pairing moderno forzaba `:5555`.~~ | Usa mDNS o solicita el puerto TLS de conexión. |
+| ~~RESUELTO~~ | ~~Crítica~~ | ~~Reconexión basada solo en IP/puerto fijo.~~ | Lee `Endpoint`, `Mode` y `Serial` desde JSON. |
+| ~~RESUELTO~~ | ~~Alta~~ | ~~Guardar configuración aunque la conexión fallara.~~ | Se exige estado exacto `device` antes de guardar. |
+| ~~RESUELTO~~ | ~~Alta~~ | ~~Selección silenciosa del primer dispositivo.~~ | `Get-SingleReadyDevice` falla si hay cero o más de uno. |
+| ~~RESUELTO~~ | ~~Alta~~ | ~~Comandos dirigidos sin `adb -s`.~~ | Los scripts usan `AndroidAdb.psm1` y serial explícito. `pair/connect/mdns` quedan como comandos de host. |
+| ~~RESUELTO~~ | ~~Alta~~ | ~~Reconexión exitosa con estados `offline` o `unauthorized`.~~ | Se exige `Status -ceq 'device'`. |
+| ~~RESUELTO~~ | ~~Alta~~ | ~~`android_transfer.ps1` declaraba éxito sin validar `pull`.~~ | `Invoke-Adb` lanza error con código de salida distinto de cero. |
+| ~~RESUELTO~~ | ~~Alta~~ | ~~Los `Start-Job` no devolvían ni validaban resultados.~~ | Los jobs reciben el serial/módulo y se procesan con `Receive-Job`. |
+| ~~RESUELTO~~ | ~~Alta~~ | ~~Promesa de vCard sin archivo `.vcf` real.~~ | El backup avanzado guarda consultas raw y ya no promete vCard. |
+| ~~RESUELTO~~ | ~~Alta~~ | ~~`content query` vacío o denegado se marcaba como éxito.~~ | Se registran `OK`, `EMPTY`, `DENIED`, `PARTIAL` y `ERROR`. |
+| ~~RESUELTO~~ | ~~Alta~~ | ~~Resumen global afirmaba backup completo aunque hubiera fallos.~~ | Se genera `MANIFEST.json` y `Complete` solo es verdadero con todas las categorías `OK`. |
+| ~~RESUELTO~~ | ~~Media~~ | ~~Teclas `d` y `h` duplicadas en el explorador.~~ | Accesos rápidos usan `qa1`–`qa10`; `d` descarga y `h` muestra historial. |
+| ~~RESUELTO~~ | ~~Media~~ | ~~Índice `0` podía seleccionar el último elemento.~~ | Las selecciones exigen `>= 1` y `<= Count`. |
+| ~~RESUELTO~~ | ~~Media~~ | ~~Parser rígido de `ls -la`.~~ | Se usa `find` para enumerar rutas y `test/stat` para metadatos. |
+| ~~RESUELTO~~ | ~~Media~~ | ~~Búsquedas concatenadas en `adb shell`.~~ | Se validan patrones y se pasan argumentos separados. |
+| ~~RESUELTO~~ | ~~Media~~ | ~~`customName` sin validar como carpeta Windows.~~ | Se aplica `ConvertTo-SafeWindowsName`. |
+| ~~RESUELTO~~ | ~~Media~~ | ~~`ExecutionPolicy Bypass`.~~ | Los lanzadores usan `-NoProfile -ExecutionPolicy RemoteSigned`. |
+| ~~RESUELTO~~ | ~~Media~~ | ~~`adb kill-server` en el setup normal.~~ | `android_setup_v2.ps1` no lo ejecuta; queda solo en recuperación explícita. |
+| ~~RESUELTO~~ | ~~Baja~~ | ~~Documentación usaba `android_setup.ps1`.~~ | El nombre público documentado es `setup.ps1`. |
+| ~~RESUELTO~~ | ~~Alta~~ | ~~Backup paralelo no incluía `Pictures`, aunque el flujo original lo anunciaba.~~ | `Pictures` se añadió al conjunto de carpetas y se valida mediante el mismo job que las demás. |
+| ~~RESUELTO~~ | ~~Baja~~ | ~~`$recursive` en `android_list_downloadable.ps1` no se utilizaba.~~ | Se eliminó el parámetro; `adb pull` de carpeta ya es recursivo. |
+| ~~RESUELTO~~ | ~~Baja~~ | ~~“Fotos recientes” descargaba toda la cámara.~~ | Se usa `find -type f -mtime -7` y cada `pull` se valida. |
+
+## Tabla histórica original
+
 | Severidad | Archivo | Problema real | Corrección recomendada |
 |---|---|---|---|
 | Crítica | [SETUP.bat:16](C:/Users/pipe6/Downloads/Android/SETUP.bat:16) | Ejecuta `android_setup.ps1`, pero ese archivo no existe. | Cambiar a `setup.ps1` o renombrar consistentemente el script. |

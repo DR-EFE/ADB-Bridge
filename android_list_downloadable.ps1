@@ -10,8 +10,7 @@ function adb {
 function Download-AndroidFolder {
     param(
         [string]$remotePath,
-        [string]$localName,
-        [switch]$recursive
+        [string]$localName
     )
     
     $remotePath = ConvertTo-SafeAndroidPath $remotePath
