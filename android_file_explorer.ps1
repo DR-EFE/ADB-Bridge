@@ -1,10 +1,12 @@
 # android_file_explorer.ps1 - Explorador de archivos para Android (Sin emojis)
 Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
-$script:AndroidDevice = Get-SingleReadyDevice
-function adb {
+Initialize-AdbLog | Out-Null
+Write-AdbLog -Level INFO -Source 'android_file_explorer.ps1' -Message 'Inicio de explorador.'
+try { $script:AndroidDevice = Select-CurrentAdbDevice -Persist } catch { Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
+function Invoke-SelectedAdb {
     param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Arguments)
     if ($Arguments.Count -eq 1 -and [string]$Arguments[0] -ceq 'devices') { return Get-AdbDevices }
-    return Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments ([string[]]$Arguments)
+    return Invoke-AdbCommand -Serial $script:AndroidDevice.Serial -Arguments ([string[]]$Arguments)
 }
 
 function Show-FileExplorer {
@@ -53,7 +55,7 @@ function List-Directory {
     
     # Enumerar rutas, no parsear columnas variables de ls entre fabricantes.
     try {
-        $lines = @(Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @(
+        $lines = @(Invoke-AdbCommand -Serial $script:AndroidDevice.Serial -Arguments @(
             'shell', 'find', $path, '-mindepth', '1', '-maxdepth', '1', '-print'
         ))
     } catch {
@@ -73,10 +75,10 @@ function List-Directory {
         try { $entryPath = ConvertTo-SafeAndroidPath $entryPath } catch { continue }
         $name = Split-Path -Path $entryPath -Leaf
         $isDirectory = $false
-        try { Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'test', '-d', $entryPath) | Out-Null; $isDirectory = $true } catch { }
+        try { Invoke-AdbCommand -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'test', '-d', $entryPath) | Out-Null; $isDirectory = $true } catch { }
         $size = 0L
         try {
-            $sizeText = (Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'stat', '-c', '%s', $entryPath)) -join ''
+            $sizeText = (Invoke-AdbCommand -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'stat', '-c', '%s', $entryPath)) -join ''
             [void][long]::TryParse($sizeText.Trim(), [ref]$size)
         } catch { }
 
@@ -162,7 +164,7 @@ function Download-File {
     Write-Host "Origen: $remotePath" -ForegroundColor Gray
     Write-Host "Destino: $localPath" -ForegroundColor Gray
     
-    adb pull "$remotePath" "$localPath" 2>$null
+    Invoke-SelectedAdb pull "$remotePath" "$localPath" 2>$null
     
     if ($LASTEXITCODE -eq 0) {
         Write-Host "OK: Archivo descargado exitosamente!" -ForegroundColor Green
@@ -202,7 +204,7 @@ function Download-Folder {
     Write-Host "Destino: $downloadDir" -ForegroundColor Gray
     Write-Host "ADVERTENCIA: Esto puede tomar varios minutos" -ForegroundColor Yellow
     
-    adb pull "$remotePath/" "$downloadDir/" 2>$null
+    Invoke-SelectedAdb pull "$remotePath/" "$downloadDir/" 2>$null
     
     if ($LASTEXITCODE -eq 0) {
         Write-Host "OK: Carpeta descargada exitosamente!" -ForegroundColor Green
@@ -244,7 +246,7 @@ function Upload-File {
         Write-Host "Subiendo: $fileName" -ForegroundColor Yellow
         Write-Host "Destino: $remotePath/$fileName" -ForegroundColor Gray
         
-        adb push "$uploadPath" "$remotePath/" 2>$null
+        Invoke-SelectedAdb push "$uploadPath" "$remotePath/" 2>$null
         
         if ($LASTEXITCODE -eq 0) {
             Write-Host "OK: Archivo subido exitosamente!" -ForegroundColor Green
@@ -276,7 +278,7 @@ function Search-Files {
     Write-Host ""
     
     $searchPattern = "*$searchTerm*"
-    $results = @(Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'find', $currentPath, '-name', $searchPattern, '-print')) | Select-Object -First 30
+    $results = @(Invoke-AdbCommand -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'find', $currentPath, '-name', $searchPattern, '-print')) | Select-Object -First 30
     
     if ($results -and $results -ne "") {
         Write-Host "RESULTADOS:" -ForegroundColor Cyan
@@ -302,7 +304,7 @@ function Search-Files {
             # Verificar si es directorio o archivo
             $selectedPath = ConvertTo-SafeAndroidPath $selectedPath
             $isDirectory = $true
-            try { Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'test', '-d', $selectedPath) | Out-Null }
+            try { Invoke-AdbCommand -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'test', '-d', $selectedPath) | Out-Null }
             catch { $isDirectory = $false }
             if ($isDirectory) {
                 return $selectedPath
@@ -475,6 +477,7 @@ while ($true) {
             }
             "x" { 
                 Write-Host "Saliendo..." -ForegroundColor Cyan
+                Write-AdbLog -Level INFO -Source 'android_file_explorer.ps1' -Serial $script:AndroidDevice.Serial -Message 'Fin de explorador.'
                 exit 0
             }
             default {

@@ -18,6 +18,22 @@ Set-Location -LiteralPath 'C:\Users\pipe6\Downloads\Android'
 
 Los lanzadores utilizan `RemoteSigned`; no uses `ExecutionPolicy Bypass`.
 
+El logging se guarda en `%USERPROFILE%\AndroidTools\logs\adb-tools-YYYY-MM-DD.log`. Para activar DEBUG antes de ejecutar un script:
+
+```powershell
+Import-Module .\AndroidAdb.psm1 -Force
+Initialize-AdbLog -EnableDebug
+Get-AdbLogPath
+```
+
+Para desactivarlo:
+
+```powershell
+Initialize-AdbLog -DisableDebug
+```
+
+Los niveles disponibles son `INFO`, `WARN`, `ERROR`, `DEBUG` y `SUCCESS`. Se conservan automáticamente los logs de los últimos 15 días.
+
 ## 2. Wireless Debugging moderno
 
 En el teléfono activa **Depuración inalámbrica**, conecta ambos equipos a la misma Wi-Fi y abre **Vincular dispositivo con código de emparejamiento**.
@@ -78,7 +94,7 @@ Después de una conexión correcta se actualiza:
 %USERPROFILE%\AndroidTools\devices.json
 ```
 
-El registro puede contener varios dispositivos y guarda `Id`, `FriendlyName`, `UsbSerial`, `LastEndpoint`, `Mode`, `LastConnectedUtc` e `IsPaired`.
+El registro puede contener varios dispositivos y guarda `Id`, `FriendlyName`, `UsbSerial`, `LastEndpoint`, `Mode`, `LastConnectedUtc` e `IsPaired`. La selección activa se conserva en memoria durante la sesión de PowerShell y, al usar `-Persist`, también se registra como `CurrentDeviceId`.
 
 Administra el registro con:
 
@@ -103,7 +119,7 @@ El flujo intenta, en orden:
 3. Para TCP/IP legado, detección de IP por USB y reactivación de `5555`.
 4. IP y puerto introducidos manualmente.
 
-El JSON solo se actualiza después de confirmar estado `device`. También puede usarse:
+El JSON solo se actualiza después de confirmar estado `device`. Los scripts de transferencia y respaldo muestran los dispositivos guardados si no existe una selección activa y no continúan hasta elegir uno conectado en estado `device`. También puede usarse:
 
 ```powershell
 Set-Location -LiteralPath 'C:\Users\pipe6\Downloads\Android'

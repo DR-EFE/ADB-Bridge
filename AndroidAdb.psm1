@@ -1,12 +1,96 @@
 Set-StrictMode -Version 2.0
 
+# Se mantiene en el ámbito global para sobrevivir a Import-Module -Force durante
+# la sesión actual de PowerShell. No se escribe en disco salvo que se solicite.
+if (-not (Get-Variable -Name AndroidAdbCurrentDevice -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:AndroidAdbCurrentDevice = $null
+}
+
+if (-not (Get-Variable -Name AndroidAdbDebugLogging -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:AndroidAdbDebugLogging = $false
+}
+
+if (-not (Get-Variable -Name AndroidAdbLogInitialized -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:AndroidAdbLogInitialized = $false
+}
+
+function Get-AdbLogPath {
+    [CmdletBinding()]
+    param([datetime]$UtcDate)
+
+    if ($null -eq $UtcDate -or $UtcDate -eq [datetime]::MinValue) { $UtcDate = [datetime]::UtcNow }
+    $directory = Join-Path (Join-Path (Join-Path $env:USERPROFILE 'AndroidTools') 'logs') ''
+    return (Join-Path $directory ("adb-tools-{0}.log" -f $UtcDate.ToUniversalTime().ToString('yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture)))
+}
+
+function Initialize-AdbLog {
+    [CmdletBinding()]
+    param(
+        [switch]$EnableDebug,
+        [switch]$DisableDebug,
+        [ValidateRange(1,3650)][int]$RetentionDays = 15
+    )
+
+    if ($EnableDebug -and $DisableDebug) { throw 'No se puede activar y desactivar DEBUG al mismo tiempo.' }
+    if ($EnableDebug) { $global:AndroidAdbDebugLogging = $true }
+    if ($DisableDebug) { $global:AndroidAdbDebugLogging = $false }
+
+    $logPath = Get-AdbLogPath
+    $logDirectory = Split-Path -Parent $logPath
+    try {
+        New-Item -ItemType Directory -Path $logDirectory -Force -ErrorAction Stop | Out-Null
+        $cutoff = [datetime]::UtcNow.Date.AddDays(-$RetentionDays + 1)
+        Get-ChildItem -LiteralPath $logDirectory -Filter 'adb-tools-*.log' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTimeUtc -lt $cutoff } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        $global:AndroidAdbLogInitialized = $true
+    } catch {
+        $global:AndroidAdbLogInitialized = $false
+        Write-Warning "No se pudo inicializar el log '$logPath': $($_.Exception.Message)"
+    }
+    return $logPath
+}
+
+function Write-AdbLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('INFO','WARN','ERROR','DEBUG','SUCCESS')][string]$Level,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [string]$Source = 'AndroidAdb.psm1',
+        [string]$Serial
+    )
+
+    if ($Level -eq 'DEBUG' -and -not $global:AndroidAdbDebugLogging) { return }
+    try {
+        if (-not $global:AndroidAdbLogInitialized) { Initialize-AdbLog | Out-Null }
+        if (-not $global:AndroidAdbLogInitialized) { return }
+        $timestamp = [datetime]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+        $safeMessage = ([string]$Message) -replace "`r?`n", ' | '
+        $serialText = if ([string]::IsNullOrWhiteSpace($Serial)) { '' } else { " [Serial=$Serial]" }
+        $line = "{0} [{1}] [{2}]{3} {4}{5}" -f $timestamp,$Level,$Source,$serialText,$safeMessage,[Environment]::NewLine
+        $mutex = New-Object -TypeName System.Threading.Mutex -ArgumentList $false,'Local\AndroidAdbLogMutex'
+        $acquired = $false
+        try {
+            $acquired = $mutex.WaitOne(5000)
+            if ($acquired) { [IO.File]::AppendAllText((Get-AdbLogPath),$line,(New-Object Text.UTF8Encoding($false))) }
+        } finally {
+            if ($acquired) { $mutex.ReleaseMutex() }
+            $mutex.Dispose()
+        }
+    } catch {
+        # El logging nunca debe impedir una operación ADB.
+    }
+}
+
 function Get-AdbDevices {
     [CmdletBinding()]
     param()
 
+    Initialize-AdbLog | Out-Null
     $output = @(& adb devices 2>&1)
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
+        Write-AdbLog -Level ERROR -Source 'AndroidAdb.Get-AdbDevices' -Message ("adb devices fallo con codigo {0}: {1}" -f $exitCode,($output -join ' '))
         throw "adb devices fallo con codigo $exitCode. Salida: $($output -join ' ')"
     }
 
@@ -38,6 +122,199 @@ function Get-SingleReadyDevice {
     return $ready[0]
 }
 
+function Resolve-AdbSerial {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()]
+        [object]$DeviceOrEndpoint
+    )
+
+    if ($null -eq $DeviceOrEndpoint) { throw 'No se proporciono un dispositivo o endpoint ADB.' }
+    if ($DeviceOrEndpoint -is [string]) {
+        return (ConvertTo-AdbEndpoint -Endpoint ([string]$DeviceOrEndpoint)).Endpoint
+    }
+
+    foreach ($propertyName in @('Serial','LastEndpoint','Endpoint')) {
+        $property = $DeviceOrEndpoint.PSObject.Properties[$propertyName]
+        if ($null -ne $property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+            $candidate = [string]$property.Value
+            if ($propertyName -eq 'Serial' -and $candidate -notmatch ':\d+$') { return $candidate }
+            try { return (ConvertTo-AdbEndpoint -Endpoint $candidate).Endpoint } catch { }
+        }
+    }
+    throw 'El dispositivo no contiene Serial, LastEndpoint ni Endpoint utilizable.'
+}
+
+function Get-CurrentAdbDevice {
+    [CmdletBinding()]
+    param()
+
+    if ($null -eq $global:AndroidAdbCurrentDevice) {
+        try {
+            $store = Read-AdbDeviceStore
+            if ($store.CurrentDeviceId) {
+                $saved = @($store.Devices | Where-Object { $_.Id -ceq $store.CurrentDeviceId })[0]
+                if ($null -ne $saved) {
+                    $ready = @(Get-AdbDevices | Where-Object {
+                        $_.Serial -ieq $saved.LastEndpoint -or
+                        ($saved.UsbSerial -and $_.Serial -ceq $saved.UsbSerial)
+                    })[0]
+                    if ($null -ne $ready -and $ready.Status -ceq 'device') {
+                        $global:AndroidAdbCurrentDevice = [pscustomobject][ordered]@{
+                            Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$ready.Serial
+                            Status=$ready.Status; Mode=$saved.Mode; Raw=$ready.Raw
+                        }
+                    }
+                }
+            }
+        } catch { }
+    }
+    if ($null -eq $global:AndroidAdbCurrentDevice) { return $null }
+    $serial = [string]$global:AndroidAdbCurrentDevice.Serial
+    $record = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $serial })[0]
+    if ($null -ne $record) {
+        $global:AndroidAdbCurrentDevice.Status = $record.Status
+        $global:AndroidAdbCurrentDevice.Raw = $record.Raw
+    }
+    return $global:AndroidAdbCurrentDevice
+}
+
+function Set-CurrentAdbDevice {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [object]$Device,
+
+        [switch]$Persist
+    )
+
+    $serial = Resolve-AdbSerial -DeviceOrEndpoint $Device
+    $record = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $serial })[0]
+    if ($null -eq $record -or $record.Status -cne 'device') {
+        $state = if ($null -eq $record) { 'no encontrado' } else { $record.Status }
+        throw "No se puede seleccionar '$serial': el estado actual es '$state'. Se requiere exactamente device."
+    }
+
+    $id = if ($Device.PSObject.Properties['Id']) { [string]$Device.Id } else { $null }
+    $friendlyName = if ($Device.PSObject.Properties['FriendlyName']) { [string]$Device.FriendlyName } else { $serial }
+    $mode = if ($Device.PSObject.Properties['Mode']) { [string]$Device.Mode } else { $null }
+    $global:AndroidAdbCurrentDevice = [pscustomobject][ordered]@{
+        Id           = $id
+        FriendlyName = $friendlyName
+        Serial       = $serial
+        Status       = $record.Status
+        Mode         = $mode
+        Raw          = $record.Raw
+    }
+
+    if ($Persist -and $id) {
+        $store = Read-AdbDeviceStore
+        if (@($store.Devices | Where-Object { $_.Id -ceq $id }).Count -ne 1) {
+            throw "No se puede persistir la seleccion: no existe el Id '$id' en devices.json."
+        }
+        $store | Add-Member -NotePropertyName CurrentDeviceId -NotePropertyValue $id -Force
+        Save-AdbDeviceStore -Store $store | Out-Null
+    }
+    return $global:AndroidAdbCurrentDevice
+}
+
+function Clear-CurrentAdbDevice {
+    [CmdletBinding()]
+    param([switch]$Persist)
+
+    $global:AndroidAdbCurrentDevice = $null
+    if ($Persist) {
+        $store = Read-AdbDeviceStore
+        $store | Add-Member -NotePropertyName CurrentDeviceId -NotePropertyValue $null -Force
+        Save-AdbDeviceStore -Store $store | Out-Null
+    }
+}
+
+function Select-CurrentAdbDevice {
+    [CmdletBinding()]
+    param([switch]$Persist)
+
+    $current = Get-CurrentAdbDevice
+    if ($null -ne $current -and $current.Status -ceq 'device') { return $current }
+
+    $saved = @(Get-SavedAdbDevices)
+    $ready = @(Get-AdbDevices | Where-Object { $_.Status -ceq 'device' })
+    if ($saved.Count -eq 0) {
+        if ($ready.Count -eq 0) { throw 'No hay dispositivos guardados ni dispositivos ADB en estado device.' }
+        Write-Host 'DISPOSITIVOS ADB DISPONIBLES' -ForegroundColor Cyan
+        for ($index = 0; $index -lt $ready.Count; $index++) {
+            Write-Host ("[{0}] {1}" -f ($index + 1),$ready[$index].Serial) -ForegroundColor Green
+        }
+        do {
+            $selection = 0
+            $valid = [int]::TryParse((Read-Host 'Selecciona el dispositivo'),[ref]$selection)
+        } while (-not $valid -or $selection -lt 1 -or $selection -gt $ready.Count)
+        return Set-CurrentAdbDevice -Device $ready[$selection - 1] -Persist:$Persist
+    }
+
+    Write-Host 'DISPOSITIVOS GUARDADOS DISPONIBLES' -ForegroundColor Cyan
+    for ($index = 0; $index -lt $saved.Count; $index++) {
+        $savedDevice = $saved[$index]
+        $endpoint = if ($savedDevice.LastEndpoint) { $savedDevice.LastEndpoint } else { '(sin endpoint)' }
+        $active = @($ready | Where-Object {
+            $_.Serial -ieq $savedDevice.LastEndpoint -or
+            ($savedDevice.UsbSerial -and $_.Serial -ceq $savedDevice.UsbSerial)
+        })[0]
+        $state = if ($null -eq $active) { 'no conectado' } else { $active.Status }
+        Write-Host ("[{0}] {1} | {2} | {3}" -f ($index + 1),$savedDevice.FriendlyName,$endpoint,$state) -ForegroundColor Green
+    }
+    do {
+        $selection = 0
+        $valid = [int]::TryParse((Read-Host 'Selecciona el dispositivo guardado'),[ref]$selection)
+    } while (-not $valid -or $selection -lt 1 -or $selection -gt $saved.Count)
+
+    $selected = $saved[$selection - 1]
+    $active = @($ready | Where-Object {
+        $_.Serial -ieq $selected.LastEndpoint -or
+        ($selected.UsbSerial -and $_.Serial -ceq $selected.UsbSerial)
+    })[0]
+    if ($null -eq $active) {
+        throw "'$($selected.FriendlyName)' no esta conectado en estado device. Ejecuta android_reconnect.ps1 antes de continuar."
+    }
+    return Set-CurrentAdbDevice -Device ([pscustomobject][ordered]@{
+        Id=$selected.Id; FriendlyName=$selected.FriendlyName; Mode=$selected.Mode; Serial=$active.Serial
+    }) -Persist:$Persist
+}
+
+function Invoke-AdbCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 1)]
+        [ValidateNotNull()]
+        [string[]]$Arguments,
+
+        [Parameter(Position = 0)]
+        [string]$Serial,
+
+        [object]$Device
+    )
+
+    $selected = if ($PSBoundParameters.ContainsKey('Device')) {
+        Set-CurrentAdbDevice -Device $Device
+    } elseif ($PSBoundParameters.ContainsKey('Serial')) {
+        Set-CurrentAdbDevice -Device ([pscustomobject]@{ Serial=$Serial })
+    } else {
+        Get-CurrentAdbDevice
+    }
+    if ($null -eq $selected) {
+        throw 'No hay dispositivo seleccionado. Ejecuta Select-CurrentAdbDevice o elige un dispositivo desde el menu.'
+    }
+    $serial = Resolve-AdbSerial -DeviceOrEndpoint $selected
+    $record = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $serial })[0]
+    if ($null -eq $record -or $record.Status -cne 'device') {
+        $state = if ($null -eq $record) { 'no encontrado' } else { $record.Status }
+        throw "El dispositivo seleccionado '$serial' no esta listo. Estado: $state"
+    }
+    if ($null -eq $Arguments) { $Arguments = @() }
+    return Invoke-Adb -Serial $serial -Arguments $Arguments
+}
+
 function Invoke-Adb {
     [CmdletBinding()]
     param(
@@ -50,13 +327,18 @@ function Invoke-Adb {
         [string[]]$Arguments
     )
 
+    Initialize-AdbLog | Out-Null
+    $commandText = ($Arguments -join ' ')
+    Write-AdbLog -Level INFO -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Message ("Inicio ADB: {0}" -f $commandText)
     $adbArguments = @('-s', $Serial) + $Arguments
     $output = @(& adb @adbArguments 2>&1)
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         $detail = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+        Write-AdbLog -Level ERROR -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Message ("ADB fallo con codigo {0}: {1}" -f $exitCode,$detail)
         throw "adb -s '$Serial' fallo con codigo $exitCode. $detail"
     }
+    Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Message ("ADB completado: {0}" -f $commandText)
     return $output
 }
 
@@ -146,13 +428,20 @@ function Invoke-AdbHost {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
+    Initialize-AdbLog | Out-Null
     Test-AdbAvailable | Out-Null
+    $displayArguments = if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'pair' -and $Arguments.Count -ge 3) {
+        @('pair',$Arguments[1],'<codigo oculto>') -join ' '
+    } else { $Arguments -join ' ' }
+    Write-AdbLog -Level INFO -Source 'AndroidAdb.Invoke-AdbHost' -Message ("Inicio ADB host: {0}" -f $displayArguments)
     $output = @(& adb @Arguments 2>&1)
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         $detail = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+        Write-AdbLog -Level ERROR -Source 'AndroidAdb.Invoke-AdbHost' -Message ("ADB host fallo con codigo {0}: {1}" -f $exitCode,$detail)
         throw "adb $($Arguments -join ' ') fallo con codigo $exitCode. $detail"
     }
+    Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Invoke-AdbHost' -Message ("ADB host completado: {0}" -f $displayArguments)
     return $output
 }
 
@@ -252,6 +541,7 @@ function Wait-AdbDevice {
 
     $last = Get-AdbDeviceRecord -Serial $Serial
     $state = if ($null -eq $last) { 'no encontrado' } else { $last.Status }
+    Write-AdbLog -Level ERROR -Source 'AndroidAdb.Wait-AdbDevice' -Serial $Serial -Message ("No se alcanzo estado device. Estado final: {0}" -f $state)
     throw "El serial '$Serial' no alcanzo el estado exacto device. Estado final: $state"
 }
 
@@ -302,6 +592,7 @@ function New-AdbDeviceStore {
     return [pscustomobject][ordered]@{
         SchemaVersion = 1
         UpdatedUtc    = [DateTime]::UtcNow.ToString('o')
+        CurrentDeviceId = $null
         Devices       = @()
     }
 }
@@ -363,6 +654,7 @@ function Save-AdbDeviceStore {
     $document = [ordered]@{
         SchemaVersion = 1
         UpdatedUtc    = [DateTime]::UtcNow.ToString('o')
+        CurrentDeviceId = if ($null -ne $Store.PSObject.Properties['CurrentDeviceId']) { $Store.CurrentDeviceId } else { $null }
         Devices       = $devices
     }
     $json = $document | ConvertTo-Json -Depth 8
@@ -453,7 +745,8 @@ function Read-AdbDeviceStore {
             IsPaired         = ConvertTo-AdbBoolean $device.IsPaired 'IsPaired'
         }
     }
-    return [pscustomobject][ordered]@{ SchemaVersion=1; UpdatedUtc=$updatedUtc; Devices=@($normalized) }
+    $currentDeviceId = if ($null -eq $store.PSObject.Properties['CurrentDeviceId']) { $null } else { [string]$store.CurrentDeviceId }
+    return [pscustomobject][ordered]@{ SchemaVersion=1; UpdatedUtc=$updatedUtc; CurrentDeviceId=$currentDeviceId; Devices=@($normalized) }
 }
 
 function Get-SavedAdbDevices {
@@ -574,4 +867,4 @@ function Get-AdbDeviceIpv4 {
     return $null
 }
 
-Export-ModuleMember -Function Get-AdbDevices, Get-SingleReadyDevice, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory
+Export-ModuleMember -Function Initialize-AdbLog, Write-AdbLog, Get-AdbLogPath, Get-AdbDevices, Get-SingleReadyDevice, Get-CurrentAdbDevice, Set-CurrentAdbDevice, Clear-CurrentAdbDevice, Select-CurrentAdbDevice, Resolve-AdbSerial, Invoke-AdbCommand, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory

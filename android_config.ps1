@@ -146,7 +146,7 @@ function Get-AndroidMdnsConnectionEndpoint {
         [string]$PreferredHost
     )
 
-    $lines = @(& adb mdns services 2>&1)
+    $lines = @(Invoke-AdbHost -Arguments @('mdns', 'services'))
     $candidates = @()
 
     foreach ($line in $lines) {

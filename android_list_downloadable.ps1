@@ -1,10 +1,12 @@
 # android_download_all.ps1 - Descargar carpetas completas (INCLUYE CAPTURAS)
 Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
-$script:AndroidDevice = Get-SingleReadyDevice
-function adb {
+Initialize-AdbLog | Out-Null
+Write-AdbLog -Level INFO -Source 'android_list_downloadable.ps1' -Message 'Inicio de descargas.'
+try { $script:AndroidDevice = Select-CurrentAdbDevice -Persist } catch { Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
+function Invoke-SelectedAdb {
     param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Arguments)
     if ($Arguments.Count -eq 1 -and [string]$Arguments[0] -ceq 'devices') { return Get-AdbDevices }
-    return Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments ([string[]]$Arguments)
+    return Invoke-AdbCommand -Serial $script:AndroidDevice.Serial -Arguments ([string[]]$Arguments)
 }
 
 function Download-AndroidFolder {
@@ -28,8 +30,8 @@ function Download-AndroidFolder {
     Write-Host "Destino: $downloadDir" -ForegroundColor Gray
     Write-Host ""
     
-    # Usar adb pull con -a para preservar atributos
-    $result = adb pull -a "$remotePath/" "$downloadDir/" 2>&1
+    # Usar Invoke-SelectedAdb pull con -a para preservar atributos
+    $result = Invoke-SelectedAdb pull -a "$remotePath/" "$downloadDir/" 2>&1
     
     if ($LASTEXITCODE -eq 0) {
         Write-Host "OK: Descarga completada!" -ForegroundColor Green
@@ -118,7 +120,7 @@ function Download-Screenshots {
         Write-Host "Buscando en: $path" -ForegroundColor Gray
         $path = ConvertTo-SafeAndroidPath $path
         $exists = 'no'
-        try { Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'test', '-d', $path) | Out-Null; $exists = 'yes' } catch { $exists = 'no' }
+        try { Invoke-AdbCommand -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'test', '-d', $path) | Out-Null; $exists = 'yes' } catch { $exists = 'no' }
         
         if ($exists -match "yes") {
             Write-Host "  [ENCONTRADO] Descargando..." -ForegroundColor Green
@@ -134,7 +136,7 @@ function Download-Screenshots {
         
         # Buscar archivos de captura por nombre
         $screenshots = @(
-            Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'find', '/sdcard', '-type', 'f', '(', '-name', '*screenshot*.png', '-o', '-name', '*screenshot*.jpg', '-o', '-name', '*Screenshot*.png', '-o', '-name', '*captura*.png', ')', '-print')
+            Invoke-AdbCommand -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'find', '/sdcard', '-type', 'f', '(', '-name', '*screenshot*.png', '-o', '-name', '*screenshot*.jpg', '-o', '-name', '*Screenshot*.png', '-o', '-name', '*captura*.png', ')', '-print')
         ) | Select-Object -First 20
         
         if ($screenshots -and $screenshots -ne "") {
@@ -146,7 +148,7 @@ function Download-Screenshots {
             foreach ($file in ($screenshots -split "`r`n")) {
                 if ($file -and $file -ne "") {
                     Write-Host "  Descargando: $(Split-Path $file -Leaf)" -ForegroundColor Gray
-                    adb pull "$file" "$screenshotsDir\" 2>$null
+                    Invoke-SelectedAdb pull "$file" "$screenshotsDir\" 2>$null
                 }
             }
             Write-Host "Capturas guardadas en: $screenshotsDir" -ForegroundColor Green
@@ -277,6 +279,7 @@ switch ($option) {
     
     "14" {
         Write-Host "Saliendo..." -ForegroundColor Cyan
+        Write-AdbLog -Level INFO -Source 'android_list_downloadable.ps1' -Serial $script:AndroidDevice.Serial -Message 'Fin de descargas.'
         exit
     }
     

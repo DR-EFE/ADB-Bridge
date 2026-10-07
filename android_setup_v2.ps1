@@ -3,6 +3,8 @@
 
 . (Join-Path -Path $PSScriptRoot -ChildPath 'android_config.ps1')
 Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
+Initialize-AdbLog | Out-Null
+Write-AdbLog -Level INFO -Source 'android_setup_v2.ps1' -Message 'Inicio de configuracion.'
 
 function Write-SetupTitle {
     param([string]$Text)
@@ -78,7 +80,7 @@ function Get-ReadySerialFromUsb {
 function Get-DeviceIpFromUsb {
     param([string]$Serial)
 
-    $routeOutput = @(Invoke-Adb -Serial $Serial -Arguments @('shell', 'ip', 'route'))
+    $routeOutput = @(Invoke-AdbCommand -Serial $Serial -Arguments @('shell', 'ip', 'route'))
     foreach ($line in $routeOutput) {
         $match = [regex]::Match([string]$line, '\bsrc\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})\b')
         if ($match.Success) {
@@ -86,7 +88,7 @@ function Get-DeviceIpFromUsb {
         }
     }
 
-    $addressOutput = @(Invoke-Adb -Serial $Serial -Arguments @('shell', 'ip', 'addr'))
+    $addressOutput = @(Invoke-AdbCommand -Serial $Serial -Arguments @('shell', 'ip', 'addr'))
     foreach ($line in $addressOutput) {
         $match = [regex]::Match([string]$line, '\binet\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})/')
         if ($match.Success -and $match.Groups['ip'].Value -notlike '127.*') {
@@ -158,7 +160,7 @@ if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host 'ADB disponible:' -ForegroundColor Gray
-adb version
+Invoke-AdbHost -Arguments @('version') | Out-Host
 Write-Host ''
 Write-Host '[1] Wireless Debugging moderno (codigo de pairing)' -ForegroundColor Green
 Write-Host '[2] TCP/IP USB legado (usa adb tcpip 5555)' -ForegroundColor Yellow
@@ -235,7 +237,7 @@ try {
             }
 
             Write-Host 'Activando TCP/IP legado en el puerto 5555...' -ForegroundColor Green
-            $tcpipOutput = @(Invoke-Adb -Serial $usbSerial -Arguments @('tcpip', '5555'))
+            $tcpipOutput = @(Invoke-AdbCommand -Serial $usbSerial -Arguments @('tcpip', '5555'))
             Write-Host ($tcpipOutput -join [Environment]::NewLine) -ForegroundColor Gray
 
             Start-Sleep -Seconds 5
@@ -248,11 +250,13 @@ try {
     }
 } catch {
     Write-Host ''
+    Write-AdbLog -Level ERROR -Source 'android_setup_v2.ps1' -Message $_.Exception.Message
     Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red
     exit 1
 }
 
 Write-Host ''
+Write-AdbLog -Level SUCCESS -Source 'android_setup_v2.ps1' -Message 'Configuracion completada.'
 Write-Host 'Configuracion completada. Ya puedes desconectar el USB si corresponde.' -ForegroundColor Green
 Read-Host 'Presiona Enter para salir'
 exit 0

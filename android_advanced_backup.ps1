@@ -2,7 +2,9 @@
 # Las consultas content:// no se consideran vCard/ICS reales: se guardan como
 # texto raw y su estado se registra en MANIFEST.json.
 Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
-$script:AndroidDevice = Get-SingleReadyDevice
+Initialize-AdbLog | Out-Null
+Write-AdbLog -Level INFO -Source 'android_advanced_backup.ps1' -Message 'Inicio de backup avanzado.'
+try { $script:AndroidDevice = Select-CurrentAdbDevice -Persist } catch { Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
 
 function Write-Utf8File {
     param([string]$Path, [object[]]$Lines)
@@ -48,7 +50,7 @@ function Invoke-BackupCategory {
         $lines = @()
 
         try {
-            $lines = @(Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', [string]$query.Command))
+            $lines = @(Invoke-AdbCommand -Serial $script:AndroidDevice.Serial -Arguments @('shell', [string]$query.Command))
             $meaningful = @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
             if ($meaningful.Count -eq 0) {
                 $queryStatus = 'EMPTY'
@@ -159,7 +161,10 @@ function Invoke-OneCategory {
     param([int]$Index)
     $root = Join-Path $env:USERPROFILE 'AndroidBackup\Advanced'
     $definition = @(Get-CategoryDefinitions -Root $root)[$Index]
+    Write-AdbLog -Level INFO -Source 'android_advanced_backup.ps1:Invoke-OneCategory' -Serial $script:AndroidDevice.Serial -Message ("Inicio de categoria: {0}" -f $definition.Name)
     $result = Invoke-BackupCategory -Name $definition.Name -Directory $definition.Directory -Queries $definition.Queries
+    $resultLevel = if ($result.Status -eq 'OK') { 'SUCCESS' } else { 'WARN' }
+    Write-AdbLog -Level $resultLevel -Source 'android_advanced_backup.ps1:Invoke-OneCategory' -Serial $script:AndroidDevice.Serial -Message ("Categoria {0}: {1}, exit code {2}" -f $result.Name,$result.Status,$result.ExitCode)
     Write-Host ("{0}: {1}" -f $result.Name, $result.Status) -ForegroundColor $(if($result.Status -eq 'OK'){'Green'}else{'Yellow'})
     Write-Host ("Manifiesto de esta ejecucion: {0}" -f (Write-BackupManifest -Root $root -Categories @($result)).Path) -ForegroundColor Gray
     Read-Host 'Presiona Enter para continuar'
@@ -167,6 +172,7 @@ function Invoke-OneCategory {
 
 function Backup-AllAdvanced {
     if ((Read-Host 'Continuar con backup avanzado completo? (s/n)') -ne 's') { return }
+    Write-AdbLog -Level INFO -Source 'android_advanced_backup.ps1:Backup-AllAdvanced' -Serial $script:AndroidDevice.Serial -Message 'Inicio de backup avanzado completo.'
     $root = Join-Path $env:USERPROFILE ("AndroidBackup\FullAdvanced_{0}" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
     New-Item -ItemType Directory -Path $root -Force | Out-Null
     Protect-BackupDirectory -Path $root | Out-Null
@@ -188,8 +194,8 @@ function Backup-AllAdvanced {
         })
     }
     $summary | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $root 'RESUMEN_BACKUP.json') -Encoding UTF8
-    if ($manifest.Complete) { Write-Host "BACKUP COMPLETO: todas las categorias OK. $($manifest.Path)" -ForegroundColor Green }
-    else { Write-Host "BACKUP INCOMPLETO: hay categorias EMPTY, DENIED, PARTIAL o ERROR. $($manifest.Path)" -ForegroundColor Red }
+    if ($manifest.Complete) { Write-AdbLog -Level SUCCESS -Source 'android_advanced_backup.ps1:Backup-AllAdvanced' -Serial $script:AndroidDevice.Serial -Message ("Backup completo: {0}" -f $manifest.Path); Write-Host "BACKUP COMPLETO: todas las categorias OK. $($manifest.Path)" -ForegroundColor Green }
+    else { Write-AdbLog -Level WARN -Source 'android_advanced_backup.ps1:Backup-AllAdvanced' -Serial $script:AndroidDevice.Serial -Message ("Backup incompleto: {0}" -f $manifest.Path); Write-Host "BACKUP INCOMPLETO: hay categorias EMPTY, DENIED, PARTIAL o ERROR. $($manifest.Path)" -ForegroundColor Red }
     Read-Host 'Presiona Enter para continuar'
 }
 
@@ -201,6 +207,6 @@ function Show-AdvancedMenu {
 while ($true) {
     Show-AdvancedMenu
     switch (Read-Host 'Selecciona opcion (1-12)') {
-        '1' { Invoke-OneCategory 0 }; '2' { Invoke-OneCategory 1 }; '3' { Invoke-OneCategory 2 }; '4' { Invoke-OneCategory 3 }; '5' { Invoke-OneCategory 4 }; '6' { Invoke-OneCategory 5 }; '7' { Invoke-OneCategory 6 }; '8' { Invoke-OneCategory 7 }; '9' { Invoke-OneCategory 8 }; '10' { Invoke-OneCategory 9 }; '11' { Backup-AllAdvanced }; '12' { exit 0 }; default { Write-Host 'Opcion invalida' -ForegroundColor Red; Start-Sleep 1 }
+        '1' { Invoke-OneCategory 0 }; '2' { Invoke-OneCategory 1 }; '3' { Invoke-OneCategory 2 }; '4' { Invoke-OneCategory 3 }; '5' { Invoke-OneCategory 4 }; '6' { Invoke-OneCategory 5 }; '7' { Invoke-OneCategory 6 }; '8' { Invoke-OneCategory 7 }; '9' { Invoke-OneCategory 8 }; '10' { Invoke-OneCategory 9 }; '11' { Backup-AllAdvanced }; '12' { Write-AdbLog -Level INFO -Source 'android_advanced_backup.ps1' -Message 'Fin de backup avanzado.'; exit 0 }; default { Write-Host 'Opcion invalida' -ForegroundColor Red; Start-Sleep 1 }
     }
 }

@@ -4,6 +4,8 @@
 param([switch]$NoMenu)
 
 Import-Module (Join-Path $PSScriptRoot 'AndroidAdb.psm1') -Force
+Initialize-AdbLog | Out-Null
+Write-AdbLog -Level INFO -Source 'android_reconnect.ps1' -Message 'Inicio de administrador/reconexion.'
 
 function Read-RequiredText {
     param([string]$Prompt)
@@ -96,10 +98,12 @@ function Select-MdnsEndpoint {
 
 function Connect-And-RememberDevice {
     param([object]$Device,[string]$Endpoint)
+    Write-AdbLog -Level INFO -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $Endpoint -Message ("Intento de conexion para {0}." -f $Device.FriendlyName)
     Write-Host ("Conectando {0} a {1}..." -f $Device.FriendlyName,$Endpoint) -ForegroundColor Cyan
     try { $record = Connect-AdbEndpoint -Endpoint $Endpoint -TimeoutSeconds 10 }
-    catch { Write-Host ("Fallo: {0}" -f $_.Exception.Message) -ForegroundColor Yellow; return $null }
+    catch { Write-AdbLog -Level ERROR -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $Endpoint -Message $_.Exception.Message; Write-Host ("Fallo: {0}" -f $_.Exception.Message) -ForegroundColor Yellow; return $null }
     Update-SavedAdbDevice -Id $Device.Id -LastEndpoint $record.Serial -LastConnectedUtc ([DateTime]::UtcNow.ToString('o')) | Out-Null
+    Write-AdbLog -Level SUCCESS -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $record.Serial -Message ("Conexion exitosa para {0}." -f $Device.FriendlyName)
     Write-Host ("OK: {0} conectado en estado device ({1})." -f $Device.FriendlyName,$record.Serial) -ForegroundColor Green
     return $record
 }
@@ -128,7 +132,7 @@ function Invoke-SmartReconnect {
             Write-Host 'USB detectado; obteniendo la IP nueva automaticamente...' -ForegroundColor Cyan
             $usbIp = Get-AdbDeviceIpv4 -Serial $device.UsbSerial
             if ($usbIp) {
-                Invoke-Adb -Serial $device.UsbSerial -Arguments @('tcpip','5555') | Out-Host
+                Invoke-AdbCommand -Serial $device.UsbSerial -Arguments @('tcpip','5555') | Out-Host
                 Start-Sleep -Seconds 2
                 $usbEndpoint = (ConvertTo-AdbEndpoint ("{0}:5555" -f $usbIp)).Endpoint
                 $record = Connect-And-RememberDevice -Device $device -Endpoint $usbEndpoint
@@ -176,7 +180,7 @@ function Add-LegacyUsbDevice {
     $name = Read-RequiredText 'Nombre amigable'
     $ip = Get-AdbDeviceIpv4 -Serial $usb.Serial
     if (-not $ip) { $ip = Read-RequiredText 'IP actual del telefono' }
-    Invoke-Adb -Serial $usb.Serial -Arguments @('tcpip','5555') | Out-Host
+    Invoke-AdbCommand -Serial $usb.Serial -Arguments @('tcpip','5555') | Out-Host
     Start-Sleep -Seconds 2
     $endpoint = (ConvertTo-AdbEndpoint ("{0}:5555" -f $ip)).Endpoint
     $record = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 15
@@ -229,8 +233,9 @@ function Start-AdbDeviceManager {
                 '6' { return }
                 default { Write-Host 'Opcion invalida.' -ForegroundColor Red }
             }
-        } catch { Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red }
+        } catch { Write-AdbLog -Level ERROR -Source 'android_reconnect.ps1:Start-AdbDeviceManager' -Message $_.Exception.Message; Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red }
     }
 }
 
 if (-not $NoMenu) { Start-AdbDeviceManager }
+Write-AdbLog -Level INFO -Source 'android_reconnect.ps1' -Message 'Fin de administrador/reconexion.'
