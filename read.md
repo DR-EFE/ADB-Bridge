@@ -7,7 +7,7 @@ No es una aplicación Android instalada en el teléfono; es una herramienta de a
 | Archivo | Para qué sirve |
 |---|---|
 | [android_setup_v2.ps1](C:/Users/pipe6/Downloads/Android/android_setup_v2.ps1) | Configura la conexión ADB por Wi‑Fi. Incluye métodos mediante código QR, código de emparejamiento y USB. Guarda la IP del teléfono para futuras conexiones. |
-| [android_setup.ps1](C:/Users/pipe6/Downloads/Android/setup.ps1) | Versión sencilla de configuración. Activa `adb tcpip 5555`, obtiene la IP y conecta el dispositivo por Wi‑Fi. |
+| [setup.ps1](C:/Users/pipe6/Downloads/Android/setup.ps1) | Punto de entrada de configuración. Delega en `android_setup_v2.ps1` para pairing moderno o TCP/IP USB legado. |
 | [android_reconnect.ps1](C:/Users/pipe6/Downloads/Android/android_reconnect.ps1) | Lee la configuración guardada e intenta reconectar automáticamente el teléfono por Wi‑Fi. |
 | [android_transfer.ps1](C:/Users/pipe6/Downloads/Android/android_transfer.ps1) | Menú principal para transferir fotos, videos y documentos, subir archivos al celular, hacer respaldos, buscar archivos y revisar el espacio disponible. |
 | [android_file_explorer.ps1](C:/Users/pipe6/Downloads/Android/android_file_explorer.ps1) | Explorador interactivo de archivos del teléfono. Permite navegar carpetas, descargar/subir archivos, buscar elementos y consultar información. |
@@ -22,7 +22,7 @@ No es una aplicación Android instalada en el teléfono; es una herramienta de a
 | [SETUP.bat](C:/Users/pipe6/Downloads/Android/SETUP.bat) | Ejecuta la configuración básica por USB/Wi‑Fi. |
 | [RECONNECT.bat](C:/Users/pipe6/Downloads/Android/RECONNECT.bat) | Ejecuta la reconexión rápida. |
 | [TRANSFER.bat](C:/Users/pipe6/Downloads/Android/TRANSFER.bat) | Abre el menú de transferencia de archivos. |
-| [Conectar_Android.cmd](C:/Users/pipe6/Downloads/Android/Conectar_Android.cmd) | Ejecuta la configuración moderna `android_setup_v2.ps1`. |
+| [Conectar_Android.cmd](C:/Users/pipe6/Downloads/Android/Conectar_Android.cmd) | Ejecuta el punto de entrada `setup.ps1`. |
 | [ejecuta.txt](C:/Users/pipe6/Downloads/Android/ejecuta.txt) | Contiene comandos manuales para ejecutar los scripts. |
 
 ## Flujo general

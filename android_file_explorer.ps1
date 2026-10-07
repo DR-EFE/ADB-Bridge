@@ -17,7 +17,7 @@ function Show-FileExplorer {
     # Verificar conexion
     if ($null -eq $script:AndroidDevice) {
         Write-Host "ERROR: No hay dispositivo conectado" -ForegroundColor Red
-        Write-Host "Ejecuta android_setup.ps1 primero" -ForegroundColor Yellow
+        Write-Host "Ejecuta setup.ps1 primero" -ForegroundColor Yellow
         pause
         return $false
     }
@@ -42,6 +42,7 @@ function Format-FileSize {
 
 function List-Directory {
     param([string]$path)
+    $path = ConvertTo-SafeAndroidPath $path
     
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "   DIRECTORIO ACTUAL" -ForegroundColor Yellow
@@ -50,16 +51,15 @@ function List-Directory {
     Write-Host "Ruta: $path" -ForegroundColor White
     Write-Host ""
     
-    # Obtener informacion del directorio
-    $items = adb shell "ls -la '$path'" 2>$null
-    
-    if (-not $items) {
-        Write-Host "ERROR: No se puede acceder a esta carpeta" -ForegroundColor Red
+    # Enumerar rutas, no parsear columnas variables de ls entre fabricantes.
+    try {
+        $lines = @(Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @(
+            'shell', 'find', $path, '-mindepth', '1', '-maxdepth', '1', '-print'
+        ))
+    } catch {
+        Write-Host ("ERROR: No se puede acceder a esta carpeta: {0}" -f $_.Exception.Message) -ForegroundColor Red
         return $null
     }
-    
-    # Separar lineas
-    $lines = $items -split "`r`n"
     
     Write-Host "CONTENIDO:" -ForegroundColor Cyan
     Write-Host "----------------------------------------" -ForegroundColor DarkGray
@@ -68,44 +68,26 @@ function List-Directory {
     $itemsList = @()
     
     foreach ($line in $lines) {
-        # Saltar lineas vacias
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        
-        # Formato: drwxrwx--- 10 root root 4096 2024-01-01 12:00 nombre
-        if ($line -match "^(.)([rwx-]{9})\s+\d+\s+(\w+)\s+(\w+)\s+(\d+)\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s+(.+)$") {
-            $type = $matches[1]
-            $permissions = $matches[2]
-            $owner = $matches[3]
-            $group = $matches[4]
-            $size = [long]$matches[5]
-            $date = $matches[6]
-            $time = $matches[7]
-            $name = $matches[8]
-            
-            $isDirectory = ($type -eq 'd')
-            $sizeFormatted = Format-FileSize -bytes $size
-            
-            $count++
-            $itemsList += [PSCustomObject]@{
-                Number = $count
-                Name = $name
-                Type = $isDirectory
-                Size = $sizeFormatted
-                SizeBytes = $size
-                Permissions = $permissions
-                Owner = $owner
-                Date = $date
-                Time = $time
-            }
-            
-            # Mostrar con colores
-            if ($isDirectory) {
-                Write-Host "  $($count.ToString().PadRight(4)) [DIR]  $name/" -ForegroundColor Green
-            } else {
-                Write-Host "  $($count.ToString().PadRight(4)) [FILE] $name" -ForegroundColor White
-                Write-Host "         Size: $sizeFormatted" -ForegroundColor Gray
-            }
+        $entryPath = ([string]$line).Trim()
+        if ([string]::IsNullOrWhiteSpace($entryPath)) { continue }
+        try { $entryPath = ConvertTo-SafeAndroidPath $entryPath } catch { continue }
+        $name = Split-Path -Path $entryPath -Leaf
+        $isDirectory = $false
+        try { Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'test', '-d', $entryPath) | Out-Null; $isDirectory = $true } catch { }
+        $size = 0L
+        try {
+            $sizeText = (Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'stat', '-c', '%s', $entryPath)) -join ''
+            [void][long]::TryParse($sizeText.Trim(), [ref]$size)
+        } catch { }
+
+        $count++
+        $sizeFormatted = if ($size -gt 0) { Format-FileSize -bytes $size } else { 'N/D' }
+        $itemsList += [PSCustomObject]@{
+            Number = $count; Name = $name; Type = $isDirectory; Size = $sizeFormatted; SizeBytes = $size
+            Permissions = ''; Owner = ''; Date = ''; Time = ''; Path = $entryPath
         }
+        if ($isDirectory) { Write-Host "  $($count.ToString().PadRight(4)) [DIR]  $name/" -ForegroundColor Green }
+        else { Write-Host "  $($count.ToString().PadRight(4)) [FILE] $name" -ForegroundColor White; Write-Host "         Size: $sizeFormatted" -ForegroundColor Gray }
     }
     
     Write-Host "----------------------------------------" -ForegroundColor DarkGray
@@ -133,16 +115,16 @@ function Show-QuickAccess {
     Write-Host ""
     Write-Host "ACCESO RAPIDO:" -ForegroundColor Cyan
     Write-Host "----------------------------------------" -ForegroundColor DarkGray
-    Write-Host "  a. /sdcard/ (Almacenamiento interno)" -ForegroundColor Green
-    Write-Host "  b. /sdcard/DCIM/ (Fotos y videos)" -ForegroundColor Green
-    Write-Host "  c. /sdcard/Download/ (Descargas)" -ForegroundColor Green
-    Write-Host "  d. /sdcard/Documents/ (Documentos)" -ForegroundColor Green
-    Write-Host "  e. /sdcard/Music/ (Musica)" -ForegroundColor Green
-    Write-Host "  f. /sdcard/Movies/ (Videos)" -ForegroundColor Green
-    Write-Host "  g. /sdcard/Pictures/ (Imagenes)" -ForegroundColor Green
-    Write-Host "  h. /sdcard/WhatsApp/ (WhatsApp)" -ForegroundColor Green
-    Write-Host "  i. /sdcard/Android/ (Datos de apps)" -ForegroundColor Green
-    Write-Host "  j. /data/ (Datos sistema - limitado)" -ForegroundColor Yellow
+    Write-Host "  qa1. /sdcard/ (Almacenamiento interno)" -ForegroundColor Green
+    Write-Host "  qa2. /sdcard/DCIM/ (Fotos y videos)" -ForegroundColor Green
+    Write-Host "  qa3. /sdcard/Download/ (Descargas)" -ForegroundColor Green
+    Write-Host "  qa4. /sdcard/Documents/ (Documentos)" -ForegroundColor Green
+    Write-Host "  qa5. /sdcard/Music/ (Musica)" -ForegroundColor Green
+    Write-Host "  qa6. /sdcard/Movies/ (Videos)" -ForegroundColor Green
+    Write-Host "  qa7. /sdcard/Pictures/ (Imagenes)" -ForegroundColor Green
+    Write-Host "  qa8. /sdcard/WhatsApp/ (WhatsApp)" -ForegroundColor Green
+    Write-Host "  qa9. /sdcard/Android/ (Datos de apps)" -ForegroundColor Green
+    Write-Host "  qa10. /data/ (Datos sistema - limitado)" -ForegroundColor Yellow
     Write-Host "----------------------------------------" -ForegroundColor DarkGray
 }
 
@@ -165,11 +147,14 @@ function Show-Actions {
 
 function Download-File {
     param([string]$remotePath, [string]$fileName)
+    $remotePath = ConvertTo-SafeAndroidPath $remotePath
+    $fileName = ConvertTo-SafeWindowsName $fileName
     
     $downloadDir = "$env:USERPROFILE\Downloads\AndroidFiles"
     if (-not (Test-Path $downloadDir)) {
         New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
     }
+    Protect-BackupDirectory -Path $downloadDir | Out-Null
     
     $localPath = "$downloadDir\$fileName"
     Write-Host ""
@@ -202,11 +187,14 @@ function Download-File {
 
 function Download-Folder {
     param([string]$remotePath, [string]$folderName)
+    $remotePath = ConvertTo-SafeAndroidPath $remotePath
+    $folderName = ConvertTo-SafeWindowsName $folderName
     
     $downloadDir = "$env:USERPROFILE\Downloads\AndroidFiles\$folderName"
     if (-not (Test-Path $downloadDir)) {
         New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
     }
+    Protect-BackupDirectory -Path $downloadDir | Out-Null
     
     Write-Host ""
     Write-Host "Descargando carpeta: $folderName" -ForegroundColor Yellow
@@ -273,20 +261,22 @@ function Upload-File {
 
 function Search-Files {
     param([string]$currentPath)
+    $currentPath = ConvertTo-SafeAndroidPath $currentPath
     
     Write-Host ""
     Write-Host "BUSCAR ARCHIVOS" -ForegroundColor Green
     Write-Host "Directorio actual: $currentPath" -ForegroundColor Gray
     Write-Host ""
     
-    $searchTerm = Read-Host "Nombre o extension a buscar (ej: .jpg, foto, *.mp4)"
+    $searchTerm = ConvertTo-SafeAdbSearchPattern (Read-Host "Nombre o extension a buscar (ej: .jpg, foto, *.mp4)")
     
     Write-Host ""
     Write-Host "Buscando: $searchTerm" -ForegroundColor Yellow
     Write-Host "Esto puede tomar unos segundos..." -ForegroundColor Gray
     Write-Host ""
     
-    $results = adb shell "find '$currentPath' -name '*$searchTerm*' 2>/dev/null | head -30" 2>$null
+    $searchPattern = "*$searchTerm*"
+    $results = @(Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'find', $currentPath, '-name', $searchPattern, '-print')) | Select-Object -First 30
     
     if ($results -and $results -ne "") {
         Write-Host "RESULTADOS:" -ForegroundColor Cyan
@@ -307,11 +297,14 @@ function Search-Files {
         Write-Host ""
         
         $option = Read-Host "Selecciona numero para navegar a esa ubicacion (Enter para salir)"
-        if ($option -match '^\d+$' -and [int]$option -le $resultsList.Count) {
+        if ($option -match '^\d+$' -and [int]$option -ge 1 -and [int]$option -le $resultsList.Count) {
             $selectedPath = $resultsList[[int]$option - 1]
             # Verificar si es directorio o archivo
-            $type = adb shell "[ -d '$selectedPath' ] && echo 'dir' || echo 'file'" 2>$null
-            if ($type -match "dir") {
+            $selectedPath = ConvertTo-SafeAndroidPath $selectedPath
+            $isDirectory = $true
+            try { Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'test', '-d', $selectedPath) | Out-Null }
+            catch { $isDirectory = $false }
+            if ($isDirectory) {
                 return $selectedPath
             } else {
                 $parentPath = Split-Path $selectedPath -Parent
@@ -379,9 +372,9 @@ while ($true) {
     # Verificar si es un numero
     if ($option -match '^\d+$') {
         $num = [int]$option
-        if ($items -and $num -le $items.Count) {
+        if ($items -and $num -ge 1 -and $num -le $items.Count) {
             $selected = $items[$num - 1]
-            $newPath = "$currentPath/$($selected.Name)"
+            $newPath = $selected.Path
             
             if ($selected.Type) {
                 # Es carpeta
@@ -421,16 +414,16 @@ while ($true) {
                     $history += $currentPath
                 }
             }
-            "a" { $currentPath = "/sdcard"; $history += $currentPath }
-            "b" { $currentPath = "/sdcard/DCIM"; $history += $currentPath }
-            "c" { $currentPath = "/sdcard/Download"; $history += $currentPath }
-            "d" { $currentPath = "/sdcard/Documents"; $history += $currentPath }
-            "e" { $currentPath = "/sdcard/Music"; $history += $currentPath }
-            "f" { $currentPath = "/sdcard/Movies"; $history += $currentPath }
-            "g" { $currentPath = "/sdcard/Pictures"; $history += $currentPath }
-            "h" { $currentPath = "/sdcard/WhatsApp"; $history += $currentPath }
-            "i" { $currentPath = "/sdcard/Android"; $history += $currentPath }
-            "j" { $currentPath = "/data"; $history += $currentPath }
+            "qa1" { $currentPath = "/sdcard"; $history += $currentPath }
+            "qa2" { $currentPath = "/sdcard/DCIM"; $history += $currentPath }
+            "qa3" { $currentPath = "/sdcard/Download"; $history += $currentPath }
+            "qa4" { $currentPath = "/sdcard/Documents"; $history += $currentPath }
+            "qa5" { $currentPath = "/sdcard/Music"; $history += $currentPath }
+            "qa6" { $currentPath = "/sdcard/Movies"; $history += $currentPath }
+            "qa7" { $currentPath = "/sdcard/Pictures"; $history += $currentPath }
+            "qa8" { $currentPath = "/sdcard/WhatsApp"; $history += $currentPath }
+            "qa9" { $currentPath = "/sdcard/Android"; $history += $currentPath }
+            "qa10" { $currentPath = "/data"; $history += $currentPath }
             "q" { 
                 Read-Host "Presiona Enter para continuar"
             }
@@ -447,9 +440,9 @@ while ($true) {
                 $num = Read-Host "Numero del elemento"
                 if ($num -match '^\d+$') {
                     $numInt = [int]$num
-                    if ($items -and $numInt -le $items.Count) {
+                    if ($items -and $numInt -ge 1 -and $numInt -le $items.Count) {
                         $selected = $items[$numInt - 1]
-                        $selectedPath = "$currentPath/$($selected.Name)"
+                        $selectedPath = $selected.Path
                         
                         if ($selected.Type) {
                             Download-Folder -remotePath $selectedPath -folderName $selected.Name
@@ -474,7 +467,7 @@ while ($true) {
                 Write-Host "----------------------------------------" -ForegroundColor DarkGray
                 Write-Host ""
                 $goto = Read-Host "Ir a numero de historial (Enter para salir)"
-                if ($goto -match '^\d+$' -and [int]$goto -le $history.Count) {
+                if ($goto -match '^\d+$' -and [int]$goto -ge 1 -and [int]$goto -le $history.Count) {
                     $currentPath = $history[[int]$goto - 1]
                     # Recortar historial
                     $history = $history[0..([int]$goto - 1)]

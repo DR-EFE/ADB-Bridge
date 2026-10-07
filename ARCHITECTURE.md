@@ -1,0 +1,70 @@
+# Arquitectura final de Android Tools
+
+## Estructura objetivo
+
+```text
+Android/
+├── AndroidAdb.psm1                  # Núcleo: ADB, selección, configuración, seguridad
+├── config/
+│   └── android_config.example.json  # Plantilla, nunca datos reales
+├── setup.ps1                        # Punto de entrada público: Setup
+├── android_setup_v2.ps1             # Implementación de Setup moderno/legado
+├── android_reconnect.ps1            # Punto de entrada: Reconnect
+├── android_transfer.ps1             # Punto de entrada: Transfer
+├── android_file_explorer.ps1        # Punto de entrada: Explorer
+├── android_advanced_backup.ps1      # Punto de entrada: Backup
+├── AutorizacionWeb.ps1              # Recuperación explícita de autorización
+├── SETUP.bat                        # Lanzador de setup.ps1
+├── RECONNECT.bat                    # Lanzador de android_reconnect.ps1
+└── TRANSFER.bat                     # Lanzador de android_transfer.ps1
+```
+
+La configuración activa se guarda fuera del repositorio en `%USERPROFILE%\AndroidTools\android_config.json`.
+
+## Contratos del módulo
+
+- `Invoke-Adb -Serial ...`: única vía para comandos dirigidos a un dispositivo. Siempre usa `adb -s` y falla si ADB devuelve un código distinto de cero.
+- `Invoke-AdbHost`: única vía para comandos sin serial: `pair`, `connect` y `mdns services`.
+- `Get-SingleReadyDevice`: falla ante cero o más de un dispositivo `device`; no selecciona silenciosamente.
+- `Wait-AdbDevice`: considera éxito solo el estado exacto `device`.
+- `Read-AdbConnectionConfig` y `Save-AdbConnectionConfig`: único contrato del JSON.
+
+## Flujos de conexión
+
+### Wireless Debugging TLS
+
+1. `adb pair HOST:PUERTO_PAIRING CODIGO` mediante `Invoke-AdbHost`.
+2. Resolver `adb-tls-connect` mediante mDNS o pedir el puerto de conexión.
+3. `Connect-AdbEndpoint HOST:PUERTO_CONEXION`.
+4. Esperar el estado `device` y guardar `Mode = WirelessTls`.
+
+El puerto de conexión TLS no se asume como `5555`.
+
+### TCP/IP USB legado
+
+1. Obtener exactamente un dispositivo USB en estado `device`.
+2. Ejecutar `Invoke-Adb -Serial USB_SERIAL -Arguments @('tcpip','5555')`.
+3. Detectar o pedir la IP y conectar `HOST:5555`.
+4. Esperar el estado `device` y guardar `Mode = LegacyTcpIp`.
+
+`5555` solo pertenece a este flujo legado.
+
+## Responsabilidades de puntos de entrada
+
+| Script | Responsabilidad |
+|---|---|
+| `setup.ps1` | Entrada pública y delegación al setup implementado. |
+| `android_setup_v2.ps1` | Pairing TLS y activación TCP/IP USB legado; guarda configuración solo después de `device`. |
+| `android_reconnect.ps1` | Lee el JSON, conecta su `Endpoint` completo y exige `device`. |
+| `android_transfer.ps1` | Operaciones pull/push y backup de medios; recibe y valida resultados de jobs. |
+| `android_file_explorer.ps1` | Navegación y búsqueda segura por rutas validadas. |
+| `android_advanced_backup.ps1` | Respaldo de datos disponibles y manifiesto por categoría. |
+| `AutorizacionWeb.ps1` | Recuperación explícita, incluida la eventual reinicialización de ADB; no forma parte del flujo normal. |
+
+## Política de errores y seguridad
+
+- Todo error ADB debe detener la operación concreta y conservar su salida/código.
+- Un respaldo solo es completo si todas sus categorías informan `OK`.
+- Entradas para shell y nombres de carpeta se validan a través de las funciones del módulo.
+- Las carpetas de backup aplican ACL restringida; se recomienda cifrado de disco o EFS para datos sensibles.
+- Los lanzadores usan `-NoProfile -ExecutionPolicy RemoteSigned`, nunca `Bypass`.

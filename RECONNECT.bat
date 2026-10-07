@@ -8,5 +8,5 @@ echo.
 echo Reconectando...
 
 cd /d "%~dp0"
-powershell -ExecutionPolicy Bypass -File "android_reconnect.ps1"
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0android_reconnect.ps1"
 pause

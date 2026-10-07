@@ -14,11 +14,15 @@ function Download-AndroidFolder {
         [switch]$recursive
     )
     
-    $downloadDir = "$env:USERPROFILE\Downloads\AndroidBackup\$localName"
+    $remotePath = ConvertTo-SafeAndroidPath $remotePath
+    $localName = ConvertTo-SafeWindowsName $localName
+    $downloadRoot = Join-Path $env:USERPROFILE 'Downloads\AndroidBackup'
+    $downloadDir = Join-Path $downloadRoot $localName
     
     if (-not (Test-Path $downloadDir)) {
         New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
     }
+    Protect-BackupDirectory -Path $downloadDir | Out-Null
     
     Write-Host ""
     Write-Host "Descargando: $remotePath" -ForegroundColor Yellow
@@ -113,7 +117,9 @@ function Download-Screenshots {
     $found = $false
     foreach ($path in $screenshotPaths) {
         Write-Host "Buscando en: $path" -ForegroundColor Gray
-        $exists = adb shell "[ -d '$path' ] && echo 'yes' || echo 'no'" 2>$null
+        $path = ConvertTo-SafeAndroidPath $path
+        $exists = 'no'
+        try { Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'test', '-d', $path) | Out-Null; $exists = 'yes' } catch { $exists = 'no' }
         
         if ($exists -match "yes") {
             Write-Host "  [ENCONTRADO] Descargando..." -ForegroundColor Green
@@ -128,12 +134,15 @@ function Download-Screenshots {
         Write-Host "Buscando archivos .png .jpg en todo el dispositivo..." -ForegroundColor Gray
         
         # Buscar archivos de captura por nombre
-        $screenshots = adb shell "find /sdcard -name '*screenshot*.png' -o -name '*screenshot*.jpg' -o -name '*Screenshot*.png' -o -name '*captura*.png' 2>/dev/null | head -20" 2>$null
+        $screenshots = @(
+            Invoke-Adb -Serial $script:AndroidDevice.Serial -Arguments @('shell', 'find', '/sdcard', '-type', 'f', '(', '-name', '*screenshot*.png', '-o', '-name', '*screenshot*.jpg', '-o', '-name', '*Screenshot*.png', '-o', '-name', '*captura*.png', ')', '-print')
+        ) | Select-Object -First 20
         
         if ($screenshots -and $screenshots -ne "") {
             Write-Host "Archivos de captura encontrados:" -ForegroundColor Green
-            $screenshotsDir = "$env:USERPROFILE\Downloads\AndroidBackup\Screenshots_Disperas"
+            $screenshotsDir = Join-Path $env:USERPROFILE 'Downloads\AndroidBackup\Screenshots_Disperas'
             New-Item -ItemType Directory -Path $screenshotsDir -Force | Out-Null
+            Protect-BackupDirectory -Path $screenshotsDir | Out-Null
             
             foreach ($file in ($screenshots -split "`r`n")) {
                 if ($file -and $file -ne "") {
@@ -254,8 +263,13 @@ switch ($option) {
         Write-Host "  /sdcard/Music - Musica" -ForegroundColor Gray
         Write-Host ""
         
-        $customPath = Read-Host "Ruta completa"
-        $customName = Read-Host "Nombre para la carpeta destino"
+        try {
+            $customPath = ConvertTo-SafeAndroidPath (Read-Host "Ruta completa")
+            $customName = ConvertTo-SafeWindowsName (Read-Host "Nombre para la carpeta destino")
+        } catch {
+            Write-Host ("Entrada rechazada: {0}" -f $_.Exception.Message) -ForegroundColor Red
+            break
+        }
         
         if ($customPath -and $customName) {
             Download-AndroidFolder -remotePath $customPath -localName $customName

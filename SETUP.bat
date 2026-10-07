@@ -13,5 +13,5 @@ echo.
 pause
 
 cd /d "%~dp0"
-powershell -ExecutionPolicy Bypass -File "setup.ps1"
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0setup.ps1"
 pause

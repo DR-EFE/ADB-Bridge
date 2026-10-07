@@ -8,5 +8,5 @@ echo.
 echo Conectando...
 
 cd /d "%~dp0"
-powershell -ExecutionPolicy Bypass -File "android_transfer.ps1"
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0android_transfer.ps1"
 pause
