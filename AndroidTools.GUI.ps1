@@ -498,6 +498,8 @@ $lblStatusBadge.ForeColor = $script:Theme.BadgeMutedFg
 $lblStatusBadge.Padding = New-Object System.Windows.Forms.Padding(8, 3, 8, 3)
 $lblStatusBadge.AutoSize = $true
 $lblStatusBadge.Margin = New-Object System.Windows.Forms.Padding(0, 0, 12, 0)
+$lblStatusBadge.Cursor = [System.Windows.Forms.Cursors]::Hand
+$lblStatusBadge.Add_Click({ Show-NewDeviceWizard -InitialTab 'Auth' })
 $pnlStatusRow.Controls.Add($lblStatusBadge)
 
 $lblEndpoint = New-Object System.Windows.Forms.Label
@@ -518,19 +520,20 @@ $pnlStatusRow.Controls.Add($lblBatteryTemp)
 
 $pnlHeader.Controls.Add($pnlStatusRow)
 
-# Botones de Cabecera (Derecha): Conectar + Reconectar + Refrescar
+# Botones de Cabecera (Derecha): Conectar Nuevo + Reconectar + Refrescar
 $btnConnectDevice = New-Object System.Windows.Forms.Button
-$btnConnectDevice.Text = "Conectar dispositivo"
+$btnConnectDevice.Text = "➕ Conectar Nuevo"
 $btnConnectDevice.Font = $script:Fonts.BodyBold
-$btnConnectDevice.BackColor = $script:Theme.Secondary
-$btnConnectDevice.ForeColor = $script:Theme.SecondaryFg
+$btnConnectDevice.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#10B981')
+$btnConnectDevice.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
 $btnConnectDevice.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$btnConnectDevice.FlatAppearance.BorderSize = 1
-$btnConnectDevice.FlatAppearance.BorderColor = $script:Theme.BorderCard
-$btnConnectDevice.Size = New-Object System.Drawing.Size(155, 42)
+$btnConnectDevice.FlatAppearance.BorderSize = 0
+$btnConnectDevice.Size = New-Object System.Drawing.Size(160, 42)
 $btnConnectDevice.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$btnConnectDevice.Location = New-Object System.Drawing.Point(620, 22)
+$btnConnectDevice.Location = New-Object System.Drawing.Point(615, 22)
 $btnConnectDevice.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnConnectDevice.Add_MouseEnter({ $btnConnectDevice.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#059669') })
+$btnConnectDevice.Add_MouseLeave({ $btnConnectDevice.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#10B981') })
 $pnlHeader.Controls.Add($btnConnectDevice)
 
 $btnReconnect = New-Object System.Windows.Forms.Button
@@ -753,7 +756,8 @@ function New-ActionButton {
     return $btn
 }
 
-# 8 Botones de Acciones Principales
+# Botones de Acciones Principales
+$btnActionNewDev    = New-ActionButton -Icon "✨" -Title "Conectar Nuevo Dispositivo"
 $btnActionDevices   = New-ActionButton -Icon "📱" -Title "Gestionar Dispositivos"
 $btnActionTransfer  = New-ActionButton -Icon "⇄"  -Title "Transferir Archivos"
 $btnActionExplorer  = New-ActionButton -Icon "📁" -Title "Explorador de Archivos"
@@ -764,6 +768,7 @@ $btnActionClean     = New-ActionButton -Icon "🧹" -Title "Limpieza del Disposi
 $btnActionDiag      = New-ActionButton -Icon "🩺" -Title "Diagnostico Completo"
 
 $pnlActionButtons.Controls.AddRange(@(
+    $btnActionNewDev,
     $btnActionDevices,
     $btnActionTransfer,
     $btnActionExplorer,
@@ -1051,30 +1056,656 @@ $txtCustomCommand.Add_KeyDown({
     }
 })
 
-# -----------------------------------------------------------------------------
-# BOTONES DE CABECERA: Reconectar y Refrescar
-# -----------------------------------------------------------------------------
-$btnConnectDevice.Add_Click({
-    $setupPath = Join-Path $PSScriptRoot 'android_setup_v2.ps1'
-    if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
-        Write-LogEntry -Level 'ERROR' -Message 'No se encontro android_setup_v2.ps1.'
-        return
-    }
-    Write-LogEntry -Level 'INFO' -Message 'Abriendo asistente para conectar un dispositivo nuevo...'
-    try {
-        $setupProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
-            '-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $setupPath
-        ) -WorkingDirectory $PSScriptRoot -WindowStyle Normal -Wait -PassThru
-        if ($setupProcess.ExitCode -eq 0) {
-            Write-LogEntry -Level 'SUCCESS' -Message 'Asistente de conexion finalizado correctamente.'
-        } else {
-            Write-LogEntry -Level 'WARN' -Message ("El asistente termino con codigo {0}." -f $setupProcess.ExitCode)
+# =============================================================================
+# ASISTENTE MODERNO PARA CONECTAR NUEVOS DISPOSITIVOS (DESDE CERO)
+# =============================================================================
+function Show-NewDeviceWizard {
+    param([string]$InitialTab = 'USB')
+
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Asistente de Conexion: Nuevo Dispositivo Android"
+    $dlg.Size = New-Object System.Drawing.Size(690, 600)
+    $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $dlg.BackColor = $script:Theme.BgWindow
+    $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+
+    # Banner superior
+    $pnlBanner = New-Object System.Windows.Forms.Panel
+    $pnlBanner.Dock = [System.Windows.Forms.DockStyle]::Top
+    $pnlBanner.Height = 75
+    $pnlBanner.BackColor = $script:Theme.BgCard
+    $pnlBanner.Padding = New-Object System.Windows.Forms.Padding(16, 12, 16, 12)
+
+    $lblBannerIcon = New-Object System.Windows.Forms.Label
+    $lblBannerIcon.Text = "✨"
+    $lblBannerIcon.Font = New-Object System.Drawing.Font('Segoe UI Emoji', 22)
+    $lblBannerIcon.Location = New-Object System.Drawing.Point(14, 12)
+    $lblBannerIcon.Size = New-Object System.Drawing.Size(46, 50)
+    $pnlBanner.Controls.Add($lblBannerIcon)
+
+    $lblBannerTitle = New-Object System.Windows.Forms.Label
+    $lblBannerTitle.Text = "Conectar Nuevo Dispositivo (Desde Cero)"
+    $lblBannerTitle.Font = $script:Fonts.TitleLarge
+    $lblBannerTitle.ForeColor = $script:Theme.TextTitle
+    $lblBannerTitle.Location = New-Object System.Drawing.Point(66, 14)
+    $lblBannerTitle.Size = New-Object System.Drawing.Size(580, 26)
+    $pnlBanner.Controls.Add($lblBannerTitle)
+
+    $lblBannerSub = New-Object System.Windows.Forms.Label
+    $lblBannerSub.Text = "Configura, autoriza y conecta tu telefono por Cable USB, WiFi o Pairing inalambrico"
+    $lblBannerSub.Font = $script:Fonts.Small
+    $lblBannerSub.ForeColor = $script:Theme.TextMuted
+    $lblBannerSub.Location = New-Object System.Drawing.Point(66, 42)
+    $lblBannerSub.Size = New-Object System.Drawing.Size(580, 20)
+    $pnlBanner.Controls.Add($lblBannerSub)
+
+    $pnlBannerBorder = New-Object System.Windows.Forms.Panel
+    $pnlBannerBorder.Dock = [System.Windows.Forms.DockStyle]::Bottom
+    $pnlBannerBorder.Height = 1
+    $pnlBannerBorder.BackColor = $script:Theme.BorderCard
+    $pnlBanner.Controls.Add($pnlBannerBorder)
+    $dlg.Controls.Add($pnlBanner)
+
+    # TabControl Principal
+    $tabControl = New-Object System.Windows.Forms.TabControl
+    $tabControl.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $tabControl.Font = $script:Fonts.BodyBold
+    $tabControl.Padding = New-Object System.Drawing.Point(12, 8)
+
+    # -------------------------------------------------------------------------
+    # TAB 1: POR CABLE USB
+    # -------------------------------------------------------------------------
+    $tabUsb = New-Object System.Windows.Forms.TabPage
+    $tabUsb.Text = " 🔌 Por Cable USB "
+    $tabUsb.BackColor = $script:Theme.BgWindow
+    $tabUsb.Padding = New-Object System.Windows.Forms.Padding(16)
+
+    $lblUsbIntro = New-Object System.Windows.Forms.Label
+    $lblUsbIntro.Text = "1. Conecta el cable USB del telefono a la PC.`n2. Asegurate de tener activada 'Depuracion por USB' en Ajustes > Opciones de desarrollador."
+    $lblUsbIntro.Font = $script:Fonts.Body
+    $lblUsbIntro.ForeColor = $script:Theme.TextBody
+    $lblUsbIntro.Location = New-Object System.Drawing.Point(16, 14)
+    $lblUsbIntro.Size = New-Object System.Drawing.Size(620, 42)
+    $tabUsb.Controls.Add($lblUsbIntro)
+
+    $btnDetectUsb = New-Object System.Windows.Forms.Button
+    $btnDetectUsb.Text = "🔍 Buscar / Detectar Dispositivo USB"
+    $btnDetectUsb.Font = $script:Fonts.BodyBold
+    $btnDetectUsb.BackColor = $script:Theme.Primary
+    $btnDetectUsb.ForeColor = $script:Theme.PrimaryFg
+    $btnDetectUsb.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnDetectUsb.FlatAppearance.BorderSize = 0
+    $btnDetectUsb.Location = New-Object System.Drawing.Point(16, 62)
+    $btnDetectUsb.Size = New-Object System.Drawing.Size(280, 36)
+    $btnDetectUsb.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $tabUsb.Controls.Add($btnDetectUsb)
+
+    # Panel de Estado / Resultado USB
+    $pnlUsbCard = New-Object System.Windows.Forms.Panel
+    $pnlUsbCard.Location = New-Object System.Drawing.Point(16, 110)
+    $pnlUsbCard.Size = New-Object System.Drawing.Size(635, 330)
+    $pnlUsbCard.BackColor = $script:Theme.BgCard
+    $pnlUsbCard.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $pnlUsbCard.Padding = New-Object System.Windows.Forms.Padding(14)
+    $tabUsb.Controls.Add($pnlUsbCard)
+
+    $lblUsbStatusTitle = New-Object System.Windows.Forms.Label
+    $lblUsbStatusTitle.Text = "Estado: Esperando deteccion"
+    $lblUsbStatusTitle.Font = $script:Fonts.TitleMid
+    $lblUsbStatusTitle.ForeColor = $script:Theme.TextTitle
+    $lblUsbStatusTitle.Location = New-Object System.Drawing.Point(14, 14)
+    $lblUsbStatusTitle.Size = New-Object System.Drawing.Size(600, 24)
+    $pnlUsbCard.Controls.Add($lblUsbStatusTitle)
+
+    $txtUsbDetail = New-Object System.Windows.Forms.TextBox
+    $txtUsbDetail.Multiline = $true
+    $txtUsbDetail.ReadOnly = $true
+    $txtUsbDetail.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $txtUsbDetail.Font = $script:Fonts.Body
+    $txtUsbDetail.BackColor = $script:Theme.BgCard
+    $txtUsbDetail.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+    $txtUsbDetail.Location = New-Object System.Drawing.Point(14, 44)
+    $txtUsbDetail.Size = New-Object System.Drawing.Size(600, 95)
+    $txtUsbDetail.Text = "Presiona 'Buscar / Detectar Dispositivo USB' para comenzar.`r`nSi tu telefono ya esta conectado, se detectara su estado de autorizacion."
+    $pnlUsbCard.Controls.Add($txtUsbDetail)
+
+    $pnlUsbActions = New-Object System.Windows.Forms.Panel
+    $pnlUsbActions.Location = New-Object System.Drawing.Point(14, 145)
+    $pnlUsbActions.Size = New-Object System.Drawing.Size(605, 170)
+    $pnlUsbCard.Controls.Add($pnlUsbActions)
+
+    $fnUpdateUsbView = {
+        param($deviceRecord)
+        $pnlUsbActions.Controls.Clear()
+
+        if ($null -eq $deviceRecord) {
+            $pnlUsbCard.BackColor = $script:Theme.BgCard
+            $txtUsbDetail.BackColor = $script:Theme.BgCard
+            $lblUsbStatusTitle.Text = "❌ No se detecta ningun dispositivo USB"
+            $lblUsbStatusTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#DC2626')
+            $txtUsbDetail.Text = "1. Conecta el cable USB a la PC y al telefono.`r`n2. Desbloquea la pantalla del telefono.`r`n3. En Android, cambia la notificacion de USB a 'Transferencia de archivos (MTP)'.`r`n4. Verifica que 'Depuracion por USB' este activada en Opciones de desarrollador."
+
+            $btnRetryAdb = New-Object System.Windows.Forms.Button
+            $btnRetryAdb.Text = "🔄 Reiniciar Servidor ADB y Reintentar"
+            $btnRetryAdb.Font = $script:Fonts.BodyBold
+            $btnRetryAdb.Size = New-Object System.Drawing.Size(280, 36)
+            $btnRetryAdb.Location = New-Object System.Drawing.Point(0, 10)
+            $btnRetryAdb.BackColor = $script:Theme.Secondary
+            $btnRetryAdb.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+            $btnRetryAdb.Cursor = [System.Windows.Forms.Cursors]::Hand
+            $btnRetryAdb.Add_Click({
+                $txtUsbDetail.Text = "Reiniciando servidor ADB..."
+                $dlg.Refresh()
+                try {
+                    Invoke-AdbHost -Arguments @('kill-server') | Out-Null
+                    Start-Sleep -Milliseconds 600
+                    Invoke-AdbHost -Arguments @('start-server') | Out-Null
+                    Start-Sleep -Milliseconds 600
+                } catch { }
+                $btnDetectUsb.PerformClick()
+            })
+            $pnlUsbActions.Controls.Add($btnRetryAdb)
         }
-    } catch {
-        Write-LogEntry -Level 'ERROR' -Message ("No se pudo iniciar el asistente: {0}" -f $_.Exception.Message)
+        elseif ($deviceRecord.Status -ceq 'unauthorized') {
+            $pnlUsbCard.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#FFFBEB')
+            $txtUsbDetail.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#FFFBEB')
+            $lblUsbStatusTitle.Text = "⚠️ DISPOSITIVO DETECTADO PERO FALTA AUTORIZACION"
+            $lblUsbStatusTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#B45309')
+            $txtUsbDetail.Text = "Serial: $($deviceRecord.Serial)`r`n`r`n¡ATENCION! Mira la pantalla de tu telefono Android ahora mismo.`r`nAparecera una ventana emergente que dice:`r`n'¿Permitir depuracion por USB desde esta computadora?'`r`n`r`n👉 MARCA la casilla 'Permitir siempre desde este equipo' y presiona 'PERMITIR'."
+
+            $btnCheckAuth = New-Object System.Windows.Forms.Button
+            $btnCheckAuth.Text = "✅ Ya acepte en el telefono (Verificar)"
+            $btnCheckAuth.Font = $script:Fonts.BodyBold
+            $btnCheckAuth.Size = New-Object System.Drawing.Size(280, 36)
+            $btnCheckAuth.Location = New-Object System.Drawing.Point(0, 10)
+            $btnCheckAuth.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#10B981')
+            $btnCheckAuth.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
+            $btnCheckAuth.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+            $btnCheckAuth.Cursor = [System.Windows.Forms.Cursors]::Hand
+            $btnCheckAuth.Add_Click({ $btnDetectUsb.PerformClick() })
+            $pnlUsbActions.Controls.Add($btnCheckAuth)
+
+            $btnForcePrompt = New-Object System.Windows.Forms.Button
+            $btnForcePrompt.Text = "⚡ Forzar ventana de permiso (Reiniciar ADB)"
+            $btnForcePrompt.Font = $script:Fonts.Small
+            $btnForcePrompt.Size = New-Object System.Drawing.Size(290, 36)
+            $btnForcePrompt.Location = New-Object System.Drawing.Point(295, 10)
+            $btnForcePrompt.BackColor = $script:Theme.Secondary
+            $btnForcePrompt.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+            $btnForcePrompt.Cursor = [System.Windows.Forms.Cursors]::Hand
+            $btnForcePrompt.Add_Click({
+                $txtUsbDetail.Text = "Reiniciando servidor ADB para solicitar la clave RSA en pantalla..."
+                $dlg.Refresh()
+                try {
+                    Invoke-AdbHost -Arguments @('kill-server') | Out-Null
+                    Start-Sleep -Milliseconds 800
+                    Invoke-AdbHost -Arguments @('start-server') | Out-Null
+                    Start-Sleep -Milliseconds 800
+                } catch { }
+                $btnDetectUsb.PerformClick()
+            })
+            $pnlUsbActions.Controls.Add($btnForcePrompt)
+
+            $btnGoAuthTab = New-Object System.Windows.Forms.Button
+            $btnGoAuthTab.Text = "🛠️ Ver guia detallada si no aparece el mensaje"
+            $btnGoAuthTab.Font = $script:Fonts.Small
+            $btnGoAuthTab.Size = New-Object System.Drawing.Size(320, 30)
+            $btnGoAuthTab.Location = New-Object System.Drawing.Point(0, 56)
+            $btnGoAuthTab.BackColor = $script:Theme.BgCard
+            $btnGoAuthTab.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+            $btnGoAuthTab.Cursor = [System.Windows.Forms.Cursors]::Hand
+            $btnGoAuthTab.Add_Click({ $tabControl.SelectedTab = $tabAuth })
+            $pnlUsbActions.Controls.Add($btnGoAuthTab)
+        }
+        elseif ($deviceRecord.Status -ceq 'device') {
+            $pnlUsbCard.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#F0FDF4')
+            $txtUsbDetail.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#F0FDF4')
+            $lblUsbStatusTitle.Text = "✅ ¡Dispositivo Autorizado y Conectado!"
+            $lblUsbStatusTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#15803D')
+
+            $modelName = $deviceRecord.Serial
+            try {
+                $mOut = @(Invoke-AdbCommand -Serial $deviceRecord.Serial -Arguments @('shell','getprop','ro.product.model'))
+                if ($mOut) { $modelName = ($mOut -join ' ').Trim() }
+            } catch { }
+
+            $txtUsbDetail.Text = "Modelo: $modelName | Serial: $($deviceRecord.Serial)`r`nEstado: device (Totalmente autorizado para depuracion y transferencias)."
+
+            $lblSaveName = New-Object System.Windows.Forms.Label
+            $lblSaveName.Text = "Nombre para recordar este telefono:"
+            $lblSaveName.Font = $script:Fonts.Small
+            $lblSaveName.ForeColor = $script:Theme.TextBody
+            $lblSaveName.Location = New-Object System.Drawing.Point(0, 6)
+            $lblSaveName.Size = New-Object System.Drawing.Size(240, 18)
+            $pnlUsbActions.Controls.Add($lblSaveName)
+
+            $txtFriendly = New-Object System.Windows.Forms.TextBox
+            $txtFriendly.Text = $modelName
+            $txtFriendly.Font = $script:Fonts.Body
+            $txtFriendly.Location = New-Object System.Drawing.Point(0, 26)
+            $txtFriendly.Size = New-Object System.Drawing.Size(320, 26)
+            $pnlUsbActions.Controls.Add($txtFriendly)
+
+            $btnSaveUsb = New-Object System.Windows.Forms.Button
+            $btnSaveUsb.Text = "💾 Usar por Cable USB"
+            $btnSaveUsb.Font = $script:Fonts.BodyBold
+            $btnSaveUsb.Size = New-Object System.Drawing.Size(200, 32)
+            $btnSaveUsb.Location = New-Object System.Drawing.Point(330, 24)
+            $btnSaveUsb.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#10B981')
+            $btnSaveUsb.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
+            $btnSaveUsb.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+            $btnSaveUsb.Cursor = [System.Windows.Forms.Cursors]::Hand
+            $btnSaveUsb.Add_Click({
+                $fName = $txtFriendly.Text.Trim()
+                if ([string]::IsNullOrWhiteSpace($fName)) { $fName = $modelName }
+                try {
+                    $saved = Add-SavedAdbDevice -FriendlyName $fName -Mode 'usb' -UsbSerial $deviceRecord.Serial -LastEndpoint $deviceRecord.Serial -IsPaired $true -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+                    Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
+                    Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo USB '$fName' guardado y seleccionado como activo."
+                    $dlg.Close()
+                    Refresh-DeviceStatus
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Error al guardar", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                }
+            })
+            $pnlUsbActions.Controls.Add($btnSaveUsb)
+
+            $lblWifiHint = New-Object System.Windows.Forms.Label
+            $lblWifiHint.Text = "Opcion Inalambrica: ¿Deseas desconectar el cable y usarlo por WiFi?"
+            $lblWifiHint.Font = $script:Fonts.Small
+            $lblWifiHint.ForeColor = $script:Theme.TextMuted
+            $lblWifiHint.Location = New-Object System.Drawing.Point(0, 70)
+            $lblWifiHint.Size = New-Object System.Drawing.Size(500, 18)
+            $pnlUsbActions.Controls.Add($lblWifiHint)
+
+            $btnSwitchWifi = New-Object System.Windows.Forms.Button
+            $btnSwitchWifi.Text = "📶 Activar Modo WiFi (TCP/IP 5555) y Conectar"
+            $btnSwitchWifi.Font = $script:Fonts.BodyBold
+            $btnSwitchWifi.Size = New-Object System.Drawing.Size(340, 36)
+            $btnSwitchWifi.Location = New-Object System.Drawing.Point(0, 92)
+            $btnSwitchWifi.BackColor = $script:Theme.Primary
+            $btnSwitchWifi.ForeColor = $script:Theme.PrimaryFg
+            $btnSwitchWifi.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+            $btnSwitchWifi.Cursor = [System.Windows.Forms.Cursors]::Hand
+            $btnSwitchWifi.Add_Click({
+                $btnSwitchWifi.Enabled = $false
+                $btnSwitchWifi.Text = "Activando WiFi en el telefono..."
+                $dlg.Refresh()
+                try {
+                    Invoke-AdbCommand -Serial $deviceRecord.Serial -Arguments @('tcpip','5555') | Out-Null
+                    Start-Sleep -Seconds 1
+
+                    $ip = Get-AdbDeviceIpv4 -Serial $deviceRecord.Serial
+                    if ([string]::IsNullOrWhiteSpace($ip)) {
+                        $ip = [Microsoft.VisualBasic.Interaction]::InputBox("No se pudo auto-detectar la IP. Introduce la IP del telefono en la red WiFi:", "IP de Android", "192.168.1.")
+                    }
+
+                    if (-not [string]::IsNullOrWhiteSpace($ip)) {
+                        $endpoint = "$ip`:5555"
+                        $conn = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 15
+                        $fName = $txtFriendly.Text.Trim()
+                        if ([string]::IsNullOrWhiteSpace($fName)) { $fName = $modelName }
+                        $saved = Add-SavedAdbDevice -FriendlyName "$fName (WiFi)" -Mode 'tcpip-5555' -UsbSerial $deviceRecord.Serial -LastEndpoint $conn.Serial -IsPaired $true -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+                        Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
+                        Write-LogEntry -Level 'SUCCESS' -Message "¡Conexion WiFi exitosa con $endpoint! Ya puedes desconectar el cable USB."
+                        [System.Windows.Forms.MessageBox]::Show("¡Telefono conectado por WiFi en $endpoint!`n`nYa puedes desconectar el cable USB.", "Modo Inalambrico Listo", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                        $dlg.Close()
+                        Refresh-DeviceStatus
+                    }
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Error al activar WiFi", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    $btnSwitchWifi.Enabled = $true
+                    $btnSwitchWifi.Text = "📶 Activar Modo WiFi (TCP/IP 5555) y Conectar"
+                }
+            })
+            $pnlUsbActions.Controls.Add($btnSwitchWifi)
+        }
     }
-    Refresh-DeviceStatus -Silent
-})
+
+    $btnDetectUsb.Add_Click({
+        $btnDetectUsb.Enabled = $false
+        $lblUsbStatusTitle.Text = "Buscando dispositivos USB..."
+        $dlg.Refresh()
+
+        $devs = @()
+        try { $devs = @(Get-AdbDevices) } catch { }
+        
+        $usbMatch = @($devs | Where-Object { $_.Serial -notmatch ':\d+$' })[0]
+        if ($null -eq $usbMatch -and $devs.Count -gt 0) { $usbMatch = $devs[0] }
+
+        & $fnUpdateUsbView $usbMatch
+        $btnDetectUsb.Enabled = $true
+    })
+
+    $tabControl.TabPages.Add($tabUsb)
+
+    # -------------------------------------------------------------------------
+    # TAB 2: WIRELESS PAIRING (ANDROID 11+)
+    # -------------------------------------------------------------------------
+    $tabPair = New-Object System.Windows.Forms.TabPage
+    $tabPair.Text = " 📶 WiFi Inalambrico (Pairing) "
+    $tabPair.BackColor = $script:Theme.BgWindow
+    $tabPair.Padding = New-Object System.Windows.Forms.Padding(16)
+
+    $lblPairIntro = New-Object System.Windows.Forms.Label
+    $lblPairIntro.Text = "Para Android 11+ sin necesidad de cable:`n1. Conecta PC y telefono a la misma red WiFi.`n2. En el telefono: Ajustes > Opciones de desarrollador > Depuracion inalambrica.`n3. Toca en 'Vincular dispositivo con codigo de sincronizacion'."
+    $lblPairIntro.Font = $script:Fonts.Body
+    $lblPairIntro.ForeColor = $script:Theme.TextBody
+    $lblPairIntro.Location = New-Object System.Drawing.Point(16, 14)
+    $lblPairIntro.Size = New-Object System.Drawing.Size(620, 68)
+    $tabPair.Controls.Add($lblPairIntro)
+
+    $pnlPairForm = New-Object System.Windows.Forms.Panel
+    $pnlPairForm.Location = New-Object System.Drawing.Point(16, 90)
+    $pnlPairForm.Size = New-Object System.Drawing.Size(635, 350)
+    $pnlPairForm.BackColor = $script:Theme.BgCard
+    $pnlPairForm.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $pnlPairForm.Padding = New-Object System.Windows.Forms.Padding(16)
+    $tabPair.Controls.Add($pnlPairForm)
+
+    function Add-FormField {
+        param($Parent, [string]$LabelText, [int]$Top, [string]$DefaultVal = '')
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = $LabelText
+        $lbl.Font = $script:Fonts.Small
+        $lbl.ForeColor = $script:Theme.TextBody
+        $lbl.Location = New-Object System.Drawing.Point(16, $Top)
+        $lbl.Size = New-Object System.Drawing.Size(260, 20)
+        $Parent.Controls.Add($lbl)
+
+        $txt = New-Object System.Windows.Forms.TextBox
+        $txt.Text = $DefaultVal
+        $txt.Font = $script:Fonts.Body
+        $txt.Location = New-Object System.Drawing.Point(280, ($Top - 2))
+        $txt.Size = New-Object System.Drawing.Size(320, 26)
+        $Parent.Controls.Add($txt)
+        return $txt
+    }
+
+    $txtPairName     = Add-FormField -Parent $pnlPairForm -LabelText "Nombre del telefono (ej. Mi Galaxy):" -Top 16 -DefaultVal "Telefono WiFi"
+    $txtPairHost     = Add-FormField -Parent $pnlPairForm -LabelText "IP mostrada en pantalla (ej. 192.168.1.50):" -Top 56 -DefaultVal "192.168.1."
+    $txtPairPort     = Add-FormField -Parent $pnlPairForm -LabelText "Puerto de vinculacion (Pairing port):" -Top 96 -DefaultVal ""
+    $txtPairCode     = Add-FormField -Parent $pnlPairForm -LabelText "Codigo de 6 digitos (Pairing code):" -Top 136 -DefaultVal ""
+    $txtPairConnPort = Add-FormField -Parent $pnlPairForm -LabelText "Puerto de conexion (Mostrado en pantalla):" -Top 176 -DefaultVal ""
+
+    $lblPairMsg = New-Object System.Windows.Forms.Label
+    $lblPairMsg.Text = ""
+    $lblPairMsg.Font = $script:Fonts.Small
+    $lblPairMsg.Location = New-Object System.Drawing.Point(16, 215)
+    $lblPairMsg.Size = New-Object System.Drawing.Size(585, 38)
+    $pnlPairForm.Controls.Add($lblPairMsg)
+
+    $btnDoPair = New-Object System.Windows.Forms.Button
+    $btnDoPair.Text = "🔗 Vincular y Conectar Telefono"
+    $btnDoPair.Font = $script:Fonts.BodyBold
+    $btnDoPair.Size = New-Object System.Drawing.Size(280, 40)
+    $btnDoPair.Location = New-Object System.Drawing.Point(280, 260)
+    $btnDoPair.BackColor = $script:Theme.Primary
+    $btnDoPair.ForeColor = $script:Theme.PrimaryFg
+    $btnDoPair.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnDoPair.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $btnDoPair.Add_Click({
+        $hostIp = $txtPairHost.Text.Trim()
+        $pPort = $txtPairPort.Text.Trim()
+        $code = $txtPairCode.Text.Trim()
+        $cPort = $txtPairConnPort.Text.Trim()
+        $fName = $txtPairName.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($fName)) { $fName = "Android WiFi" }
+
+        if ([string]::IsNullOrWhiteSpace($hostIp) -or [string]::IsNullOrWhiteSpace($pPort) -or [string]::IsNullOrWhiteSpace($code)) {
+            $lblPairMsg.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#DC2626')
+            $lblPairMsg.Text = "Por favor completa la IP, el puerto de pairing y el codigo de 6 digitos."
+            return
+        }
+
+        $btnDoPair.Enabled = $false
+        $lblPairMsg.ForeColor = $script:Theme.Primary
+        $lblPairMsg.Text = "Ejecutando vinculacion (adb pair $hostIp`:$pPort $code)..."
+        $dlg.Refresh()
+
+        try {
+            $pairEndpoint = if ($hostIp.Contains(':')) { "[$hostIp]:$pPort" } else { "$hostIp`:$pPort" }
+            $pairOutput = @(Invoke-AdbHost -Arguments @('pair', $pairEndpoint, $code))
+            $pairStr = $pairOutput -join ' '
+            if ($pairStr -match '(?i)failed|error') {
+                throw "Fallo el emparejamiento: $pairStr"
+            }
+
+            if ([string]::IsNullOrWhiteSpace($cPort)) {
+                $mdns = Get-AdbMdnsConnectionEndpoint -PreferredHost $hostIp
+                if ($mdns) { $cPort = $mdns.Port } else { $cPort = $pPort }
+            }
+
+            $connEndpoint = if ($hostIp.Contains(':')) { "[$hostIp]:$cPort" } else { "$hostIp`:$cPort" }
+            $lblPairMsg.Text = "Pairing exitoso. Conectando a $connEndpoint..."
+            $dlg.Refresh()
+
+            $record = Connect-AdbEndpoint -Endpoint $connEndpoint -TimeoutSeconds 15
+            $saved = Add-SavedAdbDevice -FriendlyName $fName -Mode 'wireless-debugging-tls' -LastEndpoint $record.Serial -IsPaired $true -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+            Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
+
+            Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo inalambrico '$fName' vinculado y conectado exitosamente."
+            [System.Windows.Forms.MessageBox]::Show("¡Dispositivo vinculado y conectado correctamente!", "Exito", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            $dlg.Close()
+            Refresh-DeviceStatus
+        } catch {
+            $lblPairMsg.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#DC2626')
+            $lblPairMsg.Text = "Error: $($_.Exception.Message)"
+            $btnDoPair.Enabled = $true
+        }
+    })
+    $pnlPairForm.Controls.Add($btnDoPair)
+
+    $tabControl.TabPages.Add($tabPair)
+
+    # -------------------------------------------------------------------------
+    # TAB 3: CONEXION DIRECTA IP
+    # -------------------------------------------------------------------------
+    $tabDirect = New-Object System.Windows.Forms.TabPage
+    $tabDirect.Text = " 🌐 Conexion Directa IP "
+    $tabDirect.BackColor = $script:Theme.BgWindow
+    $tabDirect.Padding = New-Object System.Windows.Forms.Padding(16)
+
+    $lblDirectIntro = New-Object System.Windows.Forms.Label
+    $lblDirectIntro.Text = "Conecta a un telefono que ya tiene el puerto TCP/IP 5555 habilitado o una IP conocida."
+    $lblDirectIntro.Font = $script:Fonts.Body
+    $lblDirectIntro.ForeColor = $script:Theme.TextBody
+    $lblDirectIntro.Location = New-Object System.Drawing.Point(16, 14)
+    $lblDirectIntro.Size = New-Object System.Drawing.Size(620, 24)
+    $tabDirect.Controls.Add($lblDirectIntro)
+
+    $pnlDirectForm = New-Object System.Windows.Forms.Panel
+    $pnlDirectForm.Location = New-Object System.Drawing.Point(16, 50)
+    $pnlDirectForm.Size = New-Object System.Drawing.Size(635, 260)
+    $pnlDirectForm.BackColor = $script:Theme.BgCard
+    $pnlDirectForm.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $pnlDirectForm.Padding = New-Object System.Windows.Forms.Padding(16)
+    $tabDirect.Controls.Add($pnlDirectForm)
+
+    $txtDirectEp   = Add-FormField -Parent $pnlDirectForm -LabelText "IP y Puerto (ej. 192.168.1.50:5555):" -Top 24 -DefaultVal "192.168.1."
+    $txtDirectName = Add-FormField -Parent $pnlDirectForm -LabelText "Nombre para guardar (opcional):" -Top 70 -DefaultVal ""
+
+    $lblDirectMsg = New-Object System.Windows.Forms.Label
+    $lblDirectMsg.Text = ""
+    $lblDirectMsg.Font = $script:Fonts.Small
+    $lblDirectMsg.Location = New-Object System.Drawing.Point(16, 120)
+    $lblDirectMsg.Size = New-Object System.Drawing.Size(585, 30)
+    $pnlDirectForm.Controls.Add($lblDirectMsg)
+
+    $btnDirectConnect = New-Object System.Windows.Forms.Button
+    $btnDirectConnect.Text = "⚡ Conectar por IP"
+    $btnDirectConnect.Font = $script:Fonts.BodyBold
+    $btnDirectConnect.Size = New-Object System.Drawing.Size(200, 38)
+    $btnDirectConnect.Location = New-Object System.Drawing.Point(280, 160)
+    $btnDirectConnect.BackColor = $script:Theme.Primary
+    $btnDirectConnect.ForeColor = $script:Theme.PrimaryFg
+    $btnDirectConnect.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnDirectConnect.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $btnDirectConnect.Add_Click({
+        $ep = $txtDirectEp.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($ep) -or $ep -eq '192.168.1.') { return }
+        $fName = $txtDirectName.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($fName)) { $fName = $ep }
+
+        $btnDirectConnect.Enabled = $false
+        $lblDirectMsg.ForeColor = $script:Theme.Primary
+        $lblDirectMsg.Text = "Conectando a $ep..."
+        $dlg.Refresh()
+
+        try {
+            $record = Connect-AdbEndpoint -Endpoint $ep -TimeoutSeconds 15
+            if ($record.Status -ceq 'unauthorized') {
+                $lblDirectMsg.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#B45309')
+                $lblDirectMsg.Text = "Conectado pero NO AUTORIZADO. Ve a la pestana Reparar Autorizacion."
+                $tabControl.SelectedTab = $tabAuth
+            } else {
+                $saved = Add-SavedAdbDevice -FriendlyName $fName -Mode 'tcpip-5555' -LastEndpoint $record.Serial -IsPaired $true -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+                Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
+                Write-LogEntry -Level 'SUCCESS' -Message "Conectado exitosamente a $ep."
+                $dlg.Close()
+                Refresh-DeviceStatus
+            }
+        } catch {
+            $lblDirectMsg.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#DC2626')
+            $lblDirectMsg.Text = "Error: $($_.Exception.Message)"
+        } finally {
+            $btnDirectConnect.Enabled = $true
+        }
+    })
+    $pnlDirectForm.Controls.Add($btnDirectConnect)
+
+    $tabControl.TabPages.Add($tabDirect)
+
+    # -------------------------------------------------------------------------
+    # TAB 4: REPARAR AUTORIZACION / PERMISOS
+    # -------------------------------------------------------------------------
+    $tabAuth = New-Object System.Windows.Forms.TabPage
+    $tabAuth.Text = " 🛠️ Reparar Autorizacion "
+    $tabAuth.BackColor = $script:Theme.BgWindow
+    $tabAuth.Padding = New-Object System.Windows.Forms.Padding(16)
+
+    $lblAuthTitle = New-Object System.Windows.Forms.Label
+    $lblAuthTitle.Text = "¿Tu telefono esta conectado pero dice 'unauthorized' o no aparece la ventana de permiso?"
+    $lblAuthTitle.Font = $script:Fonts.TitleSmall
+    $lblAuthTitle.ForeColor = $script:Theme.TextTitle
+    $lblAuthTitle.Location = New-Object System.Drawing.Point(16, 12)
+    $lblAuthTitle.Size = New-Object System.Drawing.Size(620, 24)
+    $tabAuth.Controls.Add($lblAuthTitle)
+
+    $pnlAuthActions = New-Object System.Windows.Forms.FlowLayoutPanel
+    $pnlAuthActions.Location = New-Object System.Drawing.Point(16, 40)
+    $pnlAuthActions.Size = New-Object System.Drawing.Size(635, 42)
+    $pnlAuthActions.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+
+    $btnFixKillStart = New-Object System.Windows.Forms.Button
+    $btnFixKillStart.Text = "🔄 Reiniciar Servidor ADB (kill & start)"
+    $btnFixKillStart.Font = $script:Fonts.BodyBold
+    $btnFixKillStart.Size = New-Object System.Drawing.Size(290, 36)
+    $btnFixKillStart.BackColor = $script:Theme.Secondary
+    $btnFixKillStart.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnFixKillStart.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $btnFixKillStart.Add_Click({
+        Write-LogEntry -Level 'INFO' -Message "Reiniciando servidor ADB..."
+        try {
+            Invoke-AdbHost -Arguments @('kill-server') | Out-Null
+            Start-Sleep -Milliseconds 800
+            Invoke-AdbHost -Arguments @('start-server') | Out-Null
+            Start-Sleep -Milliseconds 800
+            $devs = @(Get-AdbDevices)
+            [System.Windows.Forms.MessageBox]::Show("Servidor ADB reiniciado.`nDispositivos detectados: $($devs.Count)`n`nMira la pantalla de tu telefono para aceptar la autorizacion.", "ADB Reiniciado", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            Refresh-DeviceStatus -Silent
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Error al reiniciar ADB", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        }
+    })
+    $pnlAuthActions.Controls.Add($btnFixKillStart)
+
+    $btnFixQuery = New-Object System.Windows.Forms.Button
+    $btnFixQuery.Text = "🔑 Comprobar Estado (adb devices)"
+    $btnFixQuery.Font = $script:Fonts.BodyBold
+    $btnFixQuery.Size = New-Object System.Drawing.Size(260, 36)
+    $btnFixQuery.BackColor = $script:Theme.Secondary
+    $btnFixQuery.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnFixQuery.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $btnFixQuery.Add_Click({
+        $devs = @(Get-AdbDevices)
+        if ($devs.Count -gt 0) {
+            $summary = ($devs | ForEach-Object { "$($_.Serial) -> $($_.Status)" }) -join "`n"
+            [System.Windows.Forms.MessageBox]::Show("Dispositivos:`n$summary", "Estado ADB", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("No hay ningun dispositivo detectado.", "Estado ADB", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        }
+        Refresh-DeviceStatus -Silent
+    })
+    $pnlAuthActions.Controls.Add($btnFixQuery)
+    $tabAuth.Controls.Add($pnlAuthActions)
+
+    $pnlAuthGuide = New-Object System.Windows.Forms.Panel
+    $pnlAuthGuide.Location = New-Object System.Drawing.Point(16, 92)
+    $pnlAuthGuide.Size = New-Object System.Drawing.Size(635, 350)
+    $pnlAuthGuide.BackColor = $script:Theme.BgCard
+    $pnlAuthGuide.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $pnlAuthGuide.Padding = New-Object System.Windows.Forms.Padding(16)
+
+    $txtAuthGuide = New-Object System.Windows.Forms.TextBox
+    $txtAuthGuide.Multiline = $true
+    $txtAuthGuide.ReadOnly = $true
+    $txtAuthGuide.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $txtAuthGuide.Font = $script:Fonts.Body
+    $txtAuthGuide.BackColor = $script:Theme.BgCard
+    $txtAuthGuide.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+    $txtAuthGuide.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $txtAuthGuide.Text = @"
+GUIA PASO A PASO PARA SOLUCIONAR EL PERMISO DE DEPURACION:
+
+1. REVOCAR AUTORIZACIONES PREVIAS (Muy efectivo)
+   • En tu Android, abre: Ajustes > Opciones de desarrollador.
+   • Busca la opcion: 'Revocar autorizaciones de depuracion por USB'.
+   • Pulsa en Aceptar.
+   • Desconecta el cable USB de la PC, espera 3 segundos y vuelvelo a conectar.
+   • Aparecera de inmediato la ventana en pantalla para autorizar.
+
+2. VERIFICAR MODO DE CONEXION USB
+   • Al conectar el cable, desliza hacia abajo la barra de notificaciones de Android.
+   • Toca en la notificacion del sistema 'Cargando por USB' o 'Sistema Android'.
+   • Cambia de 'Solo carga' a 'Transferencia de archivos' o 'MTP'.
+
+3. PANTALLA BLOQUEADA
+   • Android no muestra la solicitud de depuracion si la pantalla esta apagada o con el bloqueo de PIN/Huella activo. Desbloquea tu pantalla.
+
+4. CABLE DE DATOS INCOMPATIBLE
+   • Muchos cables comerciales solo tienen cables de alimentacion (2 pines) y carecen de lineas de datos (D+ / D-). Prueba con el cable original de tu telefono.
+
+5. CONEXION POR RED WIFI
+   • Si el telefono cambio de direccion IP al reconectarse al router, es necesario emparejarlo con el nuevo puerto usando la pestana 'WiFi Inalambrico (Pairing)'.
+"@
+    $pnlAuthGuide.Controls.Add($txtAuthGuide)
+    $tabAuth.Controls.Add($pnlAuthGuide)
+
+    $tabControl.TabPages.Add($tabAuth)
+    $dlg.Controls.Add($tabControl)
+
+    if ($InitialTab -eq 'Auth') {
+        $tabControl.SelectedTab = $tabAuth
+    } elseif ($InitialTab -eq 'Pair') {
+        $tabControl.SelectedTab = $tabPair
+    } elseif ($InitialTab -eq 'Direct') {
+        $tabControl.SelectedTab = $tabDirect
+    } else {
+        $tabControl.SelectedTab = $tabUsb
+        $dlg.Add_Shown({ $btnDetectUsb.PerformClick() })
+    }
+
+    $null = $dlg.ShowDialog($form)
+}
+
+# -----------------------------------------------------------------------------
+# VINCULACION DE EVENTOS DE CABECERA Y ASISTENTE
+# -----------------------------------------------------------------------------
+$btnConnectDevice.Add_Click({ Show-NewDeviceWizard })
+$btnActionNewDev.Add_Click({ Show-NewDeviceWizard })
 
 $btnRefresh.Add_Click({ Refresh-DeviceStatus })
 
@@ -1200,6 +1831,23 @@ $btnActionDevices.Add_Click({
     })
     $dlg.Controls.Add($btnConnectIp)
 
+    # Boton Conectar Nuevo (abre el Asistente)
+    $btnNewDevFromMgr = New-Object System.Windows.Forms.Button
+    $btnNewDevFromMgr.Text = "✨ Conectar Nuevo..."
+    $btnNewDevFromMgr.Font = $script:Fonts.BodyBold
+    $btnNewDevFromMgr.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#10B981')
+    $btnNewDevFromMgr.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
+    $btnNewDevFromMgr.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnNewDevFromMgr.FlatAppearance.BorderSize = 0
+    $btnNewDevFromMgr.Location = New-Object System.Drawing.Point(20, 370)
+    $btnNewDevFromMgr.Size = New-Object System.Drawing.Size(180, 38)
+    $btnNewDevFromMgr.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $btnNewDevFromMgr.Add_Click({
+        $dlg.Close()
+        Show-NewDeviceWizard
+    })
+    $dlg.Controls.Add($btnNewDevFromMgr)
+
     # Boton Seleccionar
     $btnSelect = New-Object System.Windows.Forms.Button
     $btnSelect.Text = "Seleccionar como Activo"
@@ -1208,7 +1856,7 @@ $btnActionDevices.Add_Click({
     $btnSelect.ForeColor = $script:Theme.PrimaryFg
     $btnSelect.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
     $btnSelect.FlatAppearance.BorderSize = 0
-    $btnSelect.Location = New-Object System.Drawing.Point(180, 370)
+    $btnSelect.Location = New-Object System.Drawing.Point(215, 370)
     $btnSelect.Size = New-Object System.Drawing.Size(200, 38)
     $btnSelect.Cursor = [System.Windows.Forms.Cursors]::Hand
     $btnSelect.Add_Click({
