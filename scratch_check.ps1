@@ -1,1 +1,0 @@
-﻿ = 'c:\Users\Desarrollo\Documents\Android\AndroidTools.GUI.ps1';  = ; [System.Management.Automation.Language.Parser]::ParseFile(, [ref], [ref]); if () { foreach ( in ) { Write-Host (.Extent.StartLineNumber.ToString() + ': ' + .Message) } } else { Write-Host 'Sintaxis 100% Correcta' }
