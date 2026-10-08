@@ -6,5 +6,5 @@ echo ============================================================
 echo.
 echo Iniciando interfaz grafica moderna...
 echo.
-start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0AndroidTools.GUI.ps1"
+start "" powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File "%~dp0AndroidTools.GUI.ps1"
 exit

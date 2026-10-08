@@ -518,7 +518,21 @@ $pnlStatusRow.Controls.Add($lblBatteryTemp)
 
 $pnlHeader.Controls.Add($pnlStatusRow)
 
-# Botones de Cabecera (Derecha): Reconectar + Refrescar
+# Botones de Cabecera (Derecha): Conectar + Reconectar + Refrescar
+$btnConnectDevice = New-Object System.Windows.Forms.Button
+$btnConnectDevice.Text = "Conectar dispositivo"
+$btnConnectDevice.Font = $script:Fonts.BodyBold
+$btnConnectDevice.BackColor = $script:Theme.Secondary
+$btnConnectDevice.ForeColor = $script:Theme.SecondaryFg
+$btnConnectDevice.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnConnectDevice.FlatAppearance.BorderSize = 1
+$btnConnectDevice.FlatAppearance.BorderColor = $script:Theme.BorderCard
+$btnConnectDevice.Size = New-Object System.Drawing.Size(155, 42)
+$btnConnectDevice.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+$btnConnectDevice.Location = New-Object System.Drawing.Point(620, 22)
+$btnConnectDevice.Cursor = [System.Windows.Forms.Cursors]::Hand
+$pnlHeader.Controls.Add($btnConnectDevice)
+
 $btnReconnect = New-Object System.Windows.Forms.Button
 $btnReconnect.Text = "⚡ Reconectar"
 $btnReconnect.Font = $script:Fonts.BodyBold
@@ -528,7 +542,7 @@ $btnReconnect.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnReconnect.FlatAppearance.BorderSize = 0
 $btnReconnect.Size = New-Object System.Drawing.Size(130, 42)
 $btnReconnect.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$btnReconnect.Location = New-Object System.Drawing.Point(820, 22)
+$btnReconnect.Location = New-Object System.Drawing.Point(785, 22)
 $btnReconnect.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnReconnect.Add_MouseEnter({ $btnReconnect.BackColor = $script:Theme.PrimaryHover })
 $btnReconnect.Add_MouseLeave({ $btnReconnect.BackColor = $script:Theme.Primary })
@@ -544,7 +558,7 @@ $btnRefresh.FlatAppearance.BorderSize = 1
 $btnRefresh.FlatAppearance.BorderColor = $script:Theme.BorderCard
 $btnRefresh.Size = New-Object System.Drawing.Size(110, 42)
 $btnRefresh.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$btnRefresh.Location = New-Object System.Drawing.Point(960, 22)
+$btnRefresh.Location = New-Object System.Drawing.Point(925, 22)
 $btnRefresh.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnRefresh.Add_MouseEnter({ $btnRefresh.BackColor = $script:Theme.SecondaryHover })
 $btnRefresh.Add_MouseLeave({ $btnRefresh.BackColor = $script:Theme.Secondary })
@@ -722,14 +736,18 @@ function New-ActionButton {
     $btn.Cursor = [System.Windows.Forms.Cursors]::Hand
     
     $btn.Add_MouseEnter({
-        $btn.BackColor = $script:Theme.BtnActionHover
-        $btn.FlatAppearance.BorderColor = [System.Drawing.ColorTranslator]::FromHtml('#93C5FD')
-        $btn.ForeColor = $script:Theme.Primary
+        param($sender, $eventArgs)
+        $button = [System.Windows.Forms.Button]$sender
+        $button.BackColor = $script:Theme.BtnActionHover
+        $button.FlatAppearance.BorderColor = [System.Drawing.ColorTranslator]::FromHtml('#93C5FD')
+        $button.ForeColor = $script:Theme.Primary
     })
     $btn.Add_MouseLeave({
-        $btn.BackColor = $script:Theme.BtnActionBg
-        $btn.FlatAppearance.BorderColor = $script:Theme.BtnActionBorder
-        $btn.ForeColor = $script:Theme.BtnActionFg
+        param($sender, $eventArgs)
+        $button = [System.Windows.Forms.Button]$sender
+        $button.BackColor = $script:Theme.BtnActionBg
+        $button.FlatAppearance.BorderColor = $script:Theme.BtnActionBorder
+        $button.ForeColor = $script:Theme.BtnActionFg
     })
     if ($OnClick) { $btn.Add_Click($OnClick) }
     return $btn
@@ -1036,6 +1054,28 @@ $txtCustomCommand.Add_KeyDown({
 # -----------------------------------------------------------------------------
 # BOTONES DE CABECERA: Reconectar y Refrescar
 # -----------------------------------------------------------------------------
+$btnConnectDevice.Add_Click({
+    $setupPath = Join-Path $PSScriptRoot 'android_setup_v2.ps1'
+    if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
+        Write-LogEntry -Level 'ERROR' -Message 'No se encontro android_setup_v2.ps1.'
+        return
+    }
+    Write-LogEntry -Level 'INFO' -Message 'Abriendo asistente para conectar un dispositivo nuevo...'
+    try {
+        $setupProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $setupPath
+        ) -WorkingDirectory $PSScriptRoot -WindowStyle Normal -Wait -PassThru
+        if ($setupProcess.ExitCode -eq 0) {
+            Write-LogEntry -Level 'SUCCESS' -Message 'Asistente de conexion finalizado correctamente.'
+        } else {
+            Write-LogEntry -Level 'WARN' -Message ("El asistente termino con codigo {0}." -f $setupProcess.ExitCode)
+        }
+    } catch {
+        Write-LogEntry -Level 'ERROR' -Message ("No se pudo iniciar el asistente: {0}" -f $_.Exception.Message)
+    }
+    Refresh-DeviceStatus -Silent
+})
+
 $btnRefresh.Add_Click({ Refresh-DeviceStatus })
 
 $btnReconnect.Add_Click({
@@ -1300,7 +1340,7 @@ $btnActionTransfer.Add_Click({
     $btnScriptInteractive.Add_Click({
         $dlg.Close()
         $tScript = Join-Path $script:RootPath 'android_transfer.ps1'
-        Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tScript`""
+        Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoProfile -ExecutionPolicy RemoteSigned -File `"$tScript`""
     })
     $dlg.Controls.Add($btnScriptInteractive)
 
