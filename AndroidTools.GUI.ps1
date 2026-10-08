@@ -865,6 +865,7 @@ $form.Text = "Android ADB Tools - Control Center"
 $form.Size = New-Object System.Drawing.Size(1260, 840)
 $form.MinimumSize = New-Object System.Drawing.Size(1080, 720)
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$form.WindowState = [System.Windows.Forms.FormWindowState]::Maximized
 $form.BackColor = $script:Theme.BgWindow
 $form.Font = $script:Fonts.Body
 
@@ -873,9 +874,9 @@ $form.Font = $script:Fonts.Body
 # =============================================================================
 $pnlHeader = New-Object System.Windows.Forms.Panel
 $pnlHeader.Dock = [System.Windows.Forms.DockStyle]::Top
-$pnlHeader.Height = 92
+$pnlHeader.Height = 96
 $pnlHeader.BackColor = $script:Theme.BgHeader
-$pnlHeader.Padding = New-Object System.Windows.Forms.Padding(20, 10, 20, 10)
+$pnlHeader.Padding = New-Object System.Windows.Forms.Padding(16, 8, 16, 8)
 
 $pnlHeaderBorder = New-Object System.Windows.Forms.Panel
 $pnlHeaderBorder.Dock = [System.Windows.Forms.DockStyle]::Bottom
@@ -883,64 +884,28 @@ $pnlHeaderBorder.Height = 1
 $pnlHeaderBorder.BackColor = $script:Theme.BorderCard
 $pnlHeader.Controls.Add($pnlHeaderBorder)
 
-$lblDeviceName = New-Object System.Windows.Forms.Label
-$lblDeviceName.Text = "Iniciando Android ADB Tools..."
-$lblDeviceName.Font = $script:Fonts.TitleLarge
-$lblDeviceName.ForeColor = $script:Theme.TextTitle
-$lblDeviceName.Location = New-Object System.Drawing.Point(20, 12)
-$lblDeviceName.Size = New-Object System.Drawing.Size(560, 26)
-$pnlHeader.Controls.Add($lblDeviceName)
+# Panel Contenedor de la Derecha (Selector de Dispositivo y Botones)
+$pnlHeaderRight = New-Object System.Windows.Forms.Panel
+$pnlHeaderRight.Dock = [System.Windows.Forms.DockStyle]::Right
+$pnlHeaderRight.Width = 630
+$pnlHeaderRight.BackColor = $script:Theme.BgHeader
 
-$lblStatusBadge = New-Object System.Windows.Forms.Label
-$lblStatusBadge.Text = "● BUSCANDO"
-$lblStatusBadge.Font = $script:Fonts.Badge
-$lblStatusBadge.BackColor = $script:Theme.BadgeMutedBg
-$lblStatusBadge.ForeColor = $script:Theme.BadgeMutedFg
-$lblStatusBadge.Location = New-Object System.Drawing.Point(22, 44)
-$lblStatusBadge.Size = New-Object System.Drawing.Size(125, 24)
-$lblStatusBadge.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$pnlHeader.Controls.Add($lblStatusBadge)
+# Label explicito para el Selector de Dispositivos
+$lblHeaderDevSelect = New-Object System.Windows.Forms.Label
+$lblHeaderDevSelect.Text = "📱 Dispositivo Activo:"
+$lblHeaderDevSelect.Font = $script:Fonts.SmallBold
+$lblHeaderDevSelect.ForeColor = $script:Theme.TextTitle
+$lblHeaderDevSelect.Location = New-Object System.Drawing.Point(0, 12)
+$lblHeaderDevSelect.Size = New-Object System.Drawing.Size(140, 24)
+$lblHeaderDevSelect.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$pnlHeaderRight.Controls.Add($lblHeaderDevSelect)
 
-$lblEndpoint = New-Object System.Windows.Forms.Label
-$lblEndpoint.Text = "🌐 Escaneando..."
-$lblEndpoint.Font = $script:Fonts.SmallBold
-$lblEndpoint.ForeColor = $script:Theme.TextBody
-$lblEndpoint.Location = New-Object System.Drawing.Point(155, 46)
-$lblEndpoint.Size = New-Object System.Drawing.Size(190, 20)
-$pnlHeader.Controls.Add($lblEndpoint)
-
-$lblBatteryTemp = New-Object System.Windows.Forms.Label
-$lblBatteryTemp.Text = "🔋 Consultando..."
-$lblBatteryTemp.Font = $script:Fonts.Small
-$lblBatteryTemp.ForeColor = $script:Theme.TextMuted
-$lblBatteryTemp.Location = New-Object System.Drawing.Point(350, 46)
-$lblBatteryTemp.Size = New-Object System.Drawing.Size(230, 20)
-$pnlHeader.Controls.Add($lblBatteryTemp)
-
-# Boton Destacado para Abrir MODO AVANZADO
-$btnOpenAdvFull = New-Object System.Windows.Forms.Button
-$btnOpenAdvFull.Text = "⚡ Modo Avanzado (Consola)"
-$btnOpenAdvFull.Font = $script:Fonts.SmallBold
-$btnOpenAdvFull.Size = New-Object System.Drawing.Size(195, 36)
-$btnOpenAdvFull.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$btnOpenAdvFull.Location = New-Object System.Drawing.Point(595, 26)
-$btnOpenAdvFull.BackColor = $script:Theme.Primary
-$btnOpenAdvFull.ForeColor = $script:Theme.PrimaryFg
-$btnOpenAdvFull.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$btnOpenAdvFull.FlatAppearance.BorderSize = 0
-$btnOpenAdvFull.Cursor = [System.Windows.Forms.Cursors]::Hand
-$btnOpenAdvFull.Add_MouseEnter({ $btnOpenAdvFull.BackColor = $script:Theme.PrimaryHover })
-$btnOpenAdvFull.Add_MouseLeave({ $btnOpenAdvFull.BackColor = $script:Theme.Primary })
-$btnOpenAdvFull.Add_Click({ Show-AdvancedConsoleWindow })
-$pnlHeader.Controls.Add($btnOpenAdvFull)
-
-# Selector Rapido de Dispositivo
+# Selector Rapido de Dispositivo (Visibilidad Garantizada)
 $cboHeaderDevices = New-Object System.Windows.Forms.ComboBox
 $cboHeaderDevices.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $cboHeaderDevices.Font = $script:Fonts.Small
-$cboHeaderDevices.Size = New-Object System.Drawing.Size(210, 26)
-$cboHeaderDevices.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$cboHeaderDevices.Location = New-Object System.Drawing.Point(800, 31)
+$cboHeaderDevices.Size = New-Object System.Drawing.Size(240, 26)
+$cboHeaderDevices.Location = New-Object System.Drawing.Point(142, 11)
 $cboHeaderDevices.Add_SelectedIndexChanged({
     if ($cboHeaderDevices.SelectedIndex -ge 0 -and $script:HeaderDeviceMap.Count -gt $cboHeaderDevices.SelectedIndex) {
         $selectedEntry = $script:HeaderDeviceMap[$cboHeaderDevices.SelectedIndex]
@@ -952,15 +917,14 @@ $cboHeaderDevices.Add_SelectedIndexChanged({
         }
     }
 })
-$pnlHeader.Controls.Add($cboHeaderDevices)
+$pnlHeaderRight.Controls.Add($cboHeaderDevices)
 
 # Boton Recargar
 $btnHeaderRefresh = New-Object System.Windows.Forms.Button
 $btnHeaderRefresh.Text = "🔄"
 $btnHeaderRefresh.Font = $script:Fonts.TitleMid
-$btnHeaderRefresh.Size = New-Object System.Drawing.Size(38, 32)
-$btnHeaderRefresh.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$btnHeaderRefresh.Location = New-Object System.Drawing.Point(1020, 28)
+$btnHeaderRefresh.Size = New-Object System.Drawing.Size(38, 28)
+$btnHeaderRefresh.Location = New-Object System.Drawing.Point(388, 10)
 $btnHeaderRefresh.BackColor = $script:Theme.Secondary
 $btnHeaderRefresh.ForeColor = $script:Theme.SecondaryFg
 $btnHeaderRefresh.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
@@ -968,15 +932,14 @@ $btnHeaderRefresh.FlatAppearance.BorderSize = 1
 $btnHeaderRefresh.FlatAppearance.BorderColor = $script:Theme.BorderCard
 $btnHeaderRefresh.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnHeaderRefresh.Add_Click({ Refresh-DeviceStatus })
-$pnlHeader.Controls.Add($btnHeaderRefresh)
+$pnlHeaderRight.Controls.Add($btnHeaderRefresh)
 
 # Toggle Auto-Scan USB
 $btnAutoScanToggle = New-Object System.Windows.Forms.Button
 $btnAutoScanToggle.Text = "⚡ Auto-USB: ON"
 $btnAutoScanToggle.Font = $script:Fonts.SmallBold
-$btnAutoScanToggle.Size = New-Object System.Drawing.Size(120, 32)
-$btnAutoScanToggle.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$btnAutoScanToggle.Location = New-Object System.Drawing.Point(1066, 28)
+$btnAutoScanToggle.Size = New-Object System.Drawing.Size(120, 28)
+$btnAutoScanToggle.Location = New-Object System.Drawing.Point(432, 10)
 $btnAutoScanToggle.BackColor = $script:Theme.BadgeSuccessBg
 $btnAutoScanToggle.ForeColor = $script:Theme.BadgeSuccessFg
 $btnAutoScanToggle.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
@@ -996,7 +959,60 @@ $btnAutoScanToggle.Add_Click({
         Write-LogEntry -Level 'INFO' -Message 'Auto-deteccion USB pausada.'
     }
 })
-$pnlHeader.Controls.Add($btnAutoScanToggle)
+$pnlHeaderRight.Controls.Add($btnAutoScanToggle)
+
+# Boton Destacado para Abrir MODO AVANZADO
+$btnOpenAdvFull = New-Object System.Windows.Forms.Button
+$btnOpenAdvFull.Text = "⚡ Modo Avanzado (Consola)"
+$btnOpenAdvFull.Font = $script:Fonts.SmallBold
+$btnOpenAdvFull.Size = New-Object System.Drawing.Size(200, 32)
+$btnOpenAdvFull.Location = New-Object System.Drawing.Point(352, 48)
+$btnOpenAdvFull.BackColor = $script:Theme.Primary
+$btnOpenAdvFull.ForeColor = $script:Theme.PrimaryFg
+$btnOpenAdvFull.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnOpenAdvFull.FlatAppearance.BorderSize = 0
+$btnOpenAdvFull.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnOpenAdvFull.Add_MouseEnter({ $btnOpenAdvFull.BackColor = $script:Theme.PrimaryHover })
+$btnOpenAdvFull.Add_MouseLeave({ $btnOpenAdvFull.BackColor = $script:Theme.Primary })
+$btnOpenAdvFull.Add_Click({ Show-AdvancedConsoleWindow })
+$pnlHeaderRight.Controls.Add($btnOpenAdvFull)
+
+$pnlHeader.Controls.Add($pnlHeaderRight)
+
+# Informacion del Dispositivo (Panel Izquierdo)
+$lblDeviceName = New-Object System.Windows.Forms.Label
+$lblDeviceName.Text = "Iniciando Android ADB Tools..."
+$lblDeviceName.Font = $script:Fonts.TitleLarge
+$lblDeviceName.ForeColor = $script:Theme.TextTitle
+$lblDeviceName.Location = New-Object System.Drawing.Point(20, 10)
+$lblDeviceName.Size = New-Object System.Drawing.Size(460, 26)
+$pnlHeader.Controls.Add($lblDeviceName)
+
+$lblStatusBadge = New-Object System.Windows.Forms.Label
+$lblStatusBadge.Text = "● BUSCANDO"
+$lblStatusBadge.Font = $script:Fonts.Badge
+$lblStatusBadge.BackColor = $script:Theme.BadgeMutedBg
+$lblStatusBadge.ForeColor = $script:Theme.BadgeMutedFg
+$lblStatusBadge.Location = New-Object System.Drawing.Point(22, 44)
+$lblStatusBadge.Size = New-Object System.Drawing.Size(125, 24)
+$lblStatusBadge.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$pnlHeader.Controls.Add($lblStatusBadge)
+
+$lblEndpoint = New-Object System.Windows.Forms.Label
+$lblEndpoint.Text = "🌐 Escaneando..."
+$lblEndpoint.Font = $script:Fonts.SmallBold
+$lblEndpoint.ForeColor = $script:Theme.TextBody
+$lblEndpoint.Location = New-Object System.Drawing.Point(155, 46)
+$lblEndpoint.Size = New-Object System.Drawing.Size(180, 20)
+$pnlHeader.Controls.Add($lblEndpoint)
+
+$lblBatteryTemp = New-Object System.Windows.Forms.Label
+$lblBatteryTemp.Text = "🔋 Consultando..."
+$lblBatteryTemp.Font = $script:Fonts.Small
+$lblBatteryTemp.ForeColor = $script:Theme.TextMuted
+$lblBatteryTemp.Location = New-Object System.Drawing.Point(340, 46)
+$lblBatteryTemp.Size = New-Object System.Drawing.Size(220, 20)
+$pnlHeader.Controls.Add($lblBatteryTemp)
 
 $form.Controls.Add($pnlHeader)
 
@@ -1077,10 +1093,11 @@ $pnlCenter.BackColor = $script:Theme.BgWindow
 # -----------------------------------------------------------------------------
 $cardSidebar = New-Object System.Windows.Forms.Panel
 $cardSidebar.Dock = [System.Windows.Forms.DockStyle]::Left
-$cardSidebar.Width = 280
+$cardSidebar.Width = 265
 $cardSidebar.BackColor = $script:Theme.BgCard
-$cardSidebar.Padding = New-Object System.Windows.Forms.Padding(12)
+$cardSidebar.Padding = New-Object System.Windows.Forms.Padding(10)
 $cardSidebar.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$cardSidebar.AutoScroll = $true
 
 $lblSidebarHeader = New-Object System.Windows.Forms.Label
 $lblSidebarHeader.Text = "HERRAMIENTAS & VISTAS"
@@ -1091,11 +1108,12 @@ $lblSidebarHeader.Height = 24
 $cardSidebar.Controls.Add($lblSidebarHeader)
 
 $pnlSidebarButtons = New-Object System.Windows.Forms.FlowLayoutPanel
-$pnlSidebarButtons.Dock = [System.Windows.Forms.DockStyle]::Fill
+$pnlSidebarButtons.Dock = [System.Windows.Forms.DockStyle]::Top
 $pnlSidebarButtons.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
 $pnlSidebarButtons.WrapContents = $false
-$pnlSidebarButtons.AutoScroll = $true
-$pnlSidebarButtons.Padding = New-Object System.Windows.Forms.Padding(0, 6, 0, 0)
+$pnlSidebarButtons.AutoSize = $true
+$pnlSidebarButtons.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$pnlSidebarButtons.Padding = New-Object System.Windows.Forms.Padding(0, 4, 0, 0)
 
 function New-NavButton {
     param([string]$Icon, [string]$Title, [scriptblock]$OnClick, [bool]$IsHighlight = $false)
@@ -1103,15 +1121,15 @@ function New-NavButton {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Text = " $Icon  $Title"
     $btn.Font = $script:Fonts.BodyBold
-    $btn.Size = New-Object System.Drawing.Size(252, 42)
-    $btn.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
+    $btn.Size = New-Object System.Drawing.Size(226, 38)
+    $btn.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 6)
     $btn.BackColor = if ($IsHighlight) { $script:Theme.Primary } else { $script:Theme.BtnActionBg }
     $btn.ForeColor = if ($IsHighlight) { $script:Theme.PrimaryFg } else { $script:Theme.BtnActionFg }
     $btn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
     $btn.FlatAppearance.BorderSize = 1
     $btn.FlatAppearance.BorderColor = if ($IsHighlight) { $script:Theme.Primary } else { $script:Theme.BtnActionBorder }
     $btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
-    $btn.Padding = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
+    $btn.Padding = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
     $btn.Cursor = [System.Windows.Forms.Cursors]::Hand
     
     $btn.Add_MouseEnter({
@@ -1159,6 +1177,7 @@ $pnlSidebarButtons.Controls.AddRange(@(
     $btnNavAdvanced
 ))
 $cardSidebar.Controls.Add($pnlSidebarButtons)
+$lblSidebarHeader.SendToBack()
 $pnlCenter.Controls.Add($cardSidebar)
 
 # Separador Vertical
@@ -1393,72 +1412,83 @@ $tabControlMain.TabPages.Add($tabExplorer)
 $tabTransfer = New-Object System.Windows.Forms.TabPage
 $tabTransfer.Text = "  ⇄ Transferencias & Fotos  "
 $tabTransfer.BackColor = $script:Theme.BgCard
-$tabTransfer.Padding = New-Object System.Windows.Forms.Padding(12)
+$tabTransfer.Padding = New-Object System.Windows.Forms.Padding(8)
 
 $pnlTransferScroll = New-Object System.Windows.Forms.Panel
 $pnlTransferScroll.Dock = [System.Windows.Forms.DockStyle]::Fill
 $pnlTransferScroll.AutoScroll = $true
+$pnlTransferScroll.Padding = New-Object System.Windows.Forms.Padding(10)
+
+# Encabezado de la pestaña
+$pnlTransHead = New-Object System.Windows.Forms.Panel
+$pnlTransHead.Dock = [System.Windows.Forms.DockStyle]::Top
+$pnlTransHead.Height = 48
 
 $lblTransferHeader = New-Object System.Windows.Forms.Label
 $lblTransferHeader.Text = "Transferencia Inteligente de Fotos, Documentos y Medios"
 $lblTransferHeader.Font = $script:Fonts.TitleMid
 $lblTransferHeader.ForeColor = $script:Theme.TextTitle
-$lblTransferHeader.Location = New-Object System.Drawing.Point(4, 4)
-$lblTransferHeader.Size = New-Object System.Drawing.Size(650, 24)
-$pnlTransferScroll.Controls.Add($lblTransferHeader)
+$lblTransferHeader.Location = New-Object System.Drawing.Point(0, 0)
+$lblTransferHeader.Size = New-Object System.Drawing.Size(650, 22)
+$pnlTransHead.Controls.Add($lblTransferHeader)
 
 $lblTransferSub = New-Object System.Windows.Forms.Label
 $lblTransferSub.Text = "Descarga de fotos con 1 clic a tu PC sin necesidad de buscarlas manualmente entre carpetas."
 $lblTransferSub.Font = $script:Fonts.Small
 $lblTransferSub.ForeColor = $script:Theme.TextMuted
-$lblTransferSub.Location = New-Object System.Drawing.Point(4, 30)
+$lblTransferSub.Location = New-Object System.Drawing.Point(0, 24)
 $lblTransferSub.Size = New-Object System.Drawing.Size(650, 20)
-$pnlTransferScroll.Controls.Add($lblTransferSub)
+$pnlTransHead.Controls.Add($lblTransferSub)
 
-# Contenedor de Tarjetas de Transferencia
+$pnlTransferScroll.Controls.Add($pnlTransHead)
+
+# Contenedor de Tarjetas de Transferencia con acomodo fluido Dock=Top
 $pnlTransferCards = New-Object System.Windows.Forms.FlowLayoutPanel
-$pnlTransferCards.Location = New-Object System.Drawing.Point(4, 60)
-$pnlTransferCards.Size = New-Object System.Drawing.Size(860, 320)
-$pnlTransferCards.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+$pnlTransferCards.Dock = [System.Windows.Forms.DockStyle]::Top
+$pnlTransferCards.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+$pnlTransferCards.WrapContents = $true
+$pnlTransferCards.AutoSize = $true
+$pnlTransferCards.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$pnlTransferCards.Padding = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)
 
 function New-TransferCard {
     param([string]$Icon, [string]$Title, [string]$Desc, [string]$BtnText, [scriptblock]$OnClick)
     
     $p = New-Object System.Windows.Forms.Panel
-    $p.Size = New-Object System.Drawing.Size(400, 94)
-    $p.Margin = New-Object System.Windows.Forms.Padding(0, 0, 14, 14)
+    $p.Size = New-Object System.Drawing.Size(365, 88)
+    $p.Margin = New-Object System.Windows.Forms.Padding(0, 0, 12, 12)
     $p.BackColor = $script:Theme.BgWindow
     $p.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-    $p.Padding = New-Object System.Windows.Forms.Padding(10)
+    $p.Padding = New-Object System.Windows.Forms.Padding(8)
     
     $lIcon = New-Object System.Windows.Forms.Label
     $lIcon.Text = $Icon
     $lIcon.Font = $script:Fonts.TitleLarge
-    $lIcon.Location = New-Object System.Drawing.Point(10, 10)
-    $lIcon.Size = New-Object System.Drawing.Size(36, 36)
+    $lIcon.Location = New-Object System.Drawing.Point(8, 8)
+    $lIcon.Size = New-Object System.Drawing.Size(34, 34)
     $p.Controls.Add($lIcon)
     
     $lTitle = New-Object System.Windows.Forms.Label
     $lTitle.Text = $Title
     $lTitle.Font = $script:Fonts.BodyBold
     $lTitle.ForeColor = $script:Theme.TextTitle
-    $lTitle.Location = New-Object System.Drawing.Point(50, 8)
-    $lTitle.Size = New-Object System.Drawing.Size(330, 20)
+    $lTitle.Location = New-Object System.Drawing.Point(46, 6)
+    $lTitle.Size = New-Object System.Drawing.Size(305, 20)
     $p.Controls.Add($lTitle)
     
     $lDesc = New-Object System.Windows.Forms.Label
     $lDesc.Text = $Desc
     $lDesc.Font = $script:Fonts.Small
     $lDesc.ForeColor = $script:Theme.TextMuted
-    $lDesc.Location = New-Object System.Drawing.Point(50, 30)
-    $lDesc.Size = New-Object System.Drawing.Size(220, 36)
+    $lDesc.Location = New-Object System.Drawing.Point(46, 26)
+    $lDesc.Size = New-Object System.Drawing.Size(205, 36)
     $p.Controls.Add($lDesc)
     
     $b = New-Object System.Windows.Forms.Button
     $b.Text = $BtnText
     $b.Font = $script:Fonts.SmallBold
-    $b.Size = New-Object System.Drawing.Size(100, 28)
-    $b.Location = New-Object System.Drawing.Point(285, 48)
+    $b.Size = New-Object System.Drawing.Size(95, 28)
+    $b.Location = New-Object System.Drawing.Point(258, 44)
     $b.BackColor = $script:Theme.Primary
     $b.ForeColor = $script:Theme.PrimaryFg
     $b.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
@@ -1488,11 +1518,10 @@ $pnlTransferCards.Controls.AddRange(@(
 ))
 $pnlTransferScroll.Controls.Add($pnlTransferCards)
 
-# Zona de Progreso y Estado de Transferencia
+# Zona de Progreso y Estado de Transferencia (Apilado Dock=Top justo debajo de las tarjetas)
 $pnlTransferStatus = New-Object System.Windows.Forms.Panel
-$pnlTransferStatus.Location = New-Object System.Drawing.Point(4, 390)
-$pnlTransferStatus.Size = New-Object System.Drawing.Size(860, 160)
-$pnlTransferStatus.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+$pnlTransferStatus.Dock = [System.Windows.Forms.DockStyle]::Top
+$pnlTransferStatus.Height = 150
 $pnlTransferStatus.BackColor = $script:Theme.BgWindow
 $pnlTransferStatus.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 $pnlTransferStatus.Padding = New-Object System.Windows.Forms.Padding(12)
@@ -1514,8 +1543,8 @@ $lblTransferDetails.Size = New-Object System.Drawing.Size(650, 24)
 $pnlTransferStatus.Controls.Add($lblTransferDetails)
 
 $pbTransferProgress = New-Object System.Windows.Forms.ProgressBar
-$pbTransferProgress.Location = New-Object System.Drawing.Point(12, 64)
-$pbTransferProgress.Size = New-Object System.Drawing.Size(830, 16)
+$pbTransferProgress.Location = New-Object System.Drawing.Point(12, 62)
+$pbTransferProgress.Size = New-Object System.Drawing.Size(700, 16)
 $pbTransferProgress.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $pbTransferProgress.Visible = $false
 $pnlTransferStatus.Controls.Add($pbTransferProgress)
@@ -1529,7 +1558,7 @@ $btnOpenLocalDir.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnOpenLocalDir.FlatAppearance.BorderSize = 1
 $btnOpenLocalDir.FlatAppearance.BorderColor = $script:Theme.BorderCard
 $btnOpenLocalDir.Size = New-Object System.Drawing.Size(180, 28)
-$btnOpenLocalDir.Location = New-Object System.Drawing.Point(12, 94)
+$btnOpenLocalDir.Location = New-Object System.Drawing.Point(12, 90)
 $btnOpenLocalDir.Visible = $false
 $btnOpenLocalDir.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnOpenLocalDir.Add_Click({
@@ -1540,6 +1569,12 @@ $btnOpenLocalDir.Add_Click({
 $pnlTransferStatus.Controls.Add($btnOpenLocalDir)
 
 $pnlTransferScroll.Controls.Add($pnlTransferStatus)
+
+# Asegurar orden Z de arriba a abajo: Header -> Cards -> Status
+$pnlTransHead.SendToBack()
+$pnlTransferCards.BringToFront()
+$pnlTransferStatus.BringToFront()
+
 $tabTransfer.Controls.Add($pnlTransferScroll)
 $tabControlMain.TabPages.Add($tabTransfer)
 
@@ -1777,7 +1812,15 @@ $tabControlMain.TabPages.Add($tabLogs)
 
 $cardWorkspace.Controls.Add($tabControlMain)
 $pnlCenter.Controls.Add($cardWorkspace)
+
+# Z-Order de pnlCenter: SplitGap y CardSidebar se acoplan a la izquierda primero
+$pnlSplitGap.SendToBack()
+$cardSidebar.SendToBack()
+
+# Formulario: Header y Notificacion se acoplan arriba antes del centro
 $form.Controls.Add($pnlCenter)
+$pnlNotification.SendToBack()
+$pnlHeader.SendToBack()
 
 # =============================================================================
 # LOGICA DEL EXPLORADOR DE ARCHIVOS ANDROID
@@ -2134,6 +2177,7 @@ function Show-AdvancedConsoleWindow {
     $advForm.Size = New-Object System.Drawing.Size(1280, 800)
     $advForm.MinimumSize = New-Object System.Drawing.Size(1020, 640)
     $advForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $advForm.WindowState = [System.Windows.Forms.FormWindowState]::Maximized
     $advForm.BackColor = $script:Theme.BgWindow
     $advForm.Font = $script:Fonts.Body
 
