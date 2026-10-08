@@ -135,11 +135,13 @@ function Resolve-AdbSerial {
         return (ConvertTo-AdbEndpoint -Endpoint ([string]$DeviceOrEndpoint)).Endpoint
     }
 
-    foreach ($propertyName in @('Serial','LastEndpoint','Endpoint')) {
+    # Un dispositivo guardado solo por USB no tiene LastEndpoint. En ese caso
+    # UsbSerial es el identificador ADB válido y debe poder seleccionarse.
+    foreach ($propertyName in @('Serial','LastEndpoint','Endpoint','UsbSerial')) {
         $property = $DeviceOrEndpoint.PSObject.Properties[$propertyName]
         if ($null -ne $property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
             $candidate = [string]$property.Value
-            if ($propertyName -eq 'Serial' -and $candidate -notmatch ':\d+$') { return $candidate }
+            if ($propertyName -in @('Serial','UsbSerial') -and $candidate -notmatch ':\d+$') { return $candidate }
             try { return (ConvertTo-AdbEndpoint -Endpoint $candidate).Endpoint } catch { }
         }
     }
@@ -859,6 +861,7 @@ function ConvertTo-AdbNetworkProfile {
 function ConvertTo-AdbStoredMode {
     param([string]$Mode)
     switch ($Mode) {
+        'usb'                    { return 'usb' }
         'wireless-debugging-tls' { return 'wireless-debugging-tls' }
         'WirelessTls'            { return 'wireless-debugging-tls' }
         'ModernPairing'          { return 'wireless-debugging-tls' }

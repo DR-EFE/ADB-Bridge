@@ -32,6 +32,28 @@ if (Test-Path -LiteralPath $script:ModulePath) {
     Write-AdbLog -Level INFO -Source 'AndroidTools.GUI.ps1' -Message 'Iniciando interfaz grafica WinForms moderna.'
 }
 
+# Guarda desde la GUI sin crear duplicados al repetir el asistente. La clave
+# estable del modo USB es UsbSerial; en modo TCP/IP lo es LastEndpoint.
+function Save-GuiAdbDevice {
+    param(
+        [Parameter(Mandatory=$true)][string]$FriendlyName,
+        [Parameter(Mandatory=$true)][string]$Mode,
+        [string]$UsbSerial,
+        [string]$LastEndpoint,
+        [bool]$IsPaired = $false
+    )
+
+    $existing = @(Get-SavedAdbDevices | Where-Object {
+        ($UsbSerial -and $_.UsbSerial -ceq $UsbSerial) -or
+        ($LastEndpoint -and $_.LastEndpoint -ieq $LastEndpoint)
+    })[0]
+    $timestamp = [DateTime]::UtcNow.ToString('o')
+    if ($null -ne $existing) {
+        return (Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -UsbSerial $UsbSerial -LastEndpoint $LastEndpoint -Mode $Mode -IsPaired $IsPaired -LastConnectedUtc $timestamp)
+    }
+    return (Add-SavedAdbDevice -FriendlyName $FriendlyName -Mode $Mode -UsbSerial $UsbSerial -LastEndpoint $LastEndpoint -IsPaired $IsPaired -LastConnectedUtc $timestamp)
+}
+
 # -----------------------------------------------------------------------------
 # PALETA DE COLORES Y ESTILOS MODERNOS (Segoe UI + Tailwind/Modern Palette)
 # -----------------------------------------------------------------------------
@@ -1268,7 +1290,8 @@ function Show-NewDeviceWizard {
             $modelName = $deviceRecord.Serial
             try {
                 $mOut = @(Invoke-AdbCommand -Serial $deviceRecord.Serial -Arguments @('shell','getprop','ro.product.model'))
-                if ($mOut) { $modelName = ($mOut -join ' ').Trim() }
+                $detectedModel = ($mOut -join ' ').Trim()
+                if (-not [string]::IsNullOrWhiteSpace($detectedModel)) { $modelName = $detectedModel }
             } catch { }
 
             $txtUsbDetail.Text = "Modelo: $modelName | Serial: $($deviceRecord.Serial)`r`nEstado: device (Totalmente autorizado para depuracion y transferencias)."
@@ -1289,7 +1312,7 @@ function Show-NewDeviceWizard {
             $pnlUsbActions.Controls.Add($txtFriendly)
 
             $btnSaveUsb = New-Object System.Windows.Forms.Button
-            $btnSaveUsb.Text = "💾 Usar por Cable USB"
+            $btnSaveUsb.Text = "💾 Guardar USB (usar ahora)"
             $btnSaveUsb.Font = $script:Fonts.BodyBold
             $btnSaveUsb.Size = New-Object System.Drawing.Size(200, 32)
             $btnSaveUsb.Location = New-Object System.Drawing.Point(330, 24)
@@ -1300,9 +1323,13 @@ function Show-NewDeviceWizard {
             $btnSaveUsb.Add_Click({
                 $fName = $txtFriendly.Text.Trim()
                 if ([string]::IsNullOrWhiteSpace($fName)) { $fName = $modelName }
+                if ([string]::IsNullOrWhiteSpace($fName)) { $fName = $deviceRecord.Serial }
                 try {
-                    $saved = Add-SavedAdbDevice -FriendlyName $fName -Mode 'usb' -UsbSerial $deviceRecord.Serial -LastEndpoint $deviceRecord.Serial -IsPaired $true -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
-                    Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
+                    # USB no es un endpoint host:puerto. Se conserva en UsbSerial
+                    # y se selecciona usando el serial detectado en esta sesión.
+                    $saved = Save-GuiAdbDevice -FriendlyName $fName -Mode 'usb' -UsbSerial $deviceRecord.Serial -IsPaired $true
+                    $selected = [pscustomobject]@{ Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$deviceRecord.Serial; UsbSerial=$deviceRecord.Serial; Mode='usb'; LastEndpoint=$null }
+                    Set-CurrentAdbDevice -Device $selected -Persist | Out-Null
                     Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo USB '$fName' guardado y seleccionado como activo."
                     $dlg.Close()
                     Refresh-DeviceStatus
@@ -1334,20 +1361,22 @@ function Show-NewDeviceWizard {
                 $btnSwitchWifi.Text = "Activando WiFi en el telefono..."
                 $dlg.Refresh()
                 try {
-                    Invoke-AdbCommand -Serial $deviceRecord.Serial -Arguments @('tcpip','5555') | Out-Null
-                    Start-Sleep -Seconds 1
-
+                    # Leer la IP mientras el canal USB sigue estable. Después de
+                    # adb tcpip Android puede reiniciar la conexión USB.
                     $ip = Get-AdbDeviceIpv4 -Serial $deviceRecord.Serial
                     if ([string]::IsNullOrWhiteSpace($ip)) {
                         $ip = [Microsoft.VisualBasic.Interaction]::InputBox("No se pudo auto-detectar la IP. Introduce la IP del telefono en la red WiFi:", "IP de Android", "192.168.1.")
                     }
 
                     if (-not [string]::IsNullOrWhiteSpace($ip)) {
+                        Invoke-Adb -Serial $deviceRecord.Serial -Arguments @('tcpip','5555') | Out-Null
+                        Start-Sleep -Seconds 1
                         $endpoint = "$ip`:5555"
                         $conn = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 15
                         $fName = $txtFriendly.Text.Trim()
                         if ([string]::IsNullOrWhiteSpace($fName)) { $fName = $modelName }
-                        $saved = Add-SavedAdbDevice -FriendlyName "$fName (WiFi)" -Mode 'tcpip-5555' -UsbSerial $deviceRecord.Serial -LastEndpoint $conn.Serial -IsPaired $true -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+                        if ([string]::IsNullOrWhiteSpace($fName)) { $fName = $deviceRecord.Serial }
+                        $saved = Save-GuiAdbDevice -FriendlyName "$fName (WiFi)" -Mode 'tcpip-5555' -UsbSerial $deviceRecord.Serial -LastEndpoint $conn.Serial -IsPaired $false
                         Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
                         Write-LogEntry -Level 'SUCCESS' -Message "¡Conexion WiFi exitosa con $endpoint! Ya puedes desconectar el cable USB."
                         [System.Windows.Forms.MessageBox]::Show("¡Telefono conectado por WiFi en $endpoint!`n`nYa puedes desconectar el cable USB.", "Modo Inalambrico Listo", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -1374,6 +1403,17 @@ function Show-NewDeviceWizard {
         
         $usbMatch = @($devs | Where-Object { $_.Serial -notmatch ':\d+$' })[0]
         if ($null -eq $usbMatch -and $devs.Count -gt 0) { $usbMatch = $devs[0] }
+
+        if ($null -ne $usbMatch -and $usbMatch.Status -ceq 'device') {
+            # La detección USB ya es suficiente para ejecutar comandos por cable;
+            # no obligamos al usuario a guardar el dispositivo para seleccionarlo.
+            try {
+                Set-CurrentAdbDevice -Device ([pscustomobject]@{ Serial=$usbMatch.Serial }) | Out-Null
+                Write-LogEntry -Level 'SUCCESS' -Message "USB detectado y seleccionado como activo: $($usbMatch.Serial)."
+            } catch {
+                Write-LogEntry -Level 'WARN' -Message "USB detectado, pero no se pudo seleccionar como activo: $($_.Exception.Message)"
+            }
+        }
 
         & $fnUpdateUsbView $usbMatch
         $btnDetectUsb.Enabled = $true
