@@ -2,9 +2,13 @@
 .SYNOPSIS
     Android ADB Tools - Interfaz Grafica Moderna (WinForms).
 .DESCRIPTION
-    Panel de control moderno y unificado para Android ADB Tools en PowerShell 5.1.
-    Permite operar dispositivos, transferir archivos, respaldos, capturas, diagnostico
-    y ejecucion avanzada de comandos ADB con sistema de favoritos persistente en JSON.
+    Panel de control moderno, rapido y fluido para Android ADB Tools en Windows PowerShell 5.1.
+    Incluye:
+    - Escaneo continuo inteligente de dispositivos USB con auto-conexion y auto-guardado en WiFi.
+    - Notificaciones visuales interactivas en tiempo real (exito, permisos, errores).
+    - Selector rapido de dispositivos en cabecera y asistente paso a paso.
+    - Consola avanzada de comandos con favoritos persistentes en JSON.
+    - Ejecucion completamente asincrona (sin bloqueos de interfaz).
 #>
 
 #Requires -Version 5.1
@@ -29,127 +33,30 @@ $script:ModulePath = Join-Path $script:RootPath 'AndroidAdb.psm1'
 if (Test-Path -LiteralPath $script:ModulePath) {
     Import-Module $script:ModulePath -Force -DisableNameChecking
     Initialize-AdbLog | Out-Null
-    Write-AdbLog -Level INFO -Source 'AndroidTools.GUI.ps1' -Message 'Iniciando interfaz grafica WinForms moderna.'
-}
-
-# Guarda desde la GUI sin crear duplicados al repetir el asistente. La clave
-# estable del modo USB es UsbSerial; en modo TCP/IP lo es LastEndpoint.
-function Save-GuiAdbDevice {
-    param(
-        [string]$FriendlyName,
-        [Parameter(Mandatory=$true)][string]$Mode,
-        [string]$UsbSerial,
-        [string]$LastEndpoint,
-        [bool]$IsPaired = $false
-    )
-
-    if ([string]::IsNullOrWhiteSpace($FriendlyName)) {
-        $FriendlyName = if (-not [string]::IsNullOrWhiteSpace($UsbSerial)) { $UsbSerial } elseif (-not [string]::IsNullOrWhiteSpace($LastEndpoint)) { $LastEndpoint } else { 'Dispositivo Android' }
-    }
-
-    $existing = @(Get-SavedAdbDevices | Where-Object {
-        ($UsbSerial -and $_.UsbSerial -ceq $UsbSerial) -or
-        ($LastEndpoint -and $_.LastEndpoint -ieq $LastEndpoint)
-    })[0]
-    $timestamp = [DateTime]::UtcNow.ToString('o')
-    if ($null -ne $existing) {
-        return (Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -UsbSerial $UsbSerial -LastEndpoint $LastEndpoint -Mode $Mode -IsPaired $IsPaired -LastConnectedUtc $timestamp)
-    }
-    return (Add-SavedAdbDevice -FriendlyName $FriendlyName -Mode $Mode -UsbSerial $UsbSerial -LastEndpoint $LastEndpoint -IsPaired $IsPaired -LastConnectedUtc $timestamp)
-}
-
-# Dispositivos USB ya consultados durante esta conexión física. Se elimina la
-# marca al desconectarlos, de forma que volver a enchufarlos muestra de nuevo
-# la confirmación sin abrir una cascada de cuadros de diálogo.
-$script:UsbPromptedSerials = @{}
-$script:UsbAutoScanBusy = $false
-
-function Start-UsbWirelessConnection {
-    param([Parameter(Mandatory=$true)][string]$UsbSerial)
-
-    Invoke-GuiAsyncTask -Title "Preparar WiFi para $UsbSerial" -WorkerScript {
-        param($serial)
-        $ip = Get-AdbDeviceIpv4 -Serial $serial
-        if ([string]::IsNullOrWhiteSpace($ip)) {
-            throw 'No fue posible obtener la IP WiFi del teléfono mientras estaba conectado por USB.'
-        }
-        Invoke-Adb -Serial $serial -Arguments @('tcpip','5555') | Out-Null
-        Start-Sleep -Seconds 1
-        $connected = Connect-AdbEndpoint -Endpoint ("{0}:5555" -f $ip) -TimeoutSeconds 15
-        return [pscustomobject]@{ UsbSerial=$serial; Endpoint=("{0}:5555" -f $ip); Record=$connected }
-    } -Parameters @{ serial=$UsbSerial } -OnCompleted {
-        param($result)
-        if ($null -eq $result -or -not $result.Success) {
-            $message = if ($result -and $result.Error) { $result.Error } else { 'No se pudo activar ADB por WiFi.' }
-            [System.Windows.Forms.MessageBox]::Show($message, 'No se pudo conectar por WiFi', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            return
-        }
-        try {
-            $info = $result.Output[0]
-            $saved = Save-GuiAdbDevice -FriendlyName "$($info.UsbSerial) (WiFi)" -Mode 'tcpip-5555' -UsbSerial $info.UsbSerial -LastEndpoint $info.Record.Serial -IsPaired $false
-            Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
-            Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo conectado por WiFi en $($info.Endpoint)."
-            [System.Windows.Forms.MessageBox]::Show("Conectado por WiFi en $($info.Endpoint).`n`nAhora puedes desconectar el cable USB.", 'Modo inalámbrico listo', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-            Refresh-DeviceStatus -Silent
-        } catch {
-            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'No se pudo guardar la conexión WiFi', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        }
-    }
-}
-
-function Invoke-UsbAutoDetection {
-    if ($script:UsbAutoScanBusy -or $script:RunningAsyncTasks -gt 0) { return }
-    $script:UsbAutoScanBusy = $true
-    try {
-        $usbDevices = @(Get-AdbDevices | Where-Object { $_.Status -ceq 'device' -and $_.Serial -notmatch ':\d+$' })
-        $connectedSerials = @($usbDevices | ForEach-Object { $_.Serial })
-        foreach ($knownSerial in @($script:UsbPromptedSerials.Keys)) {
-            if ($connectedSerials -notcontains $knownSerial) { $script:UsbPromptedSerials.Remove($knownSerial) }
-        }
-
-        foreach ($usbDevice in $usbDevices) {
-            if ($script:UsbPromptedSerials.ContainsKey($usbDevice.Serial)) { continue }
-
-            try { Set-CurrentAdbDevice -Device ([pscustomobject]@{ Serial=$usbDevice.Serial }) | Out-Null } catch { }
-            $script:UsbPromptedSerials[$usbDevice.Serial] = $true
-            $answer = [System.Windows.Forms.MessageBox]::Show(
-                "Se detectó el teléfono '$($usbDevice.Serial)' por USB.`n`n¿Quieres conectarlo por WiFi para poder retirar el cable?`n`nSí: activa TCP/IP 5555 y guarda la conexión inalámbrica.`nNo: queda disponible mientras el cable siga conectado.",
-                'Dispositivo USB detectado',
-                [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                [System.Windows.Forms.MessageBoxIcon]::Question
-            )
-            if ($answer -eq [System.Windows.Forms.DialogResult]::Yes) {
-                Start-UsbWirelessConnection -UsbSerial $usbDevice.Serial
-            }
-        }
-    } catch {
-        Write-LogEntry -Level 'DEBUG' -Message "Escaneo USB no disponible: $($_.Exception.Message)"
-    } finally {
-        $script:UsbAutoScanBusy = $false
-    }
+    Write-AdbLog -Level INFO -Source 'AndroidTools.GUI.ps1' -Message 'Iniciando interfaz grafica WinForms moderna con Auto-Scanner USB.'
 }
 
 # -----------------------------------------------------------------------------
-# PALETA DE COLORES Y ESTILOS MODERNOS (Segoe UI + Tailwind/Modern Palette)
+# PALETA DE COLORES Y ESTILOS MODERNOS (Segoe UI + Tailwind/Modern Tokens)
 # -----------------------------------------------------------------------------
 $script:Theme = @{
-    BgWindow        = [System.Drawing.ColorTranslator]::FromHtml('#F8F9FA')
+    BgWindow        = [System.Drawing.ColorTranslator]::FromHtml('#F8FAFC')
     BgCard          = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
     BgHeader        = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
     BorderCard      = [System.Drawing.ColorTranslator]::FromHtml('#E2E8F0')
     BorderLight     = [System.Drawing.ColorTranslator]::FromHtml('#F1F5F9')
     
-    # Acentos
+    # Acentos Principales
     Primary         = [System.Drawing.ColorTranslator]::FromHtml('#2563EB') # Azul moderno
     PrimaryHover    = [System.Drawing.ColorTranslator]::FromHtml('#1D4ED8')
     PrimaryActive   = [System.Drawing.ColorTranslator]::FromHtml('#1E40AF')
     PrimaryFg       = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
     
+    # Secundarios y Botones
     Secondary       = [System.Drawing.ColorTranslator]::FromHtml('#F1F5F9')
     SecondaryHover  = [System.Drawing.ColorTranslator]::FromHtml('#E2E8F0')
     SecondaryFg     = [System.Drawing.ColorTranslator]::FromHtml('#334155')
     
-    # Botones de Acciones
     BtnActionBg     = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
     BtnActionHover  = [System.Drawing.ColorTranslator]::FromHtml('#EFF6FF')
     BtnActionBorder = [System.Drawing.ColorTranslator]::FromHtml('#CBD5E1')
@@ -164,11 +71,15 @@ $script:Theme = @{
     LogBg           = [System.Drawing.ColorTranslator]::FromHtml('#0F172A') # Slate 900
     LogFg           = [System.Drawing.ColorTranslator]::FromHtml('#F8FAFC')
     
-    # Badges de estado
+    # Badges y Notificaciones
     BadgeSuccessBg  = [System.Drawing.ColorTranslator]::FromHtml('#DCFCE7')
     BadgeSuccessFg  = [System.Drawing.ColorTranslator]::FromHtml('#15803D')
     BadgeWarningBg  = [System.Drawing.ColorTranslator]::FromHtml('#FEF3C7')
     BadgeWarningFg  = [System.Drawing.ColorTranslator]::FromHtml('#B45309')
+    BadgeErrorBg    = [System.Drawing.ColorTranslator]::FromHtml('#FEE2E2')
+    BadgeErrorFg    = [System.Drawing.ColorTranslator]::FromHtml('#DC2626')
+    BadgeInfoBg     = [System.Drawing.ColorTranslator]::FromHtml('#DBEAFE')
+    BadgeInfoFg     = [System.Drawing.ColorTranslator]::FromHtml('#1D4ED8')
     BadgeMutedBg    = [System.Drawing.ColorTranslator]::FromHtml('#F1F5F9')
     BadgeMutedFg    = [System.Drawing.ColorTranslator]::FromHtml('#64748B')
 }
@@ -180,8 +91,38 @@ $script:Fonts = @{
     Body       = New-Object System.Drawing.Font('Segoe UI', 9.5, [System.Drawing.FontStyle]::Regular)
     BodyBold   = New-Object System.Drawing.Font('Segoe UI', 9.5, [System.Drawing.FontStyle]::Bold)
     Small      = New-Object System.Drawing.Font('Segoe UI', 8.5, [System.Drawing.FontStyle]::Regular)
+    SmallBold  = New-Object System.Drawing.Font('Segoe UI', 8.5, [System.Drawing.FontStyle]::Bold)
     Badge      = New-Object System.Drawing.Font('Segoe UI', 8.5, [System.Drawing.FontStyle]::Bold)
     Code       = New-Object System.Drawing.Font('Consolas', 9.5, [System.Drawing.FontStyle]::Regular)
+}
+
+# -----------------------------------------------------------------------------
+# PERSISTENCIA ROBUSTA DE DISPOSITIVOS (devices.json)
+# -----------------------------------------------------------------------------
+function Save-GuiAdbDevice {
+    param(
+        [string]$FriendlyName,
+        [Parameter(Mandatory=$true)][string]$Mode,
+        [string]$UsbSerial,
+        [string]$LastEndpoint,
+        [bool]$IsPaired = $false
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FriendlyName)) {
+        $FriendlyName = if (-not [string]::IsNullOrWhiteSpace($UsbSerial)) { $UsbSerial } elseif (-not [string]::IsNullOrWhiteSpace($LastEndpoint)) { $LastEndpoint } else { 'Dispositivo Android' }
+    }
+
+    $store = Read-AdbDeviceStore
+    $existing = @($store.Devices | Where-Object {
+        ($UsbSerial -and $_.UsbSerial -and $_.UsbSerial -ceq $UsbSerial) -or
+        ($LastEndpoint -and $_.LastEndpoint -and $_.LastEndpoint -ieq $LastEndpoint)
+    })[0]
+
+    $timestamp = [DateTime]::UtcNow.ToString('o')
+    if ($null -ne $existing) {
+        return (Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -UsbSerial $UsbSerial -LastEndpoint $LastEndpoint -Mode $Mode -IsPaired $IsPaired -LastConnectedUtc $timestamp)
+    }
+    return (Add-SavedAdbDevice -FriendlyName $FriendlyName -Mode $Mode -UsbSerial $UsbSerial -LastEndpoint $LastEndpoint -IsPaired $IsPaired -LastConnectedUtc $timestamp)
 }
 
 # -----------------------------------------------------------------------------
@@ -312,8 +253,10 @@ function Invoke-GuiAsyncTask {
 
 function Set-UiBusyState {
     param([bool]$IsBusy, [string]$Operation)
+    if ($null -eq $lblLastOp -or $lblLastOp.IsDisposed) { return }
+
     if ($IsBusy) {
-        $lblLastOp.Text = "Ultima operacion: $Operation (en progreso...)"
+        $lblLastOp.Text = "Operacion: $Operation (en ejecucion...)"
         $lblLastOp.ForeColor = $script:Theme.Primary
         $pbProgress.Visible = $true
         $pbProgress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
@@ -322,7 +265,7 @@ function Set-UiBusyState {
         $btnExecuteCmd.Enabled = $false
     } else {
         $timeStr = [DateTime]::Now.ToString('HH:mm:ss')
-        $lblLastOp.Text = "Ultima operacion: $Operation ($timeStr)"
+        $lblLastOp.Text = "Ultima op: $Operation ($timeStr)"
         $lblLastOp.ForeColor = $script:Theme.TextMuted
         $pbProgress.Visible = $false
         $btnReconnect.Enabled = $true
@@ -347,7 +290,7 @@ function Write-LogEntry {
         'SUCCESS' { [System.Drawing.ColorTranslator]::FromHtml('#10B981') } # Verde
         'ERROR'   { [System.Drawing.ColorTranslator]::FromHtml('#F87171') } # Rojo
         'WARN'    { [System.Drawing.ColorTranslator]::FromHtml('#FBBF24') } # Ambar
-        'CMD'     { [System.Drawing.ColorTranslator]::FromHtml('#60A5FA') } # Azul cielo
+        'CMD'     { [System.Drawing.ColorTranslator]::FromHtml('#60A5FA') } # Azul
         default   { [System.Drawing.ColorTranslator]::FromHtml('#E2E8F0') } # Blanco/Gris
     }
 
@@ -368,7 +311,6 @@ function Write-LogEntry {
 
     $txtLog.ScrollToCaret()
 
-    # Escribir tambien al log persistente del modulo si esta disponible
     try {
         if (Get-Command Write-AdbLog -ErrorAction SilentlyContinue) {
             $logLevel = if ($Level -eq 'CMD') { 'INFO' } else { $Level }
@@ -378,13 +320,257 @@ function Write-LogEntry {
 }
 
 # -----------------------------------------------------------------------------
-# ACTUALIZACION DEL ESTADO DEL DISPOSITIVO Y CABECERA
+# PANEL DE NOTIFICACIONES Y AYUDAS VISUALES EN TIEMPO REAL
+# -----------------------------------------------------------------------------
+function Show-NotificationBanner {
+    param(
+        [Parameter(Mandatory=$true)][ValidateSet('SUCCESS','INFO','WARN','ERROR')][string]$Type,
+        [Parameter(Mandatory=$true)][string]$Title,
+        [Parameter(Mandatory=$true)][string]$Message,
+        [string]$ActionText = $null,
+        [scriptblock]$ActionScript = $null
+    )
+
+    if ($null -eq $pnlNotification -or $pnlNotification.IsDisposed) { return }
+
+    $bgColor = switch ($Type) {
+        'SUCCESS' { [System.Drawing.ColorTranslator]::FromHtml('#ECFDF5') }
+        'WARN'    { [System.Drawing.ColorTranslator]::FromHtml('#FFFBEB') }
+        'ERROR'   { [System.Drawing.ColorTranslator]::FromHtml('#FEF2F2') }
+        default   { [System.Drawing.ColorTranslator]::FromHtml('#EFF6FF') }
+    }
+
+    $borderColor = switch ($Type) {
+        'SUCCESS' { [System.Drawing.ColorTranslator]::FromHtml('#059669') }
+        'WARN'    { [System.Drawing.ColorTranslator]::FromHtml('#D97706') }
+        'ERROR'   { [System.Drawing.ColorTranslator]::FromHtml('#DC2626') }
+        default   { [System.Drawing.ColorTranslator]::FromHtml('#2563EB') }
+    }
+
+    $titleColor = switch ($Type) {
+        'SUCCESS' { [System.Drawing.ColorTranslator]::FromHtml('#065F46') }
+        'WARN'    { [System.Drawing.ColorTranslator]::FromHtml('#92400E') }
+        'ERROR'   { [System.Drawing.ColorTranslator]::FromHtml('#991B1B') }
+        default   { [System.Drawing.ColorTranslator]::FromHtml('#1E40AF') }
+    }
+
+    $icon = switch ($Type) {
+        'SUCCESS' { "🎉" }
+        'WARN'    { "⚠️" }
+        'ERROR'   { "❌" }
+        default   { "ℹ️" }
+    }
+
+    $pnlNotification.BackColor = $bgColor
+    $pnlNotifBorder.BackColor = $borderColor
+    $lblNotifIcon.Text = $icon
+    $lblNotifTitle.Text = $Title
+    $lblNotifTitle.ForeColor = $titleColor
+    $lblNotifMessage.Text = $Message
+    $lblNotifMessage.ForeColor = $titleColor
+
+    if (-not [string]::IsNullOrWhiteSpace($ActionText) -and $null -ne $ActionScript) {
+        $btnNotifAction.Text = $ActionText
+        $btnNotifAction.Visible = $true
+        $btnNotifAction.BackColor = $borderColor
+        $btnNotifAction.ForeColor = [System.Drawing.Color]::White
+        $btnNotifAction.Tag = $ActionScript
+    } else {
+        $btnNotifAction.Visible = $false
+    }
+
+    $pnlNotification.Visible = $true
+}
+
+function Hide-NotificationBanner {
+    if ($null -ne $pnlNotification -and -not $pnlNotification.IsDisposed) {
+        $pnlNotification.Visible = $false
+    }
+}
+
+# -----------------------------------------------------------------------------
+# ESCANEO CONTINUO INTELIGENTE DE USB (AUTO-WIFI & AUTO-SAVE)
+# -----------------------------------------------------------------------------
+$script:AutoScanEnabled = $true
+$script:UsbAutoScanBusy = $false
+$script:UsbProcessedSerials = @{}
+
+function Start-UsbAutoWifiConversion {
+    param(
+        [Parameter(Mandatory=$true)][string]$UsbSerial
+    )
+
+    $script:UsbProcessedSerials[$UsbSerial] = 'Processing'
+    Show-NotificationBanner -Type 'INFO' -Title "Dispositivo USB detectado: $UsbSerial" -Message "Configurando depuracion WiFi automaticamente (TCP/IP 5555)..." -ActionText "Ver Detalle" -ActionScript { Show-NewDeviceWizard -InitialTab 'USB' }
+
+    Write-LogEntry -Level 'INFO' -Message "Iniciando auto-conversion WiFi para USB '$UsbSerial'..."
+
+    $worker = {
+        param($serial)
+        
+        # 1. Obtener modelo del telefono
+        $model = $serial
+        try {
+            $mOut = @(Invoke-AdbCommand -Serial $serial -Arguments @('shell','getprop','ro.product.model'))
+            $mStr = ($mOut -join ' ').Trim()
+            if (-not [string]::IsNullOrWhiteSpace($mStr)) { $model = $mStr }
+        } catch { }
+
+        # 2. Habilitar puerto TCP/IP 5555 por cable
+        try {
+            Invoke-Adb -Serial $serial -Arguments @('tcpip','5555') | Out-Null
+        } catch {
+            throw "No se pudo activar modo TCP/IP 5555: $($_.Exception.Message)"
+        }
+
+        Start-Sleep -Milliseconds 1200
+
+        # 3. Obtener IP WiFi del telefono
+        $ip = $null
+        try {
+            $ip = Get-AdbDeviceIpv4 -Serial $serial
+        } catch { }
+
+        # Si fallo el metodo principal de IP, intentar por comando shell directo
+        if ([string]::IsNullOrWhiteSpace($ip)) {
+            try {
+                $wlanOut = @(Invoke-AdbCommand -Serial $serial -Arguments @('shell','ip','-4','addr','show','wlan0')) -join ' '
+                if ($wlanOut -match 'inet\s+([0-9.]+)/\d+') {
+                    $ip = $Matches[1]
+                }
+            } catch { }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($ip)) {
+            return [pscustomobject]@{
+                Success       = $false
+                UsbSerial     = $serial
+                Model         = $model
+                Reason        = 'NoIp'
+                Message       = "El telefono no tiene una direccion IP WiFi activa en este momento."
+            }
+        }
+
+        # 4. Conectar por WiFi al endpoint
+        $endpoint = "$ip`:5555"
+        $conn = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 12
+
+        return [pscustomobject]@{
+            Success       = $true
+            UsbSerial     = $serial
+            Model         = $model
+            Endpoint      = $endpoint
+            Record        = $conn
+        }
+    }
+
+    Invoke-GuiAsyncTask -Title "Auto-WiFi $UsbSerial" -WorkerScript $worker -Parameters @{ serial = $UsbSerial } -OnCompleted {
+        param($res)
+        
+        if ($null -eq $res -or -not $res.Success) {
+            $err = if ($res -and $res.Error) { $res.Error } else { 'Error desconocido' }
+            Write-LogEntry -Level 'ERROR' -Message "Fallo auto-conversion WiFi para $UsbSerial : $err"
+            $script:UsbProcessedSerials[$UsbSerial] = 'Error'
+            Show-NotificationBanner -Type 'WARN' -Title "No se pudo activar WiFi para $UsbSerial" -Message "$err. Puedes usarlo por cable o abrir el Asistente." -ActionText "Abrir Asistente" -ActionScript { Show-NewDeviceWizard -InitialTab 'USB' }
+            return
+        }
+
+        $info = $res.Output[0]
+        if (-not $info.Success) {
+            # Telefono sin IP WiFi (conectado solo por datos moviles o sin WiFi)
+            $script:UsbProcessedSerials[$UsbSerial] = 'UsbOnly'
+            try {
+                $savedUsb = Save-GuiAdbDevice -FriendlyName "$($info.Model) (USB)" -Mode 'usb' -UsbSerial $info.UsbSerial -IsPaired $true
+                Set-CurrentAdbDevice -Device ([pscustomobject]@{ Id=$savedUsb.Id; FriendlyName=$savedUsb.FriendlyName; Serial=$info.UsbSerial; UsbSerial=$info.UsbSerial; Mode='usb'; LastEndpoint=$null }) -Persist | Out-Null
+                Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo USB '$($info.Model)' configurado como activo."
+            } catch { }
+            
+            Show-NotificationBanner -Type 'INFO' -Title "📱 $($info.Model) conectado por USB" -Message "Para usarlo SIN CABLE, conecta tu telefono a la misma red WiFi de tu PC." -ActionText "Entendido" -ActionScript { Hide-NotificationBanner }
+            Refresh-DeviceStatus -Silent
+            return
+        }
+
+        # Conexion WiFi Exitosa -> Guardar y Seleccionar como Activo
+        try {
+            $friendly = "$($info.Model) (WiFi)"
+            $saved = Save-GuiAdbDevice -FriendlyName $friendly -Mode 'tcpip-5555' -UsbSerial $info.UsbSerial -LastEndpoint $info.Endpoint -IsPaired $false
+            Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
+            $script:UsbProcessedSerials[$UsbSerial] = 'ConvertedWiFi'
+
+            Write-LogEntry -Level 'SUCCESS' -Message "¡Auto-conexion completada! Dispositivo conectado por WiFi en $($info.Endpoint)."
+            
+            # Notificacion visual destacada para retirar el cable
+            Show-NotificationBanner -Type 'SUCCESS' -Title "🎉 ¡$($info.Model) conectado por WiFi ($($info.Endpoint))!" -Message "Ya esta listo y guardado. ¡PUEDES DESCONECTAR EL CABLE USB DE FORMA SEGURA!" -ActionText "¡Genial, Entendido!" -ActionScript { Hide-NotificationBanner }
+            
+            Refresh-DeviceStatus -Silent
+        } catch {
+            Write-LogEntry -Level 'ERROR' -Message "Error al registrar dispositivo WiFi: $($_.Exception.Message)"
+            Show-NotificationBanner -Type 'ERROR' -Title "Error al guardar conexion WiFi" -Message "$($_.Exception.Message)"
+        }
+    }
+}
+
+function Invoke-UsbAutoDetection {
+    if (-not $script:AutoScanEnabled -or $script:UsbAutoScanBusy -or $script:RunningAsyncTasks -gt 0) { return }
+    $script:UsbAutoScanBusy = $true
+    try {
+        $onlineDevices = @()
+        try { $onlineDevices = @(Get-AdbDevices) } catch { return }
+
+        $connectedSerials = @($onlineDevices | ForEach-Object { $_.Serial })
+        
+        # Limpiar estados de dispositivos que ya se desconectaron fisicamente
+        foreach ($knownSerial in @($script:UsbProcessedSerials.Keys)) {
+            if ($connectedSerials -notcontains $knownSerial) {
+                $script:UsbProcessedSerials.Remove($knownSerial)
+            }
+        }
+
+        # Buscar dispositivos USB conectados fisicamente (sin ':puerto' en serial)
+        $usbDevices = @($onlineDevices | Where-Object { $_.Serial -notmatch ':\d+$' })
+
+        foreach ($usbDev in $usbDevices) {
+            $serial = $usbDev.Serial
+            $status = $usbDev.Status
+
+            if ($status -ceq 'unauthorized') {
+                if ($script:UsbProcessedSerials[$serial] -ne 'UnauthorizedNotified') {
+                    $script:UsbProcessedSerials[$serial] = 'UnauthorizedNotified'
+                    Show-NotificationBanner -Type 'WARN' -Title "⚠️ Dispositivo Detectado pero NO AUTORIZADO ($serial)" -Message "Desbloquea tu celular y pulsa 'Permitir siempre la depuracion USB desde este equipo'." -ActionText "🔑 Reiniciar ADB" -ActionScript {
+                        try {
+                            Invoke-AdbHost -Arguments @('kill-server') | Out-Null
+                            Start-Sleep -Milliseconds 600
+                            Invoke-AdbHost -Arguments @('start-server') | Out-Null
+                            Refresh-DeviceStatus -Silent
+                        } catch { }
+                    }
+                    Write-LogEntry -Level 'WARN' -Message "Dispositivo USB '$serial' detectado en estado UNAUTHORIZED. Requiere autorizacion en pantalla."
+                }
+                continue
+            }
+
+            if ($status -ceq 'device') {
+                # Si aun no ha sido procesado durante esta conexion
+                if (-not $script:UsbProcessedSerials.ContainsKey($serial) -or $script:UsbProcessedSerials[$serial] -eq 'UnauthorizedNotified') {
+                    Start-UsbAutoWifiConversion -UsbSerial $serial
+                }
+            }
+        }
+    } catch {
+        Write-LogEntry -Level 'WARN' -Message "Auto-Scanner USB: $($_.Exception.Message)"
+    } finally {
+        $script:UsbAutoScanBusy = $false
+    }
+}
+
+# -----------------------------------------------------------------------------
+# ACTUALIZACION COMPLETA DEL ESTADO DEL DISPOSITIVO Y CABECERA
 # -----------------------------------------------------------------------------
 function Refresh-DeviceStatus {
     param([switch]$Silent)
 
     if (-not $Silent) {
-        Write-LogEntry -Level 'INFO' -Message 'Consultando dispositivos ADB...'
+        Write-LogEntry -Level 'INFO' -Message 'Consultando estado de dispositivos...'
     }
 
     $worker = {
@@ -399,6 +585,8 @@ function Refresh-DeviceStatus {
             Model         = $null
             AndroidVer    = $null
             AdbAvailable  = $false
+            AllDevices    = @()
+            SavedDevices  = @()
         }
 
         if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
@@ -407,15 +595,19 @@ function Refresh-DeviceStatus {
         }
         $devInfo.AdbAvailable = $true
 
-        $cur = Get-CurrentAdbDevice
         $onlineDevices = @(Get-AdbDevices)
+        $savedDevices = @(Get-SavedAdbDevices)
+        $devInfo.AllDevices = $onlineDevices
+        $devInfo.SavedDevices = $savedDevices
 
-        # Si no hay actual, pero hay exactamente un dispositivo disponible en estado device, seleccionarlo
+        $cur = Get-CurrentAdbDevice
+
+        # Si no hay dispositivo seleccionado, pero hay uno online en estado device, seleccionarlo
         if ($null -eq $cur -and $onlineDevices.Count -gt 0) {
             $candidate = @($onlineDevices | Where-Object { $_.Status -ceq 'device' })[0]
             if ($null -ne $candidate) {
                 try {
-                    $cur = Set-CurrentAdbDevice -Device $candidate -Persist
+                    $cur = Set-CurrentAdbDevice -Device $candidate
                 } catch { }
             }
         }
@@ -426,12 +618,10 @@ function Refresh-DeviceStatus {
             $devInfo.FriendlyName = if ($cur.FriendlyName) { $cur.FriendlyName } else { $cur.Serial }
             $devInfo.Endpoint = if ($cur.LastEndpoint) { $cur.LastEndpoint } else { $cur.Serial }
             
-            # Verificar estado actual contra adb devices
             $record = @($onlineDevices | Where-Object { $_.Serial -ceq $cur.Serial })[0]
             $devInfo.Status = if ($null -ne $record) { [string]$record.Status } else { 'offline' }
 
             if ($devInfo.Status -ceq 'device') {
-                # Obtener modelo y version
                 try {
                     $m = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','getprop','ro.product.model'))
                     $devInfo.Model = ($m -join ' ').Trim()
@@ -440,8 +630,6 @@ function Refresh-DeviceStatus {
                     $v = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','getprop','ro.build.version.release'))
                     $devInfo.AndroidVer = ($v -join ' ').Trim()
                 } catch { }
-
-                # Obtener bateria y temperatura
                 try {
                     $batteryDump = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','dumpsys','battery'))
                     $lvlLine = @($batteryDump | Where-Object { [string]$_ -match '^\s*level:\s*(\d+)' })[0]
@@ -457,7 +645,7 @@ function Refresh-DeviceStatus {
             }
         } elseif ($onlineDevices.Count -gt 0) {
             $first = $onlineDevices[0]
-            $devInfo.FriendlyName = "Dispositivo no seleccionado: $($first.Serial)"
+            $devInfo.FriendlyName = "Dispositivo disponible: $($first.Serial)"
             $devInfo.Status = $first.Status
             $devInfo.Endpoint = $first.Serial
         }
@@ -483,7 +671,7 @@ function Refresh-DeviceStatus {
             $lblStatusBadge.ForeColor = $script:Theme.BadgeWarningFg
             $lblEndpoint.Text = "Instala Android Platform-Tools"
             $lblBatteryTemp.Text = "No disponible"
-            Write-LogEntry -Level 'WARN' -Message "ADB no se encuentra en PATH. Instala Android Platform Tools."
+            Show-NotificationBanner -Type 'ERROR' -Title "ADB no instalado" -Message "No se encontro el ejecutable 'adb.exe' en el sistema o PATH."
             return
         }
 
@@ -528,11 +716,54 @@ function Refresh-DeviceStatus {
             $lblBatteryTemp.Text = "🔋 Bateria: N/A"
         }
 
-        if ($info.HasDevice -and $info.Status -eq 'device') {
-            $andTxt = if ($info.AndroidVer) { " (Android $($info.AndroidVer))" } else { '' }
-            Write-LogEntry -Level 'INFO' -Message "Dispositivo activo: $($info.FriendlyName)$andTxt | Endpoint: $($info.Endpoint)"
+        # Actualizar Combo de Dispositivos en Cabecera
+        Update-HeaderDeviceList -AllDevices $info.AllDevices -SavedDevices $info.SavedDevices -CurrentSerial $info.Serial
+    }
+}
+
+function Update-HeaderDeviceList {
+    param($AllDevices, $SavedDevices, [string]$CurrentSerial)
+    
+    if ($null -eq $cboHeaderDevices -or $cboHeaderDevices.IsDisposed) { return }
+    
+    $cboHeaderDevices.BeginUpdate()
+    $cboHeaderDevices.Items.Clear()
+    $script:HeaderDeviceMap = @()
+
+    $allOnline = @($AllDevices)
+    $allSaved = @($SavedDevices)
+
+    foreach ($dev in $allOnline) {
+        $savedMatch = @($allSaved | Where-Object { $_.UsbSerial -ceq $dev.Serial -or $_.LastEndpoint -ceq $dev.Serial })[0]
+        $name = if ($savedMatch) { $savedMatch.FriendlyName } else { $dev.Serial }
+        $display = "📱 $name ($($dev.Status))"
+        $cboHeaderDevices.Items.Add($display) | Out-Null
+        $script:HeaderDeviceMap += [pscustomobject]@{ Device = $dev; Display = $display; Serial = $dev.Serial; IsOnline = $true }
+    }
+
+    foreach ($s in $allSaved) {
+        $alreadyInList = @($allOnline | Where-Object { $_.Serial -ceq $s.LastEndpoint -or $_.Serial -ceq $s.UsbSerial }).Count -gt 0
+        if (-not $alreadyInList) {
+            $display = "💾 $($s.FriendlyName) [Guardado]"
+            $cboHeaderDevices.Items.Add($display) | Out-Null
+            $script:HeaderDeviceMap += [pscustomobject]@{ Device = $s; Display = $display; Serial = if ($s.LastEndpoint) { $s.LastEndpoint } else { $s.UsbSerial }; IsOnline = $false }
         }
     }
+
+    # Seleccionar el activo
+    $selectedIndex = -1
+    for ($i = 0; $i -lt $script:HeaderDeviceMap.Count; $i++) {
+        if ($script:HeaderDeviceMap[$i].Serial -ceq $CurrentSerial) {
+            $selectedIndex = $i
+            break
+        }
+    }
+    if ($selectedIndex -ge 0) {
+        $cboHeaderDevices.SelectedIndex = $selectedIndex
+    } elseif ($cboHeaderDevices.Items.Count -gt 0) {
+        $cboHeaderDevices.SelectedIndex = 0
+    }
+    $cboHeaderDevices.EndUpdate()
 }
 
 # -----------------------------------------------------------------------------
@@ -540,7 +771,7 @@ function Refresh-DeviceStatus {
 # -----------------------------------------------------------------------------
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Android ADB Tools - Control Center"
-$form.Size = New-Object System.Drawing.Size(1120, 760)
+$form.Size = New-Object System.Drawing.Size(1140, 780)
 $form.MinimumSize = New-Object System.Drawing.Size(980, 680)
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 $form.BackColor = $script:Theme.BgWindow
@@ -551,39 +782,65 @@ $form.Font = $script:Fonts.Body
 # =============================================================================
 $pnlHeader = New-Object System.Windows.Forms.Panel
 $pnlHeader.Dock = [System.Windows.Forms.DockStyle]::Top
-$pnlHeader.Height = 90
+$pnlHeader.Height = 92
 $pnlHeader.BackColor = $script:Theme.BgHeader
-$pnlHeader.Padding = New-Object System.Windows.Forms.Padding(20, 12, 20, 12)
+$pnlHeader.Padding = New-Object System.Windows.Forms.Padding(20, 10, 20, 10)
 
-# Linea divisoria inferior de la cabecera
 $pnlHeaderBorder = New-Object System.Windows.Forms.Panel
 $pnlHeaderBorder.Dock = [System.Windows.Forms.DockStyle]::Bottom
 $pnlHeaderBorder.Height = 1
 $pnlHeaderBorder.BackColor = $script:Theme.BorderCard
 $pnlHeader.Controls.Add($pnlHeaderBorder)
 
-# Icono grande de dispositivo en cabecera
 $lblHeaderIcon = New-Object System.Windows.Forms.Label
 $lblHeaderIcon.Text = "📱"
 $lblHeaderIcon.Font = New-Object System.Drawing.Font('Segoe UI Emoji', 24)
 $lblHeaderIcon.Location = New-Object System.Drawing.Point(18, 18)
-$lblHeaderIcon.Size = New-Object System.Drawing.Size(48, 50)
+$lblHeaderIcon.Size = New-Object System.Drawing.Size(48, 52)
 $lblHeaderIcon.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 $pnlHeader.Controls.Add($lblHeaderIcon)
 
-# Nombre del Dispositivo
+# Nombre del Dispositivo Principal
 $lblDeviceName = New-Object System.Windows.Forms.Label
-$lblDeviceName.Text = "Cargando dispositivo..."
+$lblDeviceName.Text = "Iniciando Android ADB Tools..."
 $lblDeviceName.Font = $script:Fonts.TitleLarge
 $lblDeviceName.ForeColor = $script:Theme.TextTitle
-$lblDeviceName.Location = New-Object System.Drawing.Point(74, 16)
-$lblDeviceName.Size = New-Object System.Drawing.Size(560, 28)
+$lblDeviceName.Location = New-Object System.Drawing.Point(74, 14)
+$lblDeviceName.Size = New-Object System.Drawing.Size(420, 28)
 $pnlHeader.Controls.Add($lblDeviceName)
 
-# Fila de Estado: Badge + Endpoint + Bateria
+# Selector Rapido de Dispositivos (Header ComboBox)
+$cboHeaderDevices = New-Object System.Windows.Forms.ComboBox
+$cboHeaderDevices.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+$cboHeaderDevices.Font = $script:Fonts.SmallBold
+$cboHeaderDevices.Location = New-Object System.Drawing.Point(500, 15)
+$cboHeaderDevices.Size = New-Object System.Drawing.Size(200, 26)
+$cboHeaderDevices.Cursor = [System.Windows.Forms.Cursors]::Hand
+$cboHeaderDevices.Add_SelectedIndexChanged({
+    if ($cboHeaderDevices.SelectedIndex -ge 0 -and $null -ne $script:HeaderDeviceMap) {
+        $sel = $script:HeaderDeviceMap[$cboHeaderDevices.SelectedIndex]
+        if ($sel) {
+            try {
+                if ($sel.IsOnline) {
+                    $saved = Save-GuiAdbDevice -FriendlyName $sel.Serial -Mode 'usb' -UsbSerial $sel.Serial
+                    Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
+                    Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo seleccionado: $($sel.Serial)"
+                } else {
+                    Set-CurrentAdbDevice -Device $sel.Device -Persist | Out-Null
+                }
+                Refresh-DeviceStatus -Silent
+            } catch {
+                Write-LogEntry -Level 'WARN' -Message "Cambio de dispositivo: $($_.Exception.Message)"
+            }
+        }
+    }
+})
+$pnlHeader.Controls.Add($cboHeaderDevices)
+
+# Fila de Estado: Badge + Endpoint + Bateria + Auto-Scanner Status
 $pnlStatusRow = New-Object System.Windows.Forms.FlowLayoutPanel
 $pnlStatusRow.Location = New-Object System.Drawing.Point(74, 48)
-$pnlStatusRow.Size = New-Object System.Drawing.Size(650, 30)
+$pnlStatusRow.Size = New-Object System.Drawing.Size(630, 32)
 $pnlStatusRow.WrapContents = $false
 $pnlStatusRow.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 
@@ -592,28 +849,56 @@ $lblStatusBadge.Text = "○ CONSULTANDO"
 $lblStatusBadge.Font = $script:Fonts.Badge
 $lblStatusBadge.BackColor = $script:Theme.BadgeMutedBg
 $lblStatusBadge.ForeColor = $script:Theme.BadgeMutedFg
-$lblStatusBadge.Padding = New-Object System.Windows.Forms.Padding(8, 3, 8, 3)
+$lblStatusBadge.Padding = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
 $lblStatusBadge.AutoSize = $true
-$lblStatusBadge.Margin = New-Object System.Windows.Forms.Padding(0, 0, 12, 0)
+$lblStatusBadge.Margin = New-Object System.Windows.Forms.Padding(0, 0, 10, 0)
 $lblStatusBadge.Cursor = [System.Windows.Forms.Cursors]::Hand
 $lblStatusBadge.Add_Click({ Show-NewDeviceWizard -InitialTab 'Auth' })
 $pnlStatusRow.Controls.Add($lblStatusBadge)
 
 $lblEndpoint = New-Object System.Windows.Forms.Label
-$lblEndpoint.Text = "🌐 Endpoint: Buscando..."
-$lblEndpoint.Font = $script:Fonts.Body
+$lblEndpoint.Text = "🌐 Buscando..."
+$lblEndpoint.Font = $script:Fonts.Small
 $lblEndpoint.ForeColor = $script:Theme.TextMuted
 $lblEndpoint.AutoSize = $true
-$lblEndpoint.Margin = New-Object System.Windows.Forms.Padding(0, 3, 16, 0)
+$lblEndpoint.Margin = New-Object System.Windows.Forms.Padding(0, 4, 12, 0)
 $pnlStatusRow.Controls.Add($lblEndpoint)
 
 $lblBatteryTemp = New-Object System.Windows.Forms.Label
 $lblBatteryTemp.Text = "🔋 Bateria: --"
-$lblBatteryTemp.Font = $script:Fonts.Body
+$lblBatteryTemp.Font = $script:Fonts.Small
 $lblBatteryTemp.ForeColor = $script:Theme.TextMuted
 $lblBatteryTemp.AutoSize = $true
-$lblBatteryTemp.Margin = New-Object System.Windows.Forms.Padding(0, 3, 0, 0)
+$lblBatteryTemp.Margin = New-Object System.Windows.Forms.Padding(0, 4, 12, 0)
 $pnlStatusRow.Controls.Add($lblBatteryTemp)
+
+# Boton de Toggle Auto-Scan USB
+$btnAutoScanToggle = New-Object System.Windows.Forms.Button
+$btnAutoScanToggle.Text = "🟢 Auto-USB: ON"
+$btnAutoScanToggle.Font = $script:Fonts.SmallBold
+$btnAutoScanToggle.Size = New-Object System.Drawing.Size(125, 24)
+$btnAutoScanToggle.BackColor = $script:Theme.BadgeSuccessBg
+$btnAutoScanToggle.ForeColor = $script:Theme.BadgeSuccessFg
+$btnAutoScanToggle.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnAutoScanToggle.FlatAppearance.BorderSize = 0
+$btnAutoScanToggle.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnAutoScanToggle.Margin = New-Object System.Windows.Forms.Padding(0, 1, 0, 0)
+$btnAutoScanToggle.Add_Click({
+    $script:AutoScanEnabled = -not $script:AutoScanEnabled
+    if ($script:AutoScanEnabled) {
+        $btnAutoScanToggle.Text = "🟢 Auto-USB: ON"
+        $btnAutoScanToggle.BackColor = $script:Theme.BadgeSuccessBg
+        $btnAutoScanToggle.ForeColor = $script:Theme.BadgeSuccessFg
+        Write-LogEntry -Level 'INFO' -Message "Auto-Scanner USB reanudado."
+        Invoke-UsbAutoDetection
+    } else {
+        $btnAutoScanToggle.Text = "⏸️ Auto-USB: PAUSA"
+        $btnAutoScanToggle.BackColor = $script:Theme.BadgeMutedBg
+        $btnAutoScanToggle.ForeColor = $script:Theme.BadgeMutedFg
+        Write-LogEntry -Level 'INFO' -Message "Auto-Scanner USB pausado."
+    }
+})
+$pnlStatusRow.Controls.Add($btnAutoScanToggle)
 
 $pnlHeader.Controls.Add($pnlStatusRow)
 
@@ -625,9 +910,9 @@ $btnConnectDevice.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#10B98
 $btnConnectDevice.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
 $btnConnectDevice.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnConnectDevice.FlatAppearance.BorderSize = 0
-$btnConnectDevice.Size = New-Object System.Drawing.Size(160, 42)
+$btnConnectDevice.Size = New-Object System.Drawing.Size(155, 42)
 $btnConnectDevice.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$btnConnectDevice.Location = New-Object System.Drawing.Point(615, 22)
+$btnConnectDevice.Location = New-Object System.Drawing.Point(720, 24)
 $btnConnectDevice.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnConnectDevice.Add_MouseEnter({ $btnConnectDevice.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#059669') })
 $btnConnectDevice.Add_MouseLeave({ $btnConnectDevice.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#10B981') })
@@ -640,25 +925,25 @@ $btnReconnect.BackColor = $script:Theme.Primary
 $btnReconnect.ForeColor = $script:Theme.PrimaryFg
 $btnReconnect.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnReconnect.FlatAppearance.BorderSize = 0
-$btnReconnect.Size = New-Object System.Drawing.Size(130, 42)
+$btnReconnect.Size = New-Object System.Drawing.Size(125, 42)
 $btnReconnect.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$btnReconnect.Location = New-Object System.Drawing.Point(785, 22)
+$btnReconnect.Location = New-Object System.Drawing.Point(885, 24)
 $btnReconnect.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnReconnect.Add_MouseEnter({ $btnReconnect.BackColor = $script:Theme.PrimaryHover })
 $btnReconnect.Add_MouseLeave({ $btnReconnect.BackColor = $script:Theme.Primary })
 $pnlHeader.Controls.Add($btnReconnect)
 
 $btnRefresh = New-Object System.Windows.Forms.Button
-$btnRefresh.Text = "🔄 Refrescar"
-$btnRefresh.Font = $script:Fonts.BodyBold
+$btnRefresh.Text = "🔄"
+$btnRefresh.Font = New-Object System.Drawing.Font('Segoe UI Emoji', 13)
 $btnRefresh.BackColor = $script:Theme.Secondary
 $btnRefresh.ForeColor = $script:Theme.SecondaryFg
 $btnRefresh.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnRefresh.FlatAppearance.BorderSize = 1
 $btnRefresh.FlatAppearance.BorderColor = $script:Theme.BorderCard
-$btnRefresh.Size = New-Object System.Drawing.Size(110, 42)
+$btnRefresh.Size = New-Object System.Drawing.Size(50, 42)
 $btnRefresh.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$btnRefresh.Location = New-Object System.Drawing.Point(925, 22)
+$btnRefresh.Location = New-Object System.Drawing.Point(1020, 24)
 $btnRefresh.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnRefresh.Add_MouseEnter({ $btnRefresh.BackColor = $script:Theme.SecondaryHover })
 $btnRefresh.Add_MouseLeave({ $btnRefresh.BackColor = $script:Theme.Secondary })
@@ -667,15 +952,84 @@ $pnlHeader.Controls.Add($btnRefresh)
 $form.Controls.Add($pnlHeader)
 
 # =============================================================================
-# 4. ZONA INFERIOR - COMANDOS PERSONALIZADOS (MODO AVANZADO)
+# PANEL DE NOTIFICACIONES Y AYUDAS VISUALES (Debajo de Header)
+# =============================================================================
+$pnlNotification = New-Object System.Windows.Forms.Panel
+$pnlNotification.Dock = [System.Windows.Forms.DockStyle]::Top
+$pnlNotification.Height = 62
+$pnlNotification.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#ECFDF5')
+$pnlNotification.Visible = $false
+$pnlNotification.Padding = New-Object System.Windows.Forms.Padding(16, 8, 16, 8)
+
+$pnlNotifBorder = New-Object System.Windows.Forms.Panel
+$pnlNotifBorder.Dock = [System.Windows.Forms.DockStyle]::Left
+$pnlNotifBorder.Width = 4
+$pnlNotifBorder.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#059669')
+$pnlNotification.Controls.Add($pnlNotifBorder)
+
+$lblNotifIcon = New-Object System.Windows.Forms.Label
+$lblNotifIcon.Text = "🎉"
+$lblNotifIcon.Font = New-Object System.Drawing.Font('Segoe UI Emoji', 16)
+$lblNotifIcon.Location = New-Object System.Drawing.Point(16, 12)
+$lblNotifIcon.Size = New-Object System.Drawing.Size(32, 36)
+$pnlNotification.Controls.Add($lblNotifIcon)
+
+$lblNotifTitle = New-Object System.Windows.Forms.Label
+$lblNotifTitle.Text = "Notificacion"
+$lblNotifTitle.Font = $script:Fonts.TitleSmall
+$lblNotifTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#065F46')
+$lblNotifTitle.Location = New-Object System.Drawing.Point(54, 8)
+$lblNotifTitle.Size = New-Object System.Drawing.Size(760, 20)
+$pnlNotification.Controls.Add($lblNotifTitle)
+
+$lblNotifMessage = New-Object System.Windows.Forms.Label
+$lblNotifMessage.Text = "Mensaje detallado"
+$lblNotifMessage.Font = $script:Fonts.Small
+$lblNotifMessage.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#065F46')
+$lblNotifMessage.Location = New-Object System.Drawing.Point(54, 28)
+$lblNotifMessage.Size = New-Object System.Drawing.Size(760, 24)
+$pnlNotification.Controls.Add($lblNotifMessage)
+
+$btnNotifAction = New-Object System.Windows.Forms.Button
+$btnNotifAction.Text = "Accion"
+$btnNotifAction.Font = $script:Fonts.SmallBold
+$btnNotifAction.Size = New-Object System.Drawing.Size(130, 32)
+$btnNotifAction.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+$btnNotifAction.Location = New-Object System.Drawing.Point(890, 14)
+$btnNotifAction.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnNotifAction.FlatAppearance.BorderSize = 0
+$btnNotifAction.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnNotifAction.Add_Click({
+    if ($btnNotifAction.Tag -is [scriptblock]) {
+        & $btnNotifAction.Tag
+    }
+})
+$pnlNotification.Controls.Add($btnNotifAction)
+
+$btnNotifClose = New-Object System.Windows.Forms.Button
+$btnNotifClose.Text = "✕"
+$btnNotifClose.Font = $script:Fonts.SmallBold
+$btnNotifClose.Size = New-Object System.Drawing.Size(32, 32)
+$btnNotifClose.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+$btnNotifClose.Location = New-Object System.Drawing.Point(1030, 14)
+$btnNotifClose.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnNotifClose.FlatAppearance.BorderSize = 0
+$btnNotifClose.BackColor = [System.Drawing.Color]::Transparent
+$btnNotifClose.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnNotifClose.Add_Click({ Hide-NotificationBanner })
+$pnlNotification.Controls.Add($btnNotifClose)
+
+$form.Controls.Add($pnlNotification)
+
+# =============================================================================
+# ZONA INFERIOR - COMANDOS PERSONALIZADOS (MODO AVANZADO)
 # =============================================================================
 $pnlAdvanced = New-Object System.Windows.Forms.Panel
 $pnlAdvanced.Dock = [System.Windows.Forms.DockStyle]::Bottom
-$pnlAdvanced.Height = 150
+$pnlAdvanced.Height = 145
 $pnlAdvanced.BackColor = $script:Theme.BgCard
-$pnlAdvanced.Padding = New-Object System.Windows.Forms.Padding(20, 10, 20, 12)
+$pnlAdvanced.Padding = New-Object System.Windows.Forms.Padding(20, 8, 20, 10)
 
-# Borde superior de la zona inferior
 $pnlAdvBorder = New-Object System.Windows.Forms.Panel
 $pnlAdvBorder.Dock = [System.Windows.Forms.DockStyle]::Top
 $pnlAdvBorder.Height = 1
@@ -687,7 +1041,7 @@ $lblAdvTitle = New-Object System.Windows.Forms.Label
 $lblAdvTitle.Text = "⚡ Modo Avanzado: Consola de Comandos ADB"
 $lblAdvTitle.Font = $script:Fonts.TitleSmall
 $lblAdvTitle.ForeColor = $script:Theme.TextTitle
-$lblAdvTitle.Location = New-Object System.Drawing.Point(20, 14)
+$lblAdvTitle.Location = New-Object System.Drawing.Point(20, 10)
 $lblAdvTitle.Size = New-Object System.Drawing.Size(350, 20)
 $pnlAdvanced.Controls.Add($lblAdvTitle)
 
@@ -695,7 +1049,7 @@ $lblAdvSub = New-Object System.Windows.Forms.Label
 $lblAdvSub.Text = "(Se ejecuta automaticamente con 'adb -s <serial>')"
 $lblAdvSub.Font = $script:Fonts.Small
 $lblAdvSub.ForeColor = $script:Theme.TextMuted
-$lblAdvSub.Location = New-Object System.Drawing.Point(375, 16)
+$lblAdvSub.Location = New-Object System.Drawing.Point(375, 12)
 $lblAdvSub.Size = New-Object System.Drawing.Size(320, 18)
 $pnlAdvanced.Controls.Add($lblAdvSub)
 
@@ -703,7 +1057,7 @@ $chkFavorite = New-Object System.Windows.Forms.CheckBox
 $chkFavorite.Text = "⭐ Guardar como favorito al ejecutar"
 $chkFavorite.Font = $script:Fonts.Small
 $chkFavorite.ForeColor = $script:Theme.TextBody
-$chkFavorite.Location = New-Object System.Drawing.Point(750, 14)
+$chkFavorite.Location = New-Object System.Drawing.Point(780, 10)
 $chkFavorite.Size = New-Object System.Drawing.Size(260, 22)
 $chkFavorite.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
 $chkFavorite.Cursor = [System.Windows.Forms.Cursors]::Hand
@@ -714,14 +1068,14 @@ $lblFavLabel = New-Object System.Windows.Forms.Label
 $lblFavLabel.Text = "Favoritos:"
 $lblFavLabel.Font = $script:Fonts.BodyBold
 $lblFavLabel.ForeColor = $script:Theme.TextBody
-$lblFavLabel.Location = New-Object System.Drawing.Point(20, 44)
+$lblFavLabel.Location = New-Object System.Drawing.Point(20, 38)
 $lblFavLabel.Size = New-Object System.Drawing.Size(75, 24)
 $pnlAdvanced.Controls.Add($lblFavLabel)
 
 $cboFavorites = New-Object System.Windows.Forms.ComboBox
 $cboFavorites.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $cboFavorites.Font = $script:Fonts.Body
-$cboFavorites.Location = New-Object System.Drawing.Point(95, 41)
+$cboFavorites.Location = New-Object System.Drawing.Point(95, 35)
 $cboFavorites.Size = New-Object System.Drawing.Size(460, 26)
 $cboFavorites.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
 $pnlAdvanced.Controls.Add($cboFavorites)
@@ -734,7 +1088,7 @@ $btnLoadFav.ForeColor = $script:Theme.SecondaryFg
 $btnLoadFav.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnLoadFav.FlatAppearance.BorderSize = 1
 $btnLoadFav.FlatAppearance.BorderColor = $script:Theme.BorderCard
-$btnLoadFav.Location = New-Object System.Drawing.Point(565, 40)
+$btnLoadFav.Location = New-Object System.Drawing.Point(565, 34)
 $btnLoadFav.Size = New-Object System.Drawing.Size(110, 27)
 $btnLoadFav.Cursor = [System.Windows.Forms.Cursors]::Hand
 $pnlAdvanced.Controls.Add($btnLoadFav)
@@ -746,7 +1100,7 @@ $btnDeleteFav.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#FEE2E2')
 $btnDeleteFav.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#DC2626')
 $btnDeleteFav.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnDeleteFav.FlatAppearance.BorderSize = 0
-$btnDeleteFav.Location = New-Object System.Drawing.Point(685, 40)
+$btnDeleteFav.Location = New-Object System.Drawing.Point(685, 34)
 $btnDeleteFav.Size = New-Object System.Drawing.Size(125, 27)
 $btnDeleteFav.Cursor = [System.Windows.Forms.Cursors]::Hand
 $pnlAdvanced.Controls.Add($btnDeleteFav)
@@ -756,15 +1110,15 @@ $lblCmdLabel = New-Object System.Windows.Forms.Label
 $lblCmdLabel.Text = "adb:"
 $lblCmdLabel.Font = New-Object System.Drawing.Font('Consolas', 11, [System.Drawing.FontStyle]::Bold)
 $lblCmdLabel.ForeColor = $script:Theme.Primary
-$lblCmdLabel.Location = New-Object System.Drawing.Point(20, 85)
+$lblCmdLabel.Location = New-Object System.Drawing.Point(20, 78)
 $lblCmdLabel.Size = New-Object System.Drawing.Size(75, 28)
 $pnlAdvanced.Controls.Add($lblCmdLabel)
 
 $txtCustomCommand = New-Object System.Windows.Forms.TextBox
 $txtCustomCommand.Font = $script:Fonts.Code
 $txtCustomCommand.Text = "shell getprop ro.product.model"
-$txtCustomCommand.Location = New-Object System.Drawing.Point(95, 82)
-$txtCustomCommand.Size = New-Object System.Drawing.Size(840, 28)
+$txtCustomCommand.Location = New-Object System.Drawing.Point(95, 75)
+$txtCustomCommand.Size = New-Object System.Drawing.Size(860, 28)
 $txtCustomCommand.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $pnlAdvanced.Controls.Add($txtCustomCommand)
 
@@ -775,7 +1129,7 @@ $btnExecuteCmd.BackColor = $script:Theme.Primary
 $btnExecuteCmd.ForeColor = $script:Theme.PrimaryFg
 $btnExecuteCmd.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnExecuteCmd.FlatAppearance.BorderSize = 0
-$btnExecuteCmd.Location = New-Object System.Drawing.Point(950, 80)
+$btnExecuteCmd.Location = New-Object System.Drawing.Point(970, 73)
 $btnExecuteCmd.Size = New-Object System.Drawing.Size(125, 32)
 $btnExecuteCmd.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
 $btnExecuteCmd.Cursor = [System.Windows.Forms.Cursors]::Hand
@@ -786,11 +1140,11 @@ $pnlAdvanced.Controls.Add($btnExecuteCmd)
 $form.Controls.Add($pnlAdvanced)
 
 # =============================================================================
-# 2 Y 3. PANEL CENTRAL (Acciones a la Izquierda, Logs a la Derecha)
+# PANEL CENTRAL (Acciones a la Izquierda, Logs a la Derecha)
 # =============================================================================
 $pnlCenter = New-Object System.Windows.Forms.Panel
 $pnlCenter.Dock = [System.Windows.Forms.DockStyle]::Fill
-$pnlCenter.Padding = New-Object System.Windows.Forms.Padding(16, 14, 16, 14)
+$pnlCenter.Padding = New-Object System.Windows.Forms.Padding(16, 12, 16, 12)
 $pnlCenter.BackColor = $script:Theme.BgWindow
 
 # -----------------------------------------------------------------------------
@@ -894,7 +1248,6 @@ $cardLog.BackColor = $script:Theme.BgCard
 $cardLog.Padding = New-Object System.Windows.Forms.Padding(14)
 $cardLog.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 
-# Barra superior del panel de log
 $pnlLogTop = New-Object System.Windows.Forms.Panel
 $pnlLogTop.Dock = [System.Windows.Forms.DockStyle]::Top
 $pnlLogTop.Height = 36
@@ -909,14 +1262,14 @@ $lblLogTitle.Size = New-Object System.Drawing.Size(240, 24)
 $pnlLogTop.Controls.Add($lblLogTitle)
 
 $lblLastOp = New-Object System.Windows.Forms.Label
-$lblLastOp.Text = "Ultima operacion: Ninguna"
+$lblLastOp.Text = "Operacion: Ninguna"
 $lblLastOp.Font = $script:Fonts.Small
 $lblLastOp.ForeColor = $script:Theme.TextMuted
 $lblLastOp.Location = New-Object System.Drawing.Point(245, 9)
 $lblLastOp.Size = New-Object System.Drawing.Size(320, 20)
 $pnlLogTop.Controls.Add($lblLastOp)
 
-# Botones de utilidad para el log (derecha)
+# Botones de utilidad para el log
 $btnLogClear = New-Object System.Windows.Forms.Button
 $btnLogClear.Text = "🧹 Limpiar"
 $btnLogClear.Font = $script:Fonts.Small
@@ -953,9 +1306,9 @@ $btnLogCopy.Add_Click({
 $pnlLogTop.Controls.Add($btnLogCopy)
 
 $btnLogFile = New-Object System.Windows.Forms.Button
-$btnLogFile.Text = "📄 Ver archivo .log"
+$btnLogFile.Text = "📄 Ver .log"
 $btnLogFile.Font = $script:Fonts.Small
-$btnLogFile.Size = New-Object System.Drawing.Size(120, 26)
+$btnLogFile.Size = New-Object System.Drawing.Size(100, 26)
 $btnLogFile.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
 $btnLogFile.Location = New-Object System.Drawing.Point(605, 4)
 $btnLogFile.BackColor = $script:Theme.Secondary
@@ -980,14 +1333,12 @@ $pnlLogTop.Controls.Add($btnLogFile)
 
 $cardLog.Controls.Add($pnlLogTop)
 
-# Barra de progreso sutil (Marquee)
 $pbProgress = New-Object System.Windows.Forms.ProgressBar
 $pbProgress.Dock = [System.Windows.Forms.DockStyle]::Top
 $pbProgress.Height = 3
 $pbProgress.Visible = $false
 $cardLog.Controls.Add($pbProgress)
 
-# Visor RichTextBox estilo consola moderna
 $txtLog = New-Object System.Windows.Forms.RichTextBox
 $txtLog.Dock = [System.Windows.Forms.DockStyle]::Fill
 $txtLog.BackColor = $script:Theme.LogBg
@@ -1005,9 +1356,6 @@ $form.Controls.Add($pnlCenter)
 # LOGICA DE EVENTOS Y VINCULACION A LAS FUNCIONES DEL MODULO
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Cargar lista de favoritos en el ComboBox
-# -----------------------------------------------------------------------------
 function Load-FavoritesUi {
     $cboFavorites.Items.Clear()
     $commands = Get-AdbFavoriteCommands
@@ -1046,9 +1394,6 @@ $btnDeleteFav.Add_Click({
     }
 })
 
-# -----------------------------------------------------------------------------
-# Ejecucion de comandos personalizados (Modo Avanzado)
-# -----------------------------------------------------------------------------
 $btnExecuteCmd.Add_Click({
     $cmdRaw = $txtCustomCommand.Text.Trim()
     if ([string]::IsNullOrWhiteSpace($cmdRaw)) {
@@ -1056,7 +1401,6 @@ $btnExecuteCmd.Add_Click({
         return
     }
 
-    # Si se marco "Guardar como favorito", agregarlo
     if ($chkFavorite.Checked) {
         $favs = @(Get-AdbFavoriteCommands)
         $existing = @($favs | Where-Object { $_.Command -ceq $cmdRaw })
@@ -1070,16 +1414,13 @@ $btnExecuteCmd.Add_Click({
         }
     }
 
-    # Normalizar comando (remover 'adb ' al inicio si el usuario lo introdujo)
     $cleanCmd = $cmdRaw -replace '^adb\s+', ''
 
-    # Ejecutar en segundo plano
     $worker = {
         param($cmdString)
         $dev = Get-CurrentAdbDevice
         $serial = if ($null -ne $dev -and $dev.Status -ceq 'device') { $dev.Serial } else { $null }
 
-        # Comandos que no deben llevar -s (comandos de host)
         $isHostCmd = $cmdString -match '^(devices|version|start-server|kill-server|connect|disconnect|pair)\b'
 
         $argsList = @()
@@ -1088,8 +1429,6 @@ $btnExecuteCmd.Add_Click({
             $argsList += $serial
         }
 
-        # Separar argumentos respetando comillas
-        # En PowerShell 5.1 podemos invocar adb directamente con ProcessStartInfo para control total
         $fullArgs = if ($argsList.Count -gt 0) { "$($argsList -join ' ') $cmdString" } else { $cmdString }
         
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1145,7 +1484,6 @@ $btnExecuteCmd.Add_Click({
     }
 })
 
-# Permitir ejecutar con Enter en el TextBox de comandos
 $txtCustomCommand.Add_KeyDown({
     if ($_.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
         $_.SuppressKeyPress = $true
@@ -1168,7 +1506,6 @@ function Show-NewDeviceWizard {
     $dlg.MaximizeBox = $false
     $dlg.MinimizeBox = $false
 
-    # Banner superior
     $pnlBanner = New-Object System.Windows.Forms.Panel
     $pnlBanner.Dock = [System.Windows.Forms.DockStyle]::Top
     $pnlBanner.Height = 75
@@ -1205,7 +1542,6 @@ function Show-NewDeviceWizard {
     $pnlBanner.Controls.Add($pnlBannerBorder)
     $dlg.Controls.Add($pnlBanner)
 
-    # TabControl Principal
     $tabControl = New-Object System.Windows.Forms.TabControl
     $tabControl.Dock = [System.Windows.Forms.DockStyle]::Fill
     $tabControl.Font = $script:Fonts.BodyBold
@@ -1239,7 +1575,6 @@ function Show-NewDeviceWizard {
     $btnDetectUsb.Cursor = [System.Windows.Forms.Cursors]::Hand
     $tabUsb.Controls.Add($btnDetectUsb)
 
-    # Panel de Estado / Resultado USB
     $pnlUsbCard = New-Object System.Windows.Forms.Panel
     $pnlUsbCard.Location = New-Object System.Drawing.Point(16, 110)
     $pnlUsbCard.Size = New-Object System.Drawing.Size(635, 330)
@@ -1400,8 +1735,6 @@ function Show-NewDeviceWizard {
                 if ([string]::IsNullOrWhiteSpace($fName)) { $fName = $modelName }
                 if ([string]::IsNullOrWhiteSpace($fName)) { $fName = $deviceRecord.Serial }
                 try {
-                    # USB no es un endpoint host:puerto. Se conserva en UsbSerial
-                    # y se selecciona usando el serial detectado en esta sesión.
                     $saved = Save-GuiAdbDevice -FriendlyName $fName -Mode 'usb' -UsbSerial $deviceRecord.Serial -IsPaired $true
                     $selected = [pscustomobject]@{ Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$deviceRecord.Serial; UsbSerial=$deviceRecord.Serial; Mode='usb'; LastEndpoint=$null }
                     Set-CurrentAdbDevice -Device $selected -Persist | Out-Null
@@ -1436,8 +1769,6 @@ function Show-NewDeviceWizard {
                 $btnSwitchWifi.Text = "Activando WiFi en el telefono..."
                 $dlg.Refresh()
                 try {
-                    # Leer la IP mientras el canal USB sigue estable. Después de
-                    # adb tcpip Android puede reiniciar la conexión USB.
                     $ip = Get-AdbDeviceIpv4 -Serial $deviceRecord.Serial
                     if ([string]::IsNullOrWhiteSpace($ip)) {
                         $ip = [Microsoft.VisualBasic.Interaction]::InputBox("No se pudo auto-detectar la IP. Introduce la IP del telefono en la red WiFi:", "IP de Android", "192.168.1.")
@@ -1480,14 +1811,11 @@ function Show-NewDeviceWizard {
         if ($null -eq $usbMatch -and $devs.Count -gt 0) { $usbMatch = $devs[0] }
 
         if ($null -ne $usbMatch -and $usbMatch.Status -ceq 'device') {
-            # La detección USB ya es suficiente para ejecutar comandos por cable;
-            # no obligamos al usuario a guardar el dispositivo para seleccionarlo.
             try {
-                Set-CurrentAdbDevice -Device ([pscustomobject]@{ Serial=$usbMatch.Serial }) | Out-Null
+                $saved = Save-GuiAdbDevice -FriendlyName $usbMatch.Serial -Mode 'usb' -UsbSerial $usbMatch.Serial
+                Set-CurrentAdbDevice -Device ([pscustomobject]@{ Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$usbMatch.Serial; UsbSerial=$usbMatch.Serial; Mode='usb'; LastEndpoint=$null }) | Out-Null
                 Write-LogEntry -Level 'SUCCESS' -Message "USB detectado y seleccionado como activo: $($usbMatch.Serial)."
-            } catch {
-                Write-LogEntry -Level 'WARN' -Message "USB detectado, pero no se pudo seleccionar como activo: $($_.Exception.Message)"
-            }
+            } catch { }
         }
 
         & $fnUpdateUsbView $usbMatch
@@ -1598,7 +1926,7 @@ function Show-NewDeviceWizard {
             $dlg.Refresh()
 
             $record = Connect-AdbEndpoint -Endpoint $connEndpoint -TimeoutSeconds 15
-            $saved = Add-SavedAdbDevice -FriendlyName $fName -Mode 'wireless-debugging-tls' -LastEndpoint $record.Serial -IsPaired $true -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+            $saved = Save-GuiAdbDevice -FriendlyName $fName -Mode 'wireless-debugging-tls' -LastEndpoint $record.Serial -IsPaired $true
             Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
 
             Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo inalambrico '$fName' vinculado y conectado exitosamente."
@@ -1676,7 +2004,7 @@ function Show-NewDeviceWizard {
                 $lblDirectMsg.Text = "Conectado pero NO AUTORIZADO. Ve a la pestana Reparar Autorizacion."
                 $tabControl.SelectedTab = $tabAuth
             } else {
-                $saved = Add-SavedAdbDevice -FriendlyName $fName -Mode 'tcpip-5555' -LastEndpoint $record.Serial -IsPaired $true -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+                $saved = Save-GuiAdbDevice -FriendlyName $fName -Mode 'tcpip-5555' -LastEndpoint $record.Serial -IsPaired $true
                 Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
                 Write-LogEntry -Level 'SUCCESS' -Message "Conectado exitosamente a $ep."
                 $dlg.Close()
@@ -1833,7 +2161,6 @@ $btnReconnect.Add_Click({
         if ($null -ne $cur) {
             $ready = Test-AdbDeviceReady -Device $cur -AutoReconnect $true
         } else {
-            # Si no hay actual, intentar con los guardados
             $saved = @(Get-SavedAdbDevices)
             foreach ($dev in $saved) {
                 if (Test-AdbDeviceReady -Device $dev -AutoReconnect $true) {
@@ -1849,8 +2176,10 @@ $btnReconnect.Add_Click({
         param($res)
         if ($res -and $res.Success -and $res.Output[0] -eq $true) {
             Write-LogEntry -Level 'SUCCESS' -Message 'Reconexion completada y verificada exitosamente.'
+            Show-NotificationBanner -Type 'SUCCESS' -Title "Reconexion Exitosa" -Message "El dispositivo activo esta listo para operar."
         } else {
             Write-LogEntry -Level 'WARN' -Message 'No se pudo reconectar automaticamente. Revisa la conexion USB o la IP WiFi.'
+            Show-NotificationBanner -Type 'WARN' -Title "Reconexion Fallida" -Message "No se encontro respuesta del dispositivo. Verifica que este en la misma red WiFi o conecta el cable USB." -ActionText "Abrir Asistente" -ActionScript { Show-NewDeviceWizard }
         }
         Refresh-DeviceStatus -Silent
     }
@@ -1862,10 +2191,9 @@ $btnReconnect.Add_Click({
 
 # 1. GESTIONAR DISPOSITIVOS
 $btnActionDevices.Add_Click({
-    # Crear formulario modal elegante de seleccion de dispositivos
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = "Gestionar Dispositivos ADB"
-    $dlg.Size = New-Object System.Drawing.Size(560, 480)
+    $dlg.Size = New-Object System.Drawing.Size(600, 520)
     $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $dlg.BackColor = $script:Theme.BgWindow
     $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -1883,53 +2211,62 @@ $btnActionDevices.Add_Click({
     $lstDevices = New-Object System.Windows.Forms.ListBox
     $lstDevices.Font = $script:Fonts.Body
     $lstDevices.Location = New-Object System.Drawing.Point(20, 50)
-    $lstDevices.Size = New-Object System.Drawing.Size(500, 220)
+    $lstDevices.Size = New-Object System.Drawing.Size(540, 230)
     $dlg.Controls.Add($lstDevices)
 
-    # Cargar dispositivos
-    $online = @()
-    try { $online = @(Get-AdbDevices) } catch { }
-    $saved = @()
-    try { $saved = @(Get-SavedAdbDevices) } catch { }
+    $fnReloadDevList = {
+        $lstDevices.Items.Clear()
+        $script:MgrItemsList = @()
 
-    $itemsList = @()
-    foreach ($d in $online) {
-        $savedMatch = @($saved | Where-Object { $_.UsbSerial -ceq $d.Serial -or $_.LastEndpoint -ceq $d.Serial })[0]
-        $name = if ($savedMatch) { $savedMatch.FriendlyName } else { $d.Serial }
-        $lstDevices.Items.Add("📱 $name | Estado: $($d.Status) | Serial: $($d.Serial)") | Out-Null
-        $itemsList += [pscustomobject]@{ Device = $d; IsOnline = $true }
-    }
-    foreach ($s in $saved) {
-        $isAlreadyListed = @($online | Where-Object { $_.Serial -ceq $s.LastEndpoint -or $_.Serial -ceq $s.UsbSerial }).Count -gt 0
-        if (-not $isAlreadyListed) {
-            $lstDevices.Items.Add("💾 $($s.FriendlyName) (Guardado offline) | Ultimo: $($s.LastEndpoint)") | Out-Null
-            $itemsList += [pscustomobject]@{ Device = $s; IsOnline = $false }
+        $online = @()
+        try { $online = @(Get-AdbDevices) } catch { }
+        $saved = @()
+        try { $saved = @(Get-SavedAdbDevices) } catch { }
+        $cur = Get-CurrentAdbDevice
+
+        foreach ($d in $online) {
+            $savedMatch = @($saved | Where-Object { $_.UsbSerial -ceq $d.Serial -or $_.LastEndpoint -ceq $d.Serial })[0]
+            $name = if ($savedMatch) { $savedMatch.FriendlyName } else { $d.Serial }
+            $activeTag = if ($cur -and $cur.Serial -ceq $d.Serial) { " [ACTIVO ⭐]" } else { "" }
+            $display = "🟢 $name | Estado: $($d.Status) | Serial: $($d.Serial)$activeTag"
+            $lstDevices.Items.Add($display) | Out-Null
+            $script:MgrItemsList += [pscustomobject]@{ Device = $d; IsOnline = $true; Saved = $savedMatch; Serial = $d.Serial }
         }
+        foreach ($s in $saved) {
+            $isAlreadyListed = @($online | Where-Object { $_.Serial -ceq $s.LastEndpoint -or $_.Serial -ceq $s.UsbSerial }).Count -gt 0
+            if (-not $isAlreadyListed) {
+                $display = "💾 $($s.FriendlyName) (Guardado offline) | Endpoint: $($s.LastEndpoint)"
+                $lstDevices.Items.Add($display) | Out-Null
+                $script:MgrItemsList += [pscustomobject]@{ Device = $s; IsOnline = $false; Saved = $s; Serial = if ($s.LastEndpoint) { $s.LastEndpoint } else { $s.UsbSerial } }
+            }
+        }
+        if ($lstDevices.Items.Count -gt 0) { $lstDevices.SelectedIndex = 0 }
     }
-    if ($lstDevices.Items.Count -gt 0) { $lstDevices.SelectedIndex = 0 }
+
+    & $fnReloadDevList
 
     # Conectar por IP manual
     $lblIp = New-Object System.Windows.Forms.Label
     $lblIp.Text = "Conectar por IP/Puerto (ej. 192.168.1.50:5555):"
     $lblIp.Font = $script:Fonts.Small
     $lblIp.ForeColor = $script:Theme.TextBody
-    $lblIp.Location = New-Object System.Drawing.Point(20, 280)
+    $lblIp.Location = New-Object System.Drawing.Point(20, 290)
     $lblIp.Size = New-Object System.Drawing.Size(320, 20)
     $dlg.Controls.Add($lblIp)
 
     $txtEndpointInput = New-Object System.Windows.Forms.TextBox
     $txtEndpointInput.Font = $script:Fonts.Body
-    $txtEndpointInput.Location = New-Object System.Drawing.Point(20, 302)
-    $txtEndpointInput.Size = New-Object System.Drawing.Size(360, 26)
+    $txtEndpointInput.Location = New-Object System.Drawing.Point(20, 312)
+    $txtEndpointInput.Size = New-Object System.Drawing.Size(380, 26)
     $dlg.Controls.Add($txtEndpointInput)
 
     $btnConnectIp = New-Object System.Windows.Forms.Button
     $btnConnectIp.Text = "Conectar IP"
-    $btnConnectIp.Font = $script:Fonts.Small
+    $btnConnectIp.Font = $script:Fonts.SmallBold
     $btnConnectIp.BackColor = $script:Theme.Secondary
     $btnConnectIp.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-    $btnConnectIp.Location = New-Object System.Drawing.Point(390, 301)
-    $btnConnectIp.Size = New-Object System.Drawing.Size(130, 28)
+    $btnConnectIp.Location = New-Object System.Drawing.Point(410, 310)
+    $btnConnectIp.Size = New-Object System.Drawing.Size(150, 30)
     $btnConnectIp.Cursor = [System.Windows.Forms.Cursors]::Hand
     $btnConnectIp.Add_Click({
         $ep = $txtEndpointInput.Text.Trim()
@@ -1946,7 +2283,7 @@ $btnActionDevices.Add_Click({
     })
     $dlg.Controls.Add($btnConnectIp)
 
-    # Boton Conectar Nuevo (abre el Asistente)
+    # Botones inferiores: Conectar Nuevo + Seleccionar + Eliminar
     $btnNewDevFromMgr = New-Object System.Windows.Forms.Button
     $btnNewDevFromMgr.Text = "✨ Conectar Nuevo..."
     $btnNewDevFromMgr.Font = $script:Fonts.BodyBold
@@ -1954,8 +2291,8 @@ $btnActionDevices.Add_Click({
     $btnNewDevFromMgr.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
     $btnNewDevFromMgr.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
     $btnNewDevFromMgr.FlatAppearance.BorderSize = 0
-    $btnNewDevFromMgr.Location = New-Object System.Drawing.Point(20, 370)
-    $btnNewDevFromMgr.Size = New-Object System.Drawing.Size(180, 38)
+    $btnNewDevFromMgr.Location = New-Object System.Drawing.Point(20, 380)
+    $btnNewDevFromMgr.Size = New-Object System.Drawing.Size(170, 38)
     $btnNewDevFromMgr.Cursor = [System.Windows.Forms.Cursors]::Hand
     $btnNewDevFromMgr.Add_Click({
         $dlg.Close()
@@ -1963,31 +2300,68 @@ $btnActionDevices.Add_Click({
     })
     $dlg.Controls.Add($btnNewDevFromMgr)
 
-    # Boton Seleccionar
     $btnSelect = New-Object System.Windows.Forms.Button
-    $btnSelect.Text = "Seleccionar como Activo"
+    $btnSelect.Text = "⭐ Usar como Activo"
     $btnSelect.Font = $script:Fonts.BodyBold
     $btnSelect.BackColor = $script:Theme.Primary
     $btnSelect.ForeColor = $script:Theme.PrimaryFg
     $btnSelect.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
     $btnSelect.FlatAppearance.BorderSize = 0
-    $btnSelect.Location = New-Object System.Drawing.Point(215, 370)
-    $btnSelect.Size = New-Object System.Drawing.Size(200, 38)
+    $btnSelect.Location = New-Object System.Drawing.Point(200, 380)
+    $btnSelect.Size = New-Object System.Drawing.Size(180, 38)
     $btnSelect.Cursor = [System.Windows.Forms.Cursors]::Hand
     $btnSelect.Add_Click({
-        if ($lstDevices.SelectedIndex -ge 0) {
-            $selectedItem = $itemsList[$lstDevices.SelectedIndex]
+        if ($lstDevices.SelectedIndex -ge 0 -and $null -ne $script:MgrItemsList) {
+            $selectedItem = $script:MgrItemsList[$lstDevices.SelectedIndex]
             try {
-                Set-CurrentAdbDevice -Device $selectedItem.Device -Persist | Out-Null
-                Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo seleccionado como activo."
+                if ($selectedItem.IsOnline) {
+                    $saved = Save-GuiAdbDevice -FriendlyName $selectedItem.Serial -Mode 'usb' -UsbSerial $selectedItem.Serial
+                    Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
+                    Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo seleccionado como activo: $($selectedItem.Serial)"
+                } else {
+                    Set-CurrentAdbDevice -Device $selectedItem.Device -Persist | Out-Null
+                    Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo seleccionado como activo."
+                }
+                $dlg.Close()
+                Refresh-DeviceStatus
             } catch {
-                Write-LogEntry -Level 'ERROR' -Message "No se pudo seleccionar: $($_.Exception.Message)"
+                [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Error al seleccionar", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
             }
-            $dlg.Close()
-            Refresh-DeviceStatus
         }
     })
     $dlg.Controls.Add($btnSelect)
+
+    $btnDeleteSaved = New-Object System.Windows.Forms.Button
+    $btnDeleteSaved.Text = "🗑️ Eliminar"
+    $btnDeleteSaved.Font = $script:Fonts.BodyBold
+    $btnDeleteSaved.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#FEE2E2')
+    $btnDeleteSaved.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#DC2626')
+    $btnDeleteSaved.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnDeleteSaved.FlatAppearance.BorderSize = 0
+    $btnDeleteSaved.Location = New-Object System.Drawing.Point(390, 380)
+    $btnDeleteSaved.Size = New-Object System.Drawing.Size(170, 38)
+    $btnDeleteSaved.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $btnDeleteSaved.Add_Click({
+        if ($lstDevices.SelectedIndex -ge 0 -and $null -ne $script:MgrItemsList) {
+            $selectedItem = $script:MgrItemsList[$lstDevices.SelectedIndex]
+            if ($selectedItem.Saved -and $selectedItem.Saved.Id) {
+                $confirm = [System.Windows.Forms.MessageBox]::Show("¿Deseas eliminar '$($selectedItem.Saved.FriendlyName)' de la lista de dispositivos guardados?", "Confirmar eliminacion", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+                if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+                    try {
+                        Remove-SavedAdbDevice -Id $selectedItem.Saved.Id | Out-Null
+                        Write-LogEntry -Level 'INFO' -Message "Dispositivo eliminado de devices.json."
+                        & $fnReloadDevList
+                        Refresh-DeviceStatus -Silent
+                    } catch {
+                        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Error al eliminar", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    }
+                }
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Este dispositivo no esta guardado en devices.json.", "Aviso", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            }
+        }
+    })
+    $dlg.Controls.Add($btnDeleteSaved)
 
     $null = $dlg.ShowDialog($form)
 })
@@ -2030,6 +2404,7 @@ $btnActionTransfer.Add_Click({
                 Invoke-AdbCommand -Serial $cur.Serial -Arguments @('push', $local, '/sdcard/Download/')
             } -Parameters @{ local = $filePath } -OnCompleted {
                 Write-LogEntry -Level 'SUCCESS' -Message "Archivo subido exitosamente a /sdcard/Download/"
+                Show-NotificationBanner -Type 'SUCCESS' -Title "Transferencia Completa" -Message "Archivo guardado en /sdcard/Download/"
             }
         }
     })
@@ -2051,25 +2426,29 @@ $btnActionTransfer.Add_Click({
         Invoke-GuiAsyncTask -Title "Descargar fotos recientes" -WorkerScript {
             param($dest)
             $cur = Get-CurrentAdbDevice
-            $files = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','find','/sdcard/DCIM/Camera','-type','f','-mtime','-7','-print') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-            $count = 0
+            $files = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','find','/sdcard/DCIM/Camera/','-name','*.jpg','-o','-name','*.mp4'))
+            $downloaded = 0
             foreach ($f in $files) {
-                $trimmed = ([string]$f).Trim()
-                Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull', $trimmed, $dest) | Out-Null
-                $count++
+                $fClean = [string]$f.Trim()
+                if (-not [string]::IsNullOrWhiteSpace($fClean) -and $fClean.StartsWith('/sdcard')) {
+                    Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull', $fClean, $dest) | Out-Null
+                    $downloaded++
+                }
             }
-            return $count
+            return [pscustomobject]@{ Total = $downloaded; Folder = $dest }
         } -Parameters @{ dest = $targetDir } -OnCompleted {
             param($res)
-            $c = if ($res.Output) { $res.Output[0] } else { 0 }
-            Write-LogEntry -Level 'SUCCESS' -Message "Se descargaron $c fotos recientes en $targetDir"
-            Start-Process -FilePath 'explorer.exe' -ArgumentList $targetDir
+            if ($res -and $res.Output) {
+                $info = $res.Output[0]
+                Write-LogEntry -Level 'SUCCESS' -Message "Descargadas $($info.Total) fotos a $($info.Folder)"
+                Show-NotificationBanner -Type 'SUCCESS' -Title "Fotos Descargadas" -Message "Se guardaron $($info.Total) fotos en $($info.Folder)" -ActionText "Abrir Carpeta" -ActionScript { Start-Process -FilePath 'explorer.exe' -ArgumentList $targetDir }
+            }
         }
     })
     $dlg.Controls.Add($btnPullPhotos)
 
     $btnPullDownloads = New-Object System.Windows.Forms.Button
-    $btnPullDownloads.Text = "📥 Descargar carpeta /sdcard/Download/ a la PC"
+    $btnPullDownloads.Text = "📥 Descargar toda la carpeta /sdcard/Download/"
     $btnPullDownloads.Font = $script:Fonts.BodyBold
     $btnPullDownloads.Size = New-Object System.Drawing.Size(450, 48)
     $btnPullDownloads.Location = New-Object System.Drawing.Point(24, 180)
@@ -2078,121 +2457,198 @@ $btnActionTransfer.Add_Click({
     $btnPullDownloads.Cursor = [System.Windows.Forms.Cursors]::Hand
     $btnPullDownloads.Add_Click({
         $dlg.Close()
-        $destDir = Join-Path (Join-Path $env:USERPROFILE 'Downloads') 'AndroidDownloads'
-        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-        Write-LogEntry -Level 'INFO' -Message "Descargando carpeta /sdcard/Download/ a '$destDir'..."
-        Invoke-GuiAsyncTask -Title "Descargar Downloads" -WorkerScript {
+        $targetDir = Join-Path (Join-Path $env:USERPROFILE 'Downloads') 'AndroidDeviceDownloads'
+        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+        Write-LogEntry -Level 'INFO' -Message "Descargando carpeta /sdcard/Download/..."
+        Invoke-GuiAsyncTask -Title "Descargar /sdcard/Download/" -WorkerScript {
             param($dest)
             $cur = Get-CurrentAdbDevice
-            Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull', '/sdcard/Download/', $dest)
-        } -Parameters @{ dest = $destDir } -OnCompleted {
-            Write-LogEntry -Level 'SUCCESS' -Message "Carpeta descargada con exito."
-            Start-Process -FilePath 'explorer.exe' -ArgumentList $destDir
+            Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull','/sdcard/Download/', $dest)
+        } -Parameters @{ dest = $targetDir } -OnCompleted {
+            Write-LogEntry -Level 'SUCCESS' -Message "Descarga de /sdcard/Download/ completada en $targetDir."
+            Show-NotificationBanner -Type 'SUCCESS' -Title "Descarga Finalizada" -Message "Archivos guardados en $targetDir" -ActionText "Abrir Carpeta" -ActionScript { Start-Process -FilePath 'explorer.exe' -ArgumentList $targetDir }
         }
     })
     $dlg.Controls.Add($btnPullDownloads)
-
-    $btnScriptInteractive = New-Object System.Windows.Forms.Button
-    $btnScriptInteractive.Text = "💻 Abrir Asistente Completo en Consola"
-    $btnScriptInteractive.Font = $script:Fonts.Small
-    $btnScriptInteractive.Size = New-Object System.Drawing.Size(450, 36)
-    $btnScriptInteractive.Location = New-Object System.Drawing.Point(24, 250)
-    $btnScriptInteractive.BackColor = $script:Theme.Secondary
-    $btnScriptInteractive.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-    $btnScriptInteractive.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $btnScriptInteractive.Add_Click({
-        $dlg.Close()
-        $tScript = Join-Path $script:RootPath 'android_transfer.ps1'
-        Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoProfile -ExecutionPolicy RemoteSigned -File `"$tScript`""
-    })
-    $dlg.Controls.Add($btnScriptInteractive)
 
     $null = $dlg.ShowDialog($form)
 })
 
 # 3. EXPLORADOR DE ARCHIVOS
 $btnActionExplorer.Add_Click({
-    Write-LogEntry -Level 'INFO' -Message "Listando contenido de /sdcard/ en el dispositivo..."
-    Invoke-GuiAsyncTask -Title "Explorar /sdcard/" -WorkerScript {
-        $cur = Get-CurrentAdbDevice
-        Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','ls','-lah','/sdcard/')
-    } -OnCompleted {
-        param($res)
-        if ($res -and $res.Output) {
-            Write-LogEntry -Level 'SUCCESS' -Message "--- Contenido de /sdcard/ ---"
-            foreach ($line in $res.Output) {
-                Write-LogEntry -Level 'INFO' -Message ([string]$line)
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Explorador de Archivos Android"
+    $dlg.Size = New-Object System.Drawing.Size(650, 480)
+    $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $dlg.BackColor = $script:Theme.BgWindow
+
+    $pnlTopExp = New-Object System.Windows.Forms.Panel
+    $pnlTopExp.Dock = [System.Windows.Forms.DockStyle]::Top
+    $pnlTopExp.Height = 44
+    $pnlTopExp.Padding = New-Object System.Windows.Forms.Padding(10, 8, 10, 8)
+
+    $txtPath = New-Object System.Windows.Forms.TextBox
+    $txtPath.Text = "/sdcard"
+    $txtPath.Font = $script:Fonts.Code
+    $txtPath.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $pnlTopExp.Controls.Add($txtPath)
+
+    $btnGo = New-Object System.Windows.Forms.Button
+    $btnGo.Text = "Ir"
+    $btnGo.Dock = [System.Windows.Forms.DockStyle]::Right
+    $btnGo.Width = 60
+    $btnGo.BackColor = $script:Theme.Primary
+    $btnGo.ForeColor = $script:Theme.PrimaryFg
+    $btnGo.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $pnlTopExp.Controls.Add($btnGo)
+    $dlg.Controls.Add($pnlTopExp)
+
+    $lstFiles = New-Object System.Windows.Forms.ListBox
+    $lstFiles.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $lstFiles.Font = $script:Fonts.Code
+    $dlg.Controls.Add($lstFiles)
+
+    $fnLoadDir = {
+        $p = $txtPath.Text.Trim()
+        $lstFiles.Items.Clear()
+        $lstFiles.Items.Add("Cargando '$p'...") | Out-Null
+        $dlg.Refresh()
+
+        Invoke-GuiAsyncTask -Title "Listar $p" -WorkerScript {
+            param($path)
+            $cur = Get-CurrentAdbDevice
+            Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','ls','-la', $path)
+        } -Parameters @{ path = $p } -OnCompleted {
+            param($res)
+            $lstFiles.Items.Clear()
+            if ($res -and $res.Output) {
+                foreach ($line in $res.Output) {
+                    $lstFiles.Items.Add([string]$line) | Out-Null
+                }
             }
         }
     }
+
+    $btnGo.Add_Click($fnLoadDir)
+    $dlg.Add_Shown($fnLoadDir)
+    $null = $dlg.ShowDialog($form)
 })
 
 # 4. BACKUP AVANZADO
 $btnActionBackup.Add_Click({
-    $confirm = [System.Windows.Forms.MessageBox]::Show("¿Deseas iniciar el respaldo automatico de carpetas principales (DCIM, Documentos, Descargas)?`n`nSe guardara en la carpeta Downloads de tu usuario sin congelar el sistema.", "Confirmar Backup", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-    if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
-        $backupDir = Join-Path (Join-Path $env:USERPROFILE 'Downloads') ("AndroidBackup_" + [DateTime]::Now.ToString('yyyyMMdd_HHmmss'))
-        Write-LogEntry -Level 'INFO' -Message "Iniciando respaldo en '$backupDir'..."
-        Invoke-GuiAsyncTask -Title "Backup Avanzado" -WorkerScript {
-            param($dest)
-            $cur = Get-CurrentAdbDevice
-            New-Item -ItemType Directory -Path $dest -Force | Out-Null
-            $subFolders = @('DCIM', 'Documents', 'Download', 'Pictures')
-            foreach ($folder in $subFolders) {
-                $localTarget = Join-Path $dest $folder
-                Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull', "/sdcard/$folder/", $localTarget) | Out-Null
-            }
-            return $dest
-        } -Parameters @{ dest = $backupDir } -OnCompleted {
-            param($res)
-            Write-LogEntry -Level 'SUCCESS' -Message "Backup completado exitosamente en $backupDir"
-            Start-Process -FilePath 'explorer.exe' -ArgumentList $backupDir
-        }
-    }
-})
-
-# 5. GESTION DE APLICACIONES
-$btnActionApps.Add_Click({
     $dlg = New-Object System.Windows.Forms.Form
-    $dlg.Text = "Gestion de Aplicaciones"
-    $dlg.Size = New-Object System.Drawing.Size(560, 480)
+    $dlg.Text = "Backup de Dispositivo Android"
+    $dlg.Size = New-Object System.Drawing.Size(480, 260)
     $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $dlg.BackColor = $script:Theme.BgWindow
     $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $dlg.MaximizeBox = $false
 
     $lbl = New-Object System.Windows.Forms.Label
-    $lbl.Text = "Aplicaciones de Terceros Instaladas"
+    $lbl.Text = "Selecciona el tipo de respaldo:"
     $lbl.Font = $script:Fonts.TitleMid
+    $lbl.Location = New-Object System.Drawing.Point(24, 20)
+    $lbl.Size = New-Object System.Drawing.Size(400, 24)
+    $dlg.Controls.Add($lbl)
+
+    $btnBkStore = New-Object System.Windows.Forms.Button
+    $btnBkStore.Text = "💾 Respaldar Registro de Dispositivos (devices.json)"
+    $btnBkStore.Font = $script:Fonts.BodyBold
+    $btnBkStore.Size = New-Object System.Drawing.Size(420, 44)
+    $btnBkStore.Location = New-Object System.Drawing.Point(24, 60)
+    $btnBkStore.BackColor = $script:Theme.BtnActionBg
+    $btnBkStore.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnBkStore.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $btnBkStore.Add_Click({
+        $dlg.Close()
+        Write-LogEntry -Level 'INFO' -Message "Creando copia de seguridad de devices.json..."
+        try {
+            $bk = Backup-AdbDeviceStore
+            Write-LogEntry -Level 'SUCCESS' -Message "Backup guardado en $($bk.FullName)"
+            Show-NotificationBanner -Type 'SUCCESS' -Title "Backup Completado" -Message "Guardado en $($bk.FullName)"
+        } catch {
+            Write-LogEntry -Level 'ERROR' -Message "Error al respaldar: $($_.Exception.Message)"
+        }
+    })
+    $dlg.Controls.Add($btnBkStore)
+
+    $btnBkFull = New-Object System.Windows.Forms.Button
+    $btnBkFull.Text = "📦 Respaldar fotos y descargas (/sdcard/DCIM y /Download)"
+    $btnBkFull.Font = $script:Fonts.BodyBold
+    $btnBkFull.Size = New-Object System.Drawing.Size(420, 44)
+    $btnBkFull.Location = New-Object System.Drawing.Point(24, 115)
+    $btnBkFull.BackColor = $script:Theme.BtnActionBg
+    $btnBkFull.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnBkFull.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $btnBkFull.Add_Click({
+        $dlg.Close()
+        $targetDir = Join-Path (Join-Path $env:USERPROFILE 'AndroidTools') ("backup-" + [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))
+        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+        Write-LogEntry -Level 'INFO' -Message "Iniciando respaldo de contenido en $targetDir..."
+        Invoke-GuiAsyncTask -Title "Backup de Medios" -WorkerScript {
+            param($dest)
+            $cur = Get-CurrentAdbDevice
+            Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull','/sdcard/DCIM', (Join-Path $dest 'DCIM')) | Out-Null
+            Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull','/sdcard/Download', (Join-Path $dest 'Download')) | Out-Null
+        } -Parameters @{ dest = $targetDir } -OnCompleted {
+            Write-LogEntry -Level 'SUCCESS' -Message "Respaldo de medios completado en $targetDir."
+            Show-NotificationBanner -Type 'SUCCESS' -Title "Backup Finalizado" -Message "Archivos respaldados en $targetDir" -ActionText "Abrir Carpeta" -ActionScript { Start-Process -FilePath 'explorer.exe' -ArgumentList $targetDir }
+        }
+    })
+    $dlg.Controls.Add($btnBkFull)
+
+    $null = $dlg.ShowDialog($form)
+})
+
+# 5. GESTION DE APLICACIONES
+$btnActionApps.Add_Click({
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Gestion de Aplicaciones Android"
+    $dlg.Size = New-Object System.Drawing.Size(560, 480)
+    $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $dlg.BackColor = $script:Theme.BgWindow
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "Aplicaciones de Terceros Instaladas:"
+    $lbl.Font = $script:Fonts.TitleSmall
     $lbl.Location = New-Object System.Drawing.Point(20, 16)
-    $lbl.Size = New-Object System.Drawing.Size(350, 24)
+    $lbl.Size = New-Object System.Drawing.Size(300, 20)
     $dlg.Controls.Add($lbl)
 
     $lstApps = New-Object System.Windows.Forms.ListBox
     $lstApps.Font = $script:Fonts.Body
-    $lstApps.Location = New-Object System.Drawing.Point(20, 48)
+    $lstApps.Location = New-Object System.Drawing.Point(20, 42)
     $lstApps.Size = New-Object System.Drawing.Size(500, 260)
     $dlg.Controls.Add($lstApps)
 
-    # Cargar paquetes
-    $cur = $null
-    try { $cur = Get-CurrentAdbDevice } catch { }
-    if ($cur -and $cur.Status -eq 'device') {
-        try {
-            $pkgs = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','pm','list','packages','-3')) | ForEach-Object {
-                ([string]$_) -replace '^package:', ''
-            } | Sort-Object
-            foreach ($p in $pkgs) {
-                if (-not [string]::IsNullOrWhiteSpace($p)) { $lstApps.Items.Add($p) | Out-Null }
+    $fnLoadApps = {
+        $lstApps.Items.Clear()
+        $lstApps.Items.Add("Cargando lista de paquetes...") | Out-Null
+        $dlg.Refresh()
+        Invoke-GuiAsyncTask -Title "Listar Apps" -WorkerScript {
+            $cur = Get-CurrentAdbDevice
+            Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','pm','list','packages','-3')
+        } -OnCompleted {
+            param($res)
+            $lstApps.Items.Clear()
+            if ($res -and $res.Output) {
+                foreach ($pkg in $res.Output) {
+                    $cleanPkg = ([string]$pkg) -replace '^package:', ''
+                    if (-not [string]::IsNullOrWhiteSpace($cleanPkg)) {
+                        $lstApps.Items.Add($cleanPkg.Trim()) | Out-Null
+                    }
+                }
             }
-        } catch { }
+        }
     }
 
+    $dlg.Add_Shown($fnLoadApps)
+
     $btnInstallApk = New-Object System.Windows.Forms.Button
-    $btnInstallApk.Text = "📦 Instalar APK..."
+    $btnInstallApk.Text = "➕ Instalar APK..."
     $btnInstallApk.Font = $script:Fonts.BodyBold
-    $btnInstallApk.BackColor = $script:Theme.Primary
-    $btnInstallApk.ForeColor = $script:Theme.PrimaryFg
+    $btnInstallApk.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#10B981')
+    $btnInstallApk.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#FFFFFF')
     $btnInstallApk.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
     $btnInstallApk.Location = New-Object System.Drawing.Point(20, 325)
     $btnInstallApk.Size = New-Object System.Drawing.Size(180, 38)
@@ -2211,6 +2667,7 @@ $btnActionApps.Add_Click({
                 Invoke-AdbCommand -Serial $curDev.Serial -Arguments @('install','-r',$apkFile)
             } -Parameters @{ apkFile = $apk } -OnCompleted {
                 Write-LogEntry -Level 'SUCCESS' -Message "Instalacion de APK finalizada."
+                Show-NotificationBanner -Type 'SUCCESS' -Title "APK Instalado" -Message "La instalacion finalizo correctamente."
             }
         }
     })
@@ -2275,6 +2732,7 @@ $btnActionScreen.Add_Click({
             if ($res -and $res.Output) {
                 $file = $res.Output[0]
                 Write-LogEntry -Level 'SUCCESS' -Message "Captura guardada en $($file.FullName)"
+                Show-NotificationBanner -Type 'SUCCESS' -Title "Captura Guardada" -Message "Guardada en $($file.FullName)" -ActionText "Abrir Archivo" -ActionScript { Start-Process -FilePath $file.FullName }
             }
         }
     })
@@ -2298,6 +2756,7 @@ $btnActionScreen.Add_Click({
             }
         } catch {
             Write-LogEntry -Level 'WARN' -Message "scrcpy no se encuentra instalado en el equipo: $($_.Exception.Message)"
+            Show-NotificationBanner -Type 'WARN' -Title "scrcpy no disponible" -Message "Descarga e instala scrcpy para habilitar el control remoto de pantalla."
         }
     })
     $dlg.Controls.Add($btnScrcpy)
@@ -2319,6 +2778,7 @@ $btnActionClean.Add_Click({
         } -OnCompleted {
             param($res)
             Write-LogEntry -Level 'SUCCESS' -Message "Limpieza de cache finalizada con exito."
+            Show-NotificationBanner -Type 'SUCCESS' -Title "Limpieza Completada" -Message "Se liberaron caches temporales del sistema."
         }
     }
 })
@@ -2353,12 +2813,12 @@ $btnActionDiag.Add_Click({
 # =============================================================================
 $form.Add_Shown({
     Load-FavoritesUi
-    Write-LogEntry -Level 'INFO' -Message 'Bienvenido a Android ADB Tools. Inicializando interfaz...'
+    Write-LogEntry -Level 'INFO' -Message 'Bienvenido a Android ADB Tools. Inicializando interfaz y escaneo inteligente...'
     Refresh-DeviceStatus -Silent
     Invoke-UsbAutoDetection
 
     $script:UsbAutoScanTimer = New-Object System.Windows.Forms.Timer
-    $script:UsbAutoScanTimer.Interval = 3000
+    $script:UsbAutoScanTimer.Interval = 2500
     $script:UsbAutoScanTimer.Add_Tick({ Invoke-UsbAutoDetection })
     $script:UsbAutoScanTimer.Start()
 })
