@@ -36,12 +36,16 @@ if (Test-Path -LiteralPath $script:ModulePath) {
 # estable del modo USB es UsbSerial; en modo TCP/IP lo es LastEndpoint.
 function Save-GuiAdbDevice {
     param(
-        [Parameter(Mandatory=$true)][string]$FriendlyName,
+        [string]$FriendlyName,
         [Parameter(Mandatory=$true)][string]$Mode,
         [string]$UsbSerial,
         [string]$LastEndpoint,
         [bool]$IsPaired = $false
     )
+
+    if ([string]::IsNullOrWhiteSpace($FriendlyName)) {
+        $FriendlyName = if (-not [string]::IsNullOrWhiteSpace($UsbSerial)) { $UsbSerial } elseif (-not [string]::IsNullOrWhiteSpace($LastEndpoint)) { $LastEndpoint } else { 'Dispositivo Android' }
+    }
 
     $existing = @(Get-SavedAdbDevices | Where-Object {
         ($UsbSerial -and $_.UsbSerial -ceq $UsbSerial) -or
@@ -52,6 +56,77 @@ function Save-GuiAdbDevice {
         return (Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -UsbSerial $UsbSerial -LastEndpoint $LastEndpoint -Mode $Mode -IsPaired $IsPaired -LastConnectedUtc $timestamp)
     }
     return (Add-SavedAdbDevice -FriendlyName $FriendlyName -Mode $Mode -UsbSerial $UsbSerial -LastEndpoint $LastEndpoint -IsPaired $IsPaired -LastConnectedUtc $timestamp)
+}
+
+# Dispositivos USB ya consultados durante esta conexión física. Se elimina la
+# marca al desconectarlos, de forma que volver a enchufarlos muestra de nuevo
+# la confirmación sin abrir una cascada de cuadros de diálogo.
+$script:UsbPromptedSerials = @{}
+$script:UsbAutoScanBusy = $false
+
+function Start-UsbWirelessConnection {
+    param([Parameter(Mandatory=$true)][string]$UsbSerial)
+
+    Invoke-GuiAsyncTask -Title "Preparar WiFi para $UsbSerial" -WorkerScript {
+        param($serial)
+        $ip = Get-AdbDeviceIpv4 -Serial $serial
+        if ([string]::IsNullOrWhiteSpace($ip)) {
+            throw 'No fue posible obtener la IP WiFi del teléfono mientras estaba conectado por USB.'
+        }
+        Invoke-Adb -Serial $serial -Arguments @('tcpip','5555') | Out-Null
+        Start-Sleep -Seconds 1
+        $connected = Connect-AdbEndpoint -Endpoint ("{0}:5555" -f $ip) -TimeoutSeconds 15
+        return [pscustomobject]@{ UsbSerial=$serial; Endpoint=("{0}:5555" -f $ip); Record=$connected }
+    } -Parameters @{ serial=$UsbSerial } -OnCompleted {
+        param($result)
+        if ($null -eq $result -or -not $result.Success) {
+            $message = if ($result -and $result.Error) { $result.Error } else { 'No se pudo activar ADB por WiFi.' }
+            [System.Windows.Forms.MessageBox]::Show($message, 'No se pudo conectar por WiFi', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return
+        }
+        try {
+            $info = $result.Output[0]
+            $saved = Save-GuiAdbDevice -FriendlyName "$($info.UsbSerial) (WiFi)" -Mode 'tcpip-5555' -UsbSerial $info.UsbSerial -LastEndpoint $info.Record.Serial -IsPaired $false
+            Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
+            Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo conectado por WiFi en $($info.Endpoint)."
+            [System.Windows.Forms.MessageBox]::Show("Conectado por WiFi en $($info.Endpoint).`n`nAhora puedes desconectar el cable USB.", 'Modo inalámbrico listo', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            Refresh-DeviceStatus -Silent
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'No se pudo guardar la conexión WiFi', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        }
+    }
+}
+
+function Invoke-UsbAutoDetection {
+    if ($script:UsbAutoScanBusy -or $script:RunningAsyncTasks -gt 0) { return }
+    $script:UsbAutoScanBusy = $true
+    try {
+        $usbDevices = @(Get-AdbDevices | Where-Object { $_.Status -ceq 'device' -and $_.Serial -notmatch ':\d+$' })
+        $connectedSerials = @($usbDevices | ForEach-Object { $_.Serial })
+        foreach ($knownSerial in @($script:UsbPromptedSerials.Keys)) {
+            if ($connectedSerials -notcontains $knownSerial) { $script:UsbPromptedSerials.Remove($knownSerial) }
+        }
+
+        foreach ($usbDevice in $usbDevices) {
+            if ($script:UsbPromptedSerials.ContainsKey($usbDevice.Serial)) { continue }
+
+            try { Set-CurrentAdbDevice -Device ([pscustomobject]@{ Serial=$usbDevice.Serial }) | Out-Null } catch { }
+            $script:UsbPromptedSerials[$usbDevice.Serial] = $true
+            $answer = [System.Windows.Forms.MessageBox]::Show(
+                "Se detectó el teléfono '$($usbDevice.Serial)' por USB.`n`n¿Quieres conectarlo por WiFi para poder retirar el cable?`n`nSí: activa TCP/IP 5555 y guarda la conexión inalámbrica.`nNo: queda disponible mientras el cable siga conectado.",
+                'Dispositivo USB detectado',
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Question
+            )
+            if ($answer -eq [System.Windows.Forms.DialogResult]::Yes) {
+                Start-UsbWirelessConnection -UsbSerial $usbDevice.Serial
+            }
+        }
+    } catch {
+        Write-LogEntry -Level 'DEBUG' -Message "Escaneo USB no disponible: $($_.Exception.Message)"
+    } finally {
+        $script:UsbAutoScanBusy = $false
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -2280,6 +2355,20 @@ $form.Add_Shown({
     Load-FavoritesUi
     Write-LogEntry -Level 'INFO' -Message 'Bienvenido a Android ADB Tools. Inicializando interfaz...'
     Refresh-DeviceStatus -Silent
+    Invoke-UsbAutoDetection
+
+    $script:UsbAutoScanTimer = New-Object System.Windows.Forms.Timer
+    $script:UsbAutoScanTimer.Interval = 3000
+    $script:UsbAutoScanTimer.Add_Tick({ Invoke-UsbAutoDetection })
+    $script:UsbAutoScanTimer.Start()
+})
+
+$form.Add_FormClosed({
+    if ($null -ne $script:UsbAutoScanTimer) {
+        $script:UsbAutoScanTimer.Stop()
+        $script:UsbAutoScanTimer.Dispose()
+        $script:UsbAutoScanTimer = $null
+    }
 })
 
 # Lanzar la ventana

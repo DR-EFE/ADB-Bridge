@@ -1062,7 +1062,7 @@ function Get-SavedAdbDevices {
 function Add-SavedAdbDevice {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][string]$FriendlyName,
+        [string]$FriendlyName,
         [Parameter(Mandatory = $true)][string]$Mode,
         [string]$UsbSerial,
         [string]$LastEndpoint,
@@ -1072,6 +1072,9 @@ function Add-SavedAdbDevice {
     )
 
     $store = Read-AdbDeviceStore
+    if ([string]::IsNullOrWhiteSpace($FriendlyName)) {
+        $FriendlyName = if (-not [string]::IsNullOrWhiteSpace($UsbSerial)) { $UsbSerial } elseif (-not [string]::IsNullOrWhiteSpace($LastEndpoint)) { $LastEndpoint } else { 'Dispositivo Android' }
+    }
     $name = Assert-AdbFriendlyName $FriendlyName
     $storedMode = ConvertTo-AdbStoredMode $Mode
     $endpoint = if ([string]::IsNullOrWhiteSpace($LastEndpoint)) { $null } else { (ConvertTo-AdbEndpoint $LastEndpoint).Endpoint }
