@@ -496,69 +496,30 @@ function Start-UsbAutoWifiConversion {
 
         try {
             try {
-                $m = @(Invoke-AdbCommand -Serial $s -Arguments @('shell','getprop','ro.product.model'))
+                $m = @(Invoke-Adb -Serial $s -Arguments @('shell','getprop','ro.product.model'))
                 $info.Model = ($m -join ' ').Trim()
             } catch { }
 
-            # 1. Habilitar TCP/IP 5555
-            Invoke-AdbCommand -Serial $s -Arguments @('tcpip','5555') | Out-Null
-            Start-Sleep -Milliseconds 800
-
-            # 2. Descubrir IP WiFi
-            $ipFound = $null
-            $ipOut = @(Invoke-AdbCommand -Serial $s -Arguments @('shell','ip','-4','addr','show','wlan0'))
-            foreach ($line in $ipOut) {
-                if ($line -match 'inet\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)') {
-                    $candidate = $Matches[1]
-                    if ($candidate -ne '127.0.0.1') {
-                        $ipFound = $candidate
-                        break
-                    }
-                }
-            }
-
+            # La IP se consulta antes de cambiar ADB a TCP/IP, porque ese cambio
+            # puede reiniciar inmediatamente el canal USB.
+            $ipFound = Get-AdbDeviceIpv4 -Serial $s
             if (-not $ipFound) {
-                $netcfg = @(Invoke-AdbCommand -Serial $s -Arguments @('shell','ifconfig','wlan0'))
-                foreach ($line in $netcfg) {
-                    if ($line -match 'inet addr:([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)') {
-                        $ipFound = $Matches[1]
-                        break
-                    }
-                }
-            }
-
-            if (-not $ipFound) {
-                $info.Error = "No se pudo obtener la IP WiFi (wlan0). Asegurate de que el telefono este conectado a la misma red WiFi."
+                $info.Error = "No se pudo obtener la IP WiFi. Asegurate de que el telefono este conectado a una red WiFi."
                 return [pscustomobject]$info
             }
+
+            # 1. Habilitar TCP/IP 5555 desde el USB ya autorizado.
+            Invoke-Adb -Serial $s -Arguments @('tcpip','5555') | Out-Null
+            Start-Sleep -Milliseconds 800
 
             $info.Ip = $ipFound
             $endpoint = "${ipFound}:5555"
 
-            # 3. Conectar por WiFi
-            $connOut = @(Invoke-AdbCommand -Arguments @('connect', $endpoint))
-            $connText = $connOut -join ' '
-
-            if ($connText -match '(connected to|already connected to)') {
-                $info.Success = $true
-                $info.WifiSerial = $endpoint
-                
-                # 4. Guardar en devices.json
-                $friendly = if ($info.Model) { "$($info.Model) ($endpoint)" } else { "Android WiFi ($endpoint)" }
-                Save-GuiAdbDevice -FriendlyName $friendly -Mode 'tcpip' -UsbSerial $s -LastEndpoint $endpoint -IsPaired $true | Out-Null
-                
-                # 5. Establecer como dispositivo activo
-                Set-CurrentAdbDevice -Device ([pscustomobject]@{
-                    Serial = $endpoint
-                    FriendlyName = $friendly
-                    LastEndpoint = $endpoint
-                    UsbSerial = $s
-                    Mode = 'tcpip'
-                    Status = 'device'
-                }) -Persist | Out-Null
-            } else {
-                $info.Error = "Fallo al conectar a $endpoint. Respuesta: $connText"
-            }
+            # 2. Conectar por WiFi. Connect-AdbEndpoint verifica que alcance
+            # el estado ADB exacto 'device'.
+            $connection = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 15
+            $info.Success = $true
+            $info.WifiSerial = $connection.Serial
         } catch {
             $info.Error = $_.Exception.Message
         }
@@ -570,18 +531,19 @@ function Start-UsbAutoWifiConversion {
         param($res)
         if ($res -and $res.Success -and $res.Output -and $res.Output[0].Success) {
             $data = $res.Output[0]
-            $script:UsbProcessedSerials[$UsbSerial] = 'Connected'
-            
-            Write-LogEntry -Level 'SUCCESS' -Message "🎉 Dispositivo conectado por WiFi con exito en $($data.WifiSerial). ¡Ya puedes desconectar el cable USB de forma segura!"
-            
-            Show-NotificationBanner -Type 'SUCCESS' `
-                -Title "¡Conectado por WiFi! ($($data.WifiSerial))" `
-                -Message "Se configuro y guardo automaticamente. YA PUEDES DESCONECTAR EL CABLE USB." `
-                -ActionText "Verificar" `
-                -ActionScript { Refresh-DeviceStatus } `
-                -AutoCloseSeconds 12
-
-            Refresh-DeviceStatus -Silent
+            try {
+                $friendly = if ([string]::IsNullOrWhiteSpace($data.Model)) { "Android WiFi ($($data.WifiSerial))" } else { "$($data.Model) ($($data.WifiSerial))" }
+                $saved = Save-GuiAdbDevice -FriendlyName $friendly -Mode 'tcpip-5555' -UsbSerial $data.UsbSerial -LastEndpoint $data.WifiSerial -IsPaired $false
+                Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
+                $script:UsbProcessedSerials[$UsbSerial] = 'Connected'
+                Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo conectado por WiFi en $($data.WifiSerial). Ya puedes desconectar el cable USB."
+                Show-NotificationBanner -Type 'SUCCESS' -Title "¡WiFi listo! ($($data.WifiSerial))" -Message "La conexión quedó guardada y activa. Ya puedes desconectar el cable USB." -ActionText "Verificar" -ActionScript { Refresh-DeviceStatus } -AutoCloseSeconds 12
+                Refresh-DeviceStatus -Silent
+            } catch {
+                $script:UsbProcessedSerials[$UsbSerial] = 'Failed'
+                Write-LogEntry -Level 'ERROR' -Message "WiFi conectado, pero no se pudo guardar/seleccionar: $($_.Exception.Message)"
+                Show-NotificationBanner -Type 'ERROR' -Title 'WiFi conectado sin guardar' -Message $_.Exception.Message -AutoCloseSeconds 12
+            }
         } else {
             $script:UsbProcessedSerials[$UsbSerial] = 'Failed'
             $errMsg = if ($res -and $res.Output -and $res.Output[0].Error) { $res.Output[0].Error } else { "No se pudo completar la auto-conexion." }
@@ -2936,6 +2898,16 @@ function Invoke-FullDiagnostics {
 # =============================================================================
 # INICIALIZACION Y EVENTO SHOWN
 # =============================================================================
+# Los delegados de WinForms se ejecutan fuera del ámbito del script. Publicar
+# las funciones de esta GUI en Global evita que el temporizador o los botones
+# pierdan acceso a ellas (por ejemplo Invoke-UsbAutoDetection).
+$script:GuiFunctionFile = $PSCommandPath
+Get-ChildItem -Path Function: | Where-Object {
+    $_.ScriptBlock.File -eq $script:GuiFunctionFile
+} | ForEach-Object {
+    Set-Item -Path ("Function:global:{0}" -f $_.Name) -Value $_.ScriptBlock -Force
+}
+
 $form.Add_Shown({
     $form.Activate()
     $form.BringToFront()
