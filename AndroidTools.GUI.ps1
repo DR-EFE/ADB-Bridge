@@ -27,6 +27,27 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+# Los callbacks de WinForms pueden resolverse en un ámbito distinto al del
+# script principal. Asegurar los módulos base evita que cmdlets como
+# New-Object, Get-Item y Start-Process desaparezcan al abrir diálogos.
+Import-Module Microsoft.PowerShell.Utility -Global -ErrorAction Stop
+Import-Module Microsoft.PowerShell.Management -Global -ErrorAction Stop
+
+function Publish-GuiAdbCommands {
+    # Los handlers de WinForms no siempre conservan el ámbito del módulo
+    # importado. Publicar wrappers cualificados evita que una operación como
+    # una transferencia pierda Set-CurrentAdbDevice o Get-CurrentAdbDevice.
+    foreach ($adbCommand in @(Get-Command -Module AndroidAdb -CommandType Function -ErrorAction SilentlyContinue)) {
+        $commandName = [string]$adbCommand.Name
+        Set-Item -Path ("Function:global:{0}" -f $commandName) `
+            -Value ([scriptblock]::Create("& AndroidAdb\$commandName @args")) -Force
+    }
+    foreach ($commandName in @('Write-AdbLog','Get-AdbDevices','Get-CurrentAdbDevice','Set-CurrentAdbDevice','Invoke-AdbCommand')) {
+        Set-Item -Path ("Function:global:{0}" -f $commandName) `
+            -Value ([scriptblock]::Create("& AndroidAdb\$commandName @args")) -Force
+    }
+}
+
 # Rutas del proyecto y modulo ADB
 $script:RootPath = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($script:RootPath)) {
@@ -36,7 +57,9 @@ if ([string]::IsNullOrWhiteSpace($script:RootPath)) {
 $script:ModulePath = Join-Path $script:RootPath 'AndroidAdb.psm1'
 if (Test-Path -LiteralPath $script:ModulePath) {
     Import-Module $script:ModulePath -Force -DisableNameChecking
+    Publish-GuiAdbCommands
     Initialize-AdbLog | Out-Null
+    $script:GuiLogPath = Get-AdbLogPath
     Write-AdbLog -Level INFO -Source 'AndroidTools.GUI.ps1' -Message 'Iniciando interfaz grafica WinForms moderna con Workspace Interactivo.'
 }
 
@@ -125,9 +148,13 @@ function Save-GuiAdbDevice {
         [bool]$IsPaired = $false
     )
 
-    if ([string]::IsNullOrWhiteSpace($FriendlyName)) {
-        $FriendlyName = if (-not [string]::IsNullOrWhiteSpace($UsbSerial)) { $UsbSerial } elseif (-not [string]::IsNullOrWhiteSpace($LastEndpoint)) { $LastEndpoint } else { 'Dispositivo Android' }
+    if ([string]::IsNullOrWhiteSpace($LastEndpoint) -or $Mode -eq 'usb') {
+        throw 'Solo se pueden guardar conexiones WiFi con un endpoint host:puerto.'
     }
+    if ([string]::IsNullOrWhiteSpace($FriendlyName)) {
+        $FriendlyName = if (-not [string]::IsNullOrWhiteSpace($LastEndpoint)) { $LastEndpoint } else { 'Dispositivo Android' }
+    }
+    $UsbSerial = $null
 
     $store = Read-AdbDeviceStore
     $existing = @($store.Devices | Where-Object {
@@ -147,46 +174,157 @@ function Ensure-GuiAdbDeviceSaved {
 
     $serial = [string]$Device.Serial
     if ([string]::IsNullOrWhiteSpace($serial)) { return $null }
-    $existing = @((Get-SavedAdbDevices) | Where-Object {
-        $_.UsbSerial -ceq $serial -or $_.LastEndpoint -ieq $serial
-    })[0]
-    if ($null -ne $existing) { return $existing }
+    # USB solo es un medio de preparación. Nunca crear registros persistentes
+    # para seriales USB; únicamente se guardan endpoints WiFi ya conectados.
+    if ($serial -notmatch ':\d+$') { return $null }
 
-    $isNetwork = $serial -match ':\d+$'
-    $mode = if ($isNetwork) { 'tcpip-5555' } else { 'usb' }
-    $endpoint = if ($isNetwork) { $serial } else { $null }
+    $existing = $null
+    foreach ($savedRecord in @(AndroidAdb\Get-SavedAdbDevices)) {
+        if ($savedRecord.LastEndpoint -ieq $serial) { $existing = $savedRecord; break }
+    }
+    $mode = if ($serial -match ':5555$') { 'tcpip-5555' } else { 'wireless-debugging-tls' }
     try {
-        $saved = Save-GuiAdbDevice -FriendlyName $serial -Mode $mode -UsbSerial (if ($isNetwork) { $null } else { $serial }) -LastEndpoint $endpoint -IsPaired $isNetwork
-        Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo guardado automáticamente: $serial ($mode)."
+        $model = @((AndroidAdb\Invoke-AdbCommand -Serial $serial -Arguments @('shell','getprop','ro.product.model')) -join ' ').Trim()
+        $friendly = if ($existing -and $existing.FriendlyName -and $existing.FriendlyName -notmatch '^[^ ]+:\d+$') { $existing.FriendlyName } elseif ($model) { $model } else { 'Android WiFi' }
+        $saved = if ($existing) {
+            AndroidAdb\Update-SavedAdbDevice -Id $existing.Id -FriendlyName $friendly -UsbSerial '' -LastEndpoint $serial -Mode $mode -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+        } else {
+            AndroidAdb\Add-SavedAdbDevice -FriendlyName $friendly -Mode $mode -UsbSerial '' -LastEndpoint $serial -IsPaired ($mode -eq 'wireless-debugging-tls') -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+        }
+        & $script:WriteLogEntryHandler -Level 'SUCCESS' -Message "Conexión WiFi guardada: $friendly [$serial]."
         return $saved
     } catch {
-        Write-LogEntry -Level 'ERROR' -Message "No se pudo guardar automáticamente '$serial': $($_.Exception.Message)"
+        & $script:WriteLogEntryHandler -Level 'ERROR' -Message "No se pudo guardar automáticamente '$serial': $($_.Exception.Message)"
         return $null
+    }
+}
+
+function Normalize-GuiWifiDeviceStore {
+    try {
+        $store = Read-AdbDeviceStore
+        $before = @($store.Devices)
+        $after = @($before | Where-Object {
+            $_.LastEndpoint -and $_.Mode -and $_.Mode -ne 'usb'
+        })
+        $changed = $after.Count -ne $before.Count
+        foreach ($device in $after) {
+            if ($device.UsbSerial) {
+                $device.UsbSerial = $null
+                $changed = $true
+            }
+        }
+        if ($store.CurrentDeviceId -and -not (@($after | Where-Object Id -ceq $store.CurrentDeviceId).Count)) {
+            $store.CurrentDeviceId = $null
+            $changed = $true
+        }
+        if ($changed) {
+            # Conservar una copia antes de limpiar registros USB antiguos.
+            Backup-AdbDeviceStore | Out-Null
+            $store.Devices = $after
+            Save-AdbDeviceStore -Store $store | Out-Null
+            Write-LogEntry -Level 'INFO' -Message "Registro migrado: se conservaron $($after.Count) conexiones WiFi y se eliminaron registros USB antiguos."
+        }
+    } catch {
+        Write-LogEntry -Level 'WARN' -Message "No se pudo normalizar el registro de conexiones WiFi: $($_.Exception.Message)"
     }
 }
 
 function Start-TransferUi {
     param([Parameter(Mandatory=$true)][string]$Title)
+    $global:AndroidToolsTransferState = [pscustomobject]@{
+        ProgressPath = Join-Path $env:TEMP ("AndroidTools-transfer-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        Percent = 0
+        Details = $null
+        ProgressBar = $null
+        StatusTitle = $null
+        CancelButton = $null
+        OpenDirButton = $null
+    }
+    $script:TransferProgressPath = $global:AndroidToolsTransferState.ProgressPath
+    $script:TransferProgressPercent = 0
+    $global:AndroidToolsTransferState.Details = $lblTransferDetails
+    $global:AndroidToolsTransferState.ProgressBar = $pbTransferProgress
+    $global:AndroidToolsTransferState.StatusTitle = $lblTransferStatusTitle
+    $global:AndroidToolsTransferState.CancelButton = $btnCancelTransfer
+    $global:AndroidToolsTransferState.OpenDirButton = $btnOpenLocalDir
     $lblTransferStatusTitle.Text = "Transferencia en curso"
     $lblTransferStatusTitle.ForeColor = $script:Theme.Primary
-    $lblTransferDetails.Text = $Title
+    $lblTransferDetails.Text = "0% · $Title"
     $lblTransferDetails.ForeColor = $script:Theme.TextBody
-    $pbTransferProgress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
-    $pbTransferProgress.MarqueeAnimationSpeed = 25
+    $pbTransferProgress.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
+    $pbTransferProgress.Minimum = 0
+    $pbTransferProgress.Maximum = 100
+    $pbTransferProgress.Value = 0
     $pbTransferProgress.Visible = $true
+    $btnCancelTransfer.Visible = $true
     $btnOpenLocalDir.Visible = $false
+    try {
+        [IO.File]::WriteAllText($script:TransferProgressPath, "0`n$Title")
+    } catch { }
+}
+
+function Update-TransferProgress {
+    $transferState = $global:AndroidToolsTransferState
+    if ($null -eq $transferState -or [string]::IsNullOrWhiteSpace($transferState.ProgressPath)) { return }
+    if (-not (Test-Path -LiteralPath $transferState.ProgressPath)) { return }
+    try {
+        $progressContent = [IO.File]::ReadAllText($transferState.ProgressPath)
+        if ($progressContent.StartsWith('{')) {
+            $state = $progressContent | ConvertFrom-Json
+            $percent = [Math]::Max(0, [Math]::Min(100, [int]$state.Percent))
+            $message = [string]$state.Message
+        } else {
+            $progressParts = $progressContent.Split(@("`n"), 2, [StringSplitOptions]::None)
+            $percent = [Math]::Max(0, [Math]::Min(100, [int]$progressParts[0]))
+            $message = if ($progressParts.Length -gt 1) { $progressParts[1] } else { '' }
+        }
+        if ($null -ne $transferState.ProgressBar) { $transferState.ProgressBar.Value = $percent }
+        $script:TransferProgressPercent = $percent
+        if ($message -and $null -ne $transferState.Details) { $transferState.Details.Text = "${percent}% · $message" }
+    } catch { }
 }
 
 function Stop-TransferUi {
     param([object]$Result)
-    $pbTransferProgress.Visible = $false
+    $transferState = $global:AndroidToolsTransferState
+    $wasCanceled = $Result -and $Result.Error -eq 'Transferencia cancelada por el usuario.'
     if ($Result -and $Result.Success) {
-        $lblTransferStatusTitle.Text = 'Transferencia completada'
-        $lblTransferStatusTitle.ForeColor = $script:Theme.BadgeSuccessFg
-    } else {
-        $lblTransferStatusTitle.Text = 'Error en la transferencia'
-        $lblTransferStatusTitle.ForeColor = $script:Theme.BadgeErrorFg
+        if ($null -ne $transferState -and $null -ne $transferState.ProgressBar) { $transferState.ProgressBar.Value = 100 }
+        $script:TransferProgressPercent = 100
     }
+    if ($null -ne $transferState -and $null -ne $transferState.ProgressBar) { $transferState.ProgressBar.Visible = $false }
+    if ($null -ne $transferState -and $null -ne $transferState.CancelButton) { $transferState.CancelButton.Visible = $false }
+    if ($null -ne $transferState -and $transferState.ProgressPath) {
+        try { [IO.File]::Delete($transferState.ProgressPath) } catch { }
+    }
+    $script:TransferProgressPath = $null
+    if ($null -ne $transferState) { $transferState.ProgressPath = $null }
+    if ($Result -and $Result.Success) {
+        if ($transferState.StatusTitle) {
+            $transferState.StatusTitle.Text = 'Transferencia completada'
+            $transferState.StatusTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#15803D')
+        }
+    } elseif ($wasCanceled) {
+        if ($transferState.StatusTitle) {
+            $transferState.StatusTitle.Text = 'Transferencia cancelada'
+            $transferState.StatusTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#92400E')
+        }
+    } else {
+        if ($transferState.StatusTitle) {
+            $transferState.StatusTitle.Text = 'Error en la transferencia'
+            $transferState.StatusTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#B91C1C')
+        }
+    }
+}
+
+function Get-GuiDeviceTransferRoot {
+    param([Parameter(Mandatory=$true)][object]$Device)
+    $name = if ($Device.FriendlyName) { [string]$Device.FriendlyName } else { 'Dispositivo Android' }
+    $serial = if ($Device.Serial) { [string]$Device.Serial } elseif ($Device.LastEndpoint) { [string]$Device.LastEndpoint } else { 'sin-endpoint' }
+    $folderName = "$name [$serial]" -replace '[<>:"/\\|?*]', '_' 
+    $folderName = ($folderName -replace '\s+', ' ').Trim().TrimEnd('.')
+    if ([string]::IsNullOrWhiteSpace($folderName)) { $folderName = 'Dispositivo Android' }
+    return (Join-Path (Join-Path $env:USERPROFILE 'Downloads\AndroidBackup') $folderName)
 }
 
 # -----------------------------------------------------------------------------
@@ -302,74 +440,145 @@ $script:AdvancedCommandExamples = @(
 # EJECUTOR ASINCRONO SEGURO PARA WINFORMS (Sin congelar interfaz)
 # -----------------------------------------------------------------------------
 $script:RunningAsyncTasks = 0
+$script:GuiAsyncJobs = New-Object System.Collections.ArrayList
+
+function Complete-GuiAsyncTasks {
+    foreach ($job in @($script:GuiAsyncJobs.ToArray())) {
+        if (-not $job.Handle.IsCompleted) { continue }
+        [void]$script:GuiAsyncJobs.Remove($job)
+        $script:RunningAsyncTasks = [Math]::Max(0, $script:RunningAsyncTasks - 1)
+        try {
+            $execResult = $job.PowerShell.EndInvoke($job.Handle)
+            $resObj = if ($execResult.Count -gt 0) { $execResult[0] } else { $null }
+            $hasVisibleJob = $false
+            foreach ($pendingJob in $script:GuiAsyncJobs) { if (-not $pendingJob.Silent) { $hasVisibleJob = $true; break } }
+            if (-not $hasVisibleJob) {
+                & $script:SetUiBusyHandler -IsBusy $false -Operation $job.Title
+            }
+            if ($job.Canceled) {
+                $resObj = [pscustomobject]@{ Success=$false; Output=@(); Error='Transferencia cancelada por el usuario.' }
+                & $script:WriteLogEntryHandler -Level 'INFO' -Message "$($job.Title) cancelada por el usuario."
+            } else {
+                $innerResult = if ($resObj -and $resObj.Output -and @($resObj.Output).Count -gt 0) { @($resObj.Output)[0] } else { $null }
+                $innerHasSuccess = $innerResult -and $innerResult.PSObject.Properties['Success']
+                $taskSucceeded = $resObj -and $resObj.Success -and (-not $innerHasSuccess -or [bool]$innerResult.Success)
+                if ($taskSucceeded) {
+                    if (-not $job.Silent) { & $script:WriteLogEntryHandler -Level 'SUCCESS' -Message "$($job.Title) completado con exito." }
+                } else {
+                    $detail = if ($resObj -and $resObj.Error) { $resObj.Error } elseif ($innerResult -and $innerResult.PSObject.Properties['Error'] -and $innerResult.Error) { $innerResult.Error } else { 'La tarea no devolvio un resultado exitoso.' }
+                    & $script:WriteLogEntryHandler -Level 'ERROR' -Message "$($job.Title) fallo: $detail"
+                }
+            }
+            if ($job.OnCompleted) { & $job.OnCompleted $resObj $job.CallbackContext }
+        } catch {
+            if ($job.Canceled) {
+                $cancelResult = [pscustomobject]@{ Success=$false; Output=@(); Error='Transferencia cancelada por el usuario.' }
+                & $script:WriteLogEntryHandler -Level 'INFO' -Message "$($job.Title) cancelada por el usuario."
+                try { if ($job.OnCompleted) { & $job.OnCompleted $cancelResult $job.CallbackContext } } catch { }
+            } else {
+                & $script:WriteLogEntryHandler -Level 'ERROR' -Message "Excepcion al finalizar $($job.Title): $($_.Exception.Message) $($_.ScriptStackTrace)"
+            }
+        } finally {
+            $job.PowerShell.Dispose()
+            if ($job.Runspace) { $job.Runspace.Dispose() }
+        }
+    }
+}
 
 function Invoke-GuiAsyncTask {
     param(
         [Parameter(Mandatory=$true)][string]$Title,
         [Parameter(Mandatory=$true)][scriptblock]$WorkerScript,
         [hashtable]$Parameters = @{},
-        [scriptblock]$OnCompleted = $null
+        [scriptblock]$OnCompleted = $null,
+        [object]$CallbackContext = $null,
+        [switch]$Silent
     )
 
     $script:RunningAsyncTasks++
-    Set-UiBusyState -IsBusy $true -Operation $Title
-    Write-LogEntry -Level 'INFO' -Message "Iniciando: $Title..."
+    if (-not $Silent) {
+        Set-UiBusyState -IsBusy $true -Operation $Title
+        Write-LogEntry -Level 'INFO' -Message "Iniciando: $Title..."
+    }
 
+    # Cada tarea recibe una sesión completa de PowerShell. El runspace
+    # implícito de PowerShell.Create() puede perder cmdlets estándar después
+    # de que WinForms cierre un diálogo modal.
+    $initialState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $taskRunspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($initialState)
+    $taskRunspace.Open()
     $ps = [powershell]::Create()
+    $ps.Runspace = $taskRunspace
     $wrapper = {
         param($mPath, $subScript, $pHash)
         $result = [ordered]@{ Success = $false; Output = @(); Error = $null }
         try {
             if (Test-Path -LiteralPath $mPath) {
-                Import-Module $mPath -Force -DisableNameChecking
+                # El worker usa un runspace separado: cargar el módulo en su
+                # ámbito global evita que sus funciones internas de logging se
+                # pierdan al invocar el scriptblock de trabajo.
+                $moduleFullPath = [IO.Path]::GetFullPath([string]$mPath)
+                Import-Module $moduleFullPath -Force -DisableNameChecking -Global
+                if (-not (Get-Command -Name 'AndroidAdb\Invoke-AdbCommand' -ErrorAction SilentlyContinue)) {
+                    throw "No se pudo cargar la API ADB en la tarea asíncrona: $moduleFullPath"
+                }
+                Initialize-AdbLog | Out-Null
             }
-            $out = & $subScript @pHash
+            # Los scriptblocks nacen en el runspace de WinForms y mantienen su
+            # contexto de comandos; los proxies globales del runspace nuevo no
+            # siempre son visibles desde ellos. Recompilar aquí tras calificar
+            # las funciones del módulo hace explícita y estable la resolución.
+            $workerText = $subScript.ToString()
+            foreach ($adbCommand in @(Get-Command -Module AndroidAdb -CommandType Function -ErrorAction SilentlyContinue)) {
+                $commandName = [string]$adbCommand.Name
+                $pattern = '(?<![\w:\\])' + [regex]::Escape($commandName) + '\b'
+                $workerText = [regex]::Replace($workerText, $pattern, ('AndroidAdb\' + $commandName))
+            }
+            $taskScript = [scriptblock]::Create($workerText)
+            $out = & $taskScript @pHash
             $result.Output = @($out)
             $result.Success = $true
         } catch {
-            $result.Error = $_.Exception.Message
+            $result.Error = "$($_.Exception.Message) at $($_.ScriptStackTrace)"
             $result.Success = $false
         }
         return [pscustomobject]$result
     }
 
     $null = $ps.AddScript($wrapper).AddArgument($script:ModulePath).AddArgument($WorkerScript).AddArgument($Parameters)
-    $asyncHandle = $ps.BeginInvoke()
+    try {
+        $asyncHandle = $ps.BeginInvoke()
+        [void]$script:GuiAsyncJobs.Add([pscustomobject]@{
+            PowerShell=$ps; Runspace=$taskRunspace; Handle=$asyncHandle; Title=$Title; OnCompleted=$OnCompleted; CallbackContext=$CallbackContext; Silent=[bool]$Silent; Canceled=$false
+        })
+    } catch {
+        $ps.Dispose()
+        $taskRunspace.Dispose()
+        $script:RunningAsyncTasks = [Math]::Max(0, $script:RunningAsyncTasks - 1)
+        & $script:WriteLogEntryHandler -Level 'ERROR' -Message "No se pudo iniciar ${Title}: $($_.Exception.Message)"
+        throw
+    }
+}
 
-    $timer = New-Object System.Windows.Forms.Timer
-    $timer.Interval = 100
-    $timer.Add_Tick({
-        if ($asyncHandle.IsCompleted) {
-            $timer.Stop()
-            $timer.Dispose()
-            $script:RunningAsyncTasks--
-
-            try {
-                $execResult = $ps.EndInvoke($asyncHandle)
-                $resObj = if ($execResult) { $execResult[0] } else { $null }
-
-                if ($script:RunningAsyncTasks -le 0) {
-                    $script:RunningAsyncTasks = 0
-                    Set-UiBusyState -IsBusy $false -Operation $Title
-                }
-
-                if ($resObj -and $resObj.Success) {
-                    Write-LogEntry -Level 'SUCCESS' -Message "$Title completado con exito."
-                } elseif ($resObj -and $resObj.Error) {
-                    Write-LogEntry -Level 'ERROR' -Message "$Title fallo: $($resObj.Error)"
-                }
-
-                if ($OnCompleted) {
-                    & $OnCompleted $resObj
-                }
-            } catch {
-                Write-LogEntry -Level 'ERROR' -Message "Excepcion en callback de ${Title}: $($_.Exception.Message)"
-            } finally {
-                $ps.Dispose()
-            }
-        }
+function Cancel-TransferTask {
+    $jobs = @($script:GuiAsyncJobs | Where-Object {
+        $_.Title -match '^(Transferencia|Descarga|Subida)'
     })
-    $timer.Start()
+    if ($jobs.Count -eq 0) {
+        $lblTransferDetails.Text = 'No hay ninguna transferencia activa para cancelar.'
+        return
+    }
+    foreach ($job in $jobs) {
+        try {
+            $job.Canceled = $true
+            $job.PowerShell.Stop()
+        } catch {
+            & $script:WriteLogEntryHandler -Level 'WARN' -Message "No se pudo detener $($job.Title): $($_.Exception.Message)"
+        }
+    }
+    $lblTransferStatusTitle.Text = 'Cancelando transferencia...'
+    $lblTransferStatusTitle.ForeColor = $script:Theme.BadgeWarningFg
+    $lblTransferDetails.Text = 'La transferencia se está deteniendo...'
 }
 
 function Set-UiBusyState {
@@ -393,9 +602,26 @@ function Write-LogEntry {
         [Parameter(Mandatory=$true)][string]$Message,
         [ValidateSet('INFO','SUCCESS','WARN','ERROR')][string]$Level = 'INFO'
     )
+    if ($Level -eq 'ERROR') {
+        try {
+            # No llamar al módulo desde eventos WinForms: su ámbito puede haber terminado.
+            $line = '{0} [ERROR] [AndroidTools.GUI] {1}{2}' -f [datetime]::UtcNow.ToString('o'),($Message -replace "`r?`n",' | '),[Environment]::NewLine
+            $mutex = [System.Threading.Mutex]::new($false,'Local\AndroidAdbLogMutex')
+            $acquired = $false
+            try {
+                $acquired = $mutex.WaitOne(5000)
+                if ($acquired) { [System.IO.File]::AppendAllText($script:GuiLogPath,$line,[System.Text.Encoding]::UTF8) }
+            } finally {
+                if ($acquired) { $mutex.ReleaseMutex() }
+                $mutex.Dispose()
+            }
+        } catch {
+            [Console]::Error.WriteLine("No se pudo guardar el error en el log: $($_.Exception.Message); error original: $Message")
+        }
+    }
     if ($null -eq $txtLog -or $txtLog.IsDisposed) { return }
 
-    $time = Get-Date -Format 'HH:mm:ss'
+    $time = [datetime]::Now.ToString('HH:mm:ss')
     $color = switch ($Level) {
         'SUCCESS' { [System.Drawing.ColorTranslator]::FromHtml('#4ADE80') }
         'WARN'    { [System.Drawing.ColorTranslator]::FromHtml('#FBBF24') }
@@ -425,10 +651,16 @@ function Write-LogEntry {
     }
 }
 
+# Conservar una referencia directa al logger del ámbito de la GUI. Los
+# callbacks de WinForms y los bloques catch del ciclo principal pueden
+# ejecutarse fuera del ámbito de resolución normal de comandos; invocar este
+# cierre evita que un error secundario oculte la excepción original.
+$script:WriteLogEntryHandler = ${function:Write-LogEntry}
+
 # -----------------------------------------------------------------------------
 # SISTEMA DE NOTIFICACIONES VISUALES INTERACTIVAS
 # -----------------------------------------------------------------------------
-$script:NotifTimer = $null
+$script:NotifDeadlineUtc = $null
 
 function Show-NotificationBanner {
     param(
@@ -485,31 +717,14 @@ function Show-NotificationBanner {
 
     $pnlNotification.Visible = $true
 
-    if ($null -ne $script:NotifTimer) {
-        $script:NotifTimer.Stop()
-        $script:NotifTimer.Dispose()
-        $script:NotifTimer = $null
-    }
-
-    if ($AutoCloseSeconds -gt 0) {
-        $script:NotifTimer = New-Object System.Windows.Forms.Timer
-        $script:NotifTimer.Interval = ($AutoCloseSeconds * 1000)
-        $script:NotifTimer.Add_Tick({
-            Hide-NotificationBanner
-        })
-        $script:NotifTimer.Start()
-    }
+    $script:NotifDeadlineUtc = if ($AutoCloseSeconds -gt 0) { [datetime]::UtcNow.AddSeconds($AutoCloseSeconds) } else { $null }
 }
 
 function Hide-NotificationBanner {
     if ($null -ne $pnlNotification -and -not $pnlNotification.IsDisposed) {
         $pnlNotification.Visible = $false
     }
-    if ($null -ne $script:NotifTimer) {
-        $script:NotifTimer.Stop()
-        $script:NotifTimer.Dispose()
-        $script:NotifTimer = $null
-    }
+    $script:NotifDeadlineUtc = $null
 }
 
 # -----------------------------------------------------------------------------
@@ -557,14 +772,29 @@ function Start-UsbAutoWifiConversion {
 
             # 1. Habilitar TCP/IP 5555 desde el USB ya autorizado.
             Invoke-Adb -Serial $s -Arguments @('tcpip','5555') | Out-Null
-            Start-Sleep -Milliseconds 800
-
             $info.Ip = $ipFound
             $endpoint = "${ipFound}:5555"
 
             # 2. Conectar por WiFi. Connect-AdbEndpoint verifica que alcance
             # el estado ADB exacto 'device'.
-            $connection = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 15
+            $connection = $null
+            $lastConnectError = $null
+            for ($attempt = 1; $attempt -le 4; $attempt++) {
+                Start-Sleep -Milliseconds 850
+                try {
+                    $connection = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 3
+                    break
+                } catch {
+                    $lastConnectError = $_.Exception.Message
+                    if ($lastConnectError -notmatch '(?i)10013|10061|connection refused|cannot connect|no alcanzo el estado') { break }
+                }
+            }
+            if ($null -eq $connection) {
+                if ($lastConnectError -match '10013') {
+                    throw "Windows impide abrir la conexión ADB a $endpoint (10013). Comprueba si la VPN o el firewall bloquea conexiones a la red local y verifica el puerto 5555. Detalle: $lastConnectError"
+                }
+                throw "No se pudo conectar por WiFi a $endpoint. $lastConnectError"
+            }
             $info.Success = $true
             $info.WifiSerial = $connection.Serial
         } catch {
@@ -574,33 +804,33 @@ function Start-UsbAutoWifiConversion {
         return [pscustomobject]$info
     }
 
-    Invoke-GuiAsyncTask -Title "Auto-Conexion USB a WiFi ($UsbSerial)" -WorkerScript $worker -Parameters @{ s = $UsbSerial } -OnCompleted {
-        param($res)
+    Invoke-GuiAsyncTask -Title "Auto-Conexion USB a WiFi ($UsbSerial)" -WorkerScript $worker -Parameters @{ s = $UsbSerial } -CallbackContext ([pscustomobject]@{ UsbSerial = $UsbSerial }) -OnCompleted {
+        param($res, $context)
+        $targetUsbSerial = [string]$context.UsbSerial
         if ($res -and $res.Success -and $res.Output -and $res.Output[0].Success) {
             $data = $res.Output[0]
             try {
                 $friendly = if ([string]::IsNullOrWhiteSpace($data.Model)) { "Android WiFi ($($data.WifiSerial))" } else { "$($data.Model) ($($data.WifiSerial))" }
-                $saved = Save-GuiAdbDevice -FriendlyName $friendly -Mode 'tcpip-5555' -UsbSerial $data.UsbSerial -LastEndpoint $data.WifiSerial -IsPaired $false
-                Set-CurrentAdbDevice -Device $saved -Persist | Out-Null
-                $script:UsbProcessedSerials[$UsbSerial] = 'Connected'
+                $saved = Save-GuiAdbDevice -FriendlyName $friendly -Mode 'tcpip-5555' -LastEndpoint $data.WifiSerial -IsPaired $false
+                $activeWifi = [pscustomobject]@{ Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$data.WifiSerial; LastEndpoint=$data.WifiSerial; UsbSerial=$null; Mode='tcpip-5555' }
+                Set-CurrentAdbDevice -Device $activeWifi -Persist | Out-Null
+                $script:UsbProcessedSerials[$targetUsbSerial] = 'Connected'
                 Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo conectado por WiFi en $($data.WifiSerial). Ya puedes desconectar el cable USB."
                 Show-NotificationBanner -Type 'SUCCESS' -Title "¡WiFi listo! ($($data.WifiSerial))" -Message "La conexión quedó guardada y activa. Ya puedes desconectar el cable USB." -ActionText "Verificar" -ActionScript { Refresh-DeviceStatus } -AutoCloseSeconds 12
                 Refresh-DeviceStatus -Silent
             } catch {
-                $script:UsbProcessedSerials[$UsbSerial] = 'Failed'
+                $script:UsbProcessedSerials[$targetUsbSerial] = 'Failed'
                 Write-LogEntry -Level 'ERROR' -Message "WiFi conectado, pero no se pudo guardar/seleccionar: $($_.Exception.Message)"
                 Show-NotificationBanner -Type 'ERROR' -Title 'WiFi conectado sin guardar' -Message $_.Exception.Message -AutoCloseSeconds 12
             }
         } else {
-            $script:UsbProcessedSerials[$UsbSerial] = 'Failed'
+            $script:UsbProcessedSerials[$targetUsbSerial] = 'Failed'
             $errMsg = if ($res -and $res.Output -and $res.Output[0].Error) { $res.Output[0].Error } else { "No se pudo completar la auto-conexion." }
             Write-LogEntry -Level 'WARN' -Message "Auto-conexion USB -> WiFi incompleta: $errMsg"
             
             Show-NotificationBanner -Type 'WARN' `
                 -Title "Conexion WiFi Incompleta" `
-                -Message "$errMsg (El dispositivo sigue utilizable por USB)." `
-                -ActionText "Reintentar" `
-                -ActionScript { Start-UsbAutoWifiConversion -UsbSerial $UsbSerial } `
+                -Message "$errMsg No desconectes el USB hasta ver 'WiFi listo'. Si ADB dejó de ver el USB, vuelve a conectarlo." `
                 -AutoCloseSeconds 10
             
             Refresh-DeviceStatus -Silent
@@ -618,6 +848,7 @@ function Invoke-UsbAutoDetection {
         if (-not (Get-Command adb -ErrorAction SilentlyContinue)) { return }
         
         $lines = @(adb devices 2>$null)
+        $seenUsbSerials = @()
         foreach ($line in $lines) {
             $trimmed = $line.Trim()
             if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith('List of devices')) { continue }
@@ -632,6 +863,7 @@ function Invoke-UsbAutoDetection {
             if ($serial -match '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$') {
                 continue
             }
+            $seenUsbSerials += $serial
 
             if ($status -ceq 'unauthorized') {
                 if (-not $script:UsbProcessedSerials.ContainsKey($serial) -or $script:UsbProcessedSerials[$serial] -ne 'UnauthorizedNotified') {
@@ -655,6 +887,13 @@ function Invoke-UsbAutoDetection {
                 }
             }
         }
+        # Un USB retirado puede volver a entrar con la misma serie. Permitir
+        # una nueva conversión automática tras reconectarlo físicamente.
+        foreach ($processedSerial in @($script:UsbProcessedSerials.Keys)) {
+            if ($processedSerial -notin $seenUsbSerials) {
+                $script:UsbProcessedSerials.Remove($processedSerial)
+            }
+        }
     } catch {
         Write-LogEntry -Level 'WARN' -Message "Auto-Scanner USB: $($_.Exception.Message)"
     } finally {
@@ -667,6 +906,8 @@ function Invoke-UsbAutoDetection {
 # -----------------------------------------------------------------------------
 function Refresh-DeviceStatus {
     param([switch]$Silent)
+
+    if (@($script:GuiAsyncJobs | Where-Object { $_.Title -eq 'Actualizar Estado' }).Count -gt 0) { return }
 
     if (-not $Silent) {
         Write-LogEntry -Level 'INFO' -Message 'Consultando estado de dispositivos...'
@@ -688,24 +929,28 @@ function Refresh-DeviceStatus {
             SavedDevices  = @()
         }
 
-        if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
+        & adb version *> $null
+        if ($LASTEXITCODE -ne 0) {
             $devInfo.FriendlyName = 'ADB no encontrado en PATH'
             return [pscustomobject]$devInfo
         }
         $devInfo.AdbAvailable = $true
 
-        $onlineDevices = @(Get-AdbDevices)
-        $savedDevices = @(Get-SavedAdbDevices)
+        $onlineDevices = @(AndroidAdb\Get-AdbDevices)
+        $savedDevices = @(AndroidAdb\Get-SavedAdbDevices)
         $devInfo.AllDevices = $onlineDevices
         $devInfo.SavedDevices = $savedDevices
 
-        $cur = Get-CurrentAdbDevice
+        $cur = AndroidAdb\Get-CurrentAdbDevice
 
         if ($null -eq $cur -and $onlineDevices.Count -gt 0) {
-            $candidate = @($onlineDevices | Where-Object { $_.Status -ceq 'device' })[0]
+            $candidate = $null
+            foreach ($onlineRecord in $onlineDevices) {
+                if ($onlineRecord.Status -ceq 'device') { $candidate = $onlineRecord; break }
+            }
             if ($null -ne $candidate) {
                 try {
-                    $cur = Set-CurrentAdbDevice -Device $candidate
+                    $cur = AndroidAdb\Set-CurrentAdbDevice -Device $candidate
                 } catch { }
             }
         }
@@ -716,28 +961,29 @@ function Refresh-DeviceStatus {
             $devInfo.FriendlyName = if ($cur.FriendlyName) { $cur.FriendlyName } else { $cur.Serial }
             $devInfo.Endpoint = if ($cur.LastEndpoint) { $cur.LastEndpoint } else { $cur.Serial }
             
-            $record = @($onlineDevices | Where-Object { $_.Serial -ceq $cur.Serial })[0]
+            $record = $null
+            foreach ($onlineRecord in $onlineDevices) {
+                if ($onlineRecord.Serial -ceq $cur.Serial) { $record = $onlineRecord; break }
+            }
             $devInfo.Status = if ($null -ne $record) { [string]$record.Status } else { 'offline' }
 
             if ($devInfo.Status -ceq 'device') {
                 try {
-                    $m = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','getprop','ro.product.model'))
+                    $m = @(AndroidAdb\Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','getprop','ro.product.model'))
                     $devInfo.Model = ($m -join ' ').Trim()
                 } catch { }
                 try {
-                    $v = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','getprop','ro.build.version.release'))
+                    $v = @(AndroidAdb\Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','getprop','ro.build.version.release'))
                     $devInfo.AndroidVer = ($v -join ' ').Trim()
                 } catch { }
                 try {
-                    $batteryDump = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','dumpsys','battery'))
-                    $lvlLine = @($batteryDump | Where-Object { [string]$_ -match '^\s*level:\s*(\d+)' })[0]
-                    if ($lvlLine -match '(\d+)') {
-                        $devInfo.Battery = "{0}%" -f $Matches[1]
-                    }
-                    $tempLine = @($batteryDump | Where-Object { [string]$_ -match '^\s*temperature:\s*(\d+)' })[0]
-                    if ($tempLine -match '(\d+)') {
-                        $val = [double]$Matches[1] / 10.0
-                        $devInfo.Temperature = "{0:N1} °C" -f $val
+                    $batteryDump = @(AndroidAdb\Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','dumpsys','battery'))
+                    foreach ($batteryLine in $batteryDump) {
+                        if ([string]$batteryLine -match '^\s*level:\s*(\d+)') { $devInfo.Battery = "{0}%" -f $Matches[1] }
+                        if ([string]$batteryLine -match '^\s*temperature:\s*(\d+)') {
+                            $val = [double]$Matches[1] / 10.0
+                            $devInfo.Temperature = "{0:N1} °C" -f $val
+                        }
                     }
                 } catch { }
             }
@@ -751,7 +997,7 @@ function Refresh-DeviceStatus {
         return [pscustomobject]$devInfo
     }
 
-    Invoke-GuiAsyncTask -Title 'Actualizar Estado' -WorkerScript $worker -OnCompleted {
+    Invoke-GuiAsyncTask -Title 'Actualizar Estado' -WorkerScript $worker -Silent:$Silent -OnCompleted {
         param($res)
         if ($null -eq $res -or -not $res.Success) {
             $lblDeviceName.Text = "Error al consultar ADB"
@@ -771,6 +1017,24 @@ function Refresh-DeviceStatus {
             $lblBatteryTemp.Text = "No disponible"
             Show-NotificationBanner -Type 'ERROR' -Title "ADB no instalado" -Message "No se encontro el ejecutable 'adb.exe' en el sistema o PATH."
             return
+        }
+
+        # El USB puede desaparecer mientras la consulta está en curso, en
+        # particular después de "adb tcpip 5555". Validar justo al pintar.
+        try { $info.AllDevices = @(AndroidAdb\Get-AdbDevices) }
+        catch {
+            $info.AllDevices = @()
+            & $script:WriteLogEntryHandler -Level 'ERROR' -Message "No se pudo comprobar el estado actual de ADB: $($_.Exception.Message)"
+        }
+        if ($info.Serial) {
+            $currentRecord = $null
+            foreach ($onlineRecord in $info.AllDevices) { if ($onlineRecord.Serial -ceq $info.Serial) { $currentRecord = $onlineRecord; break } }
+            if ($null -eq $currentRecord -or $currentRecord.Status -cne 'device') {
+                $info.Status = if ($null -eq $currentRecord) { 'offline' } else { [string]$currentRecord.Status }
+                $info.Model = $null
+                $info.Battery = 'N/A'
+                $info.Temperature = 'N/A'
+            }
         }
 
         # Actualizar Nombre
@@ -823,29 +1087,30 @@ function Refresh-DeviceStatus {
         }
 
         # Cada dispositivo que ADB confirme como listo se registra automáticamente.
-        foreach ($online in @($info.AllDevices | Where-Object { $_.Status -ceq 'device' })) {
-            Ensure-GuiAdbDeviceSaved -Device $online | Out-Null
+        foreach ($online in $info.AllDevices) {
+            if ($online.Status -ceq 'device') { & $script:EnsureGuiAdbDeviceSavedHandler -Device $online | Out-Null }
         }
-        $savedForUi = @(Get-SavedAdbDevices)
+        $savedForUi = @(AndroidAdb\Get-SavedAdbDevices)
 
         # Persistir también cuál es el activo, incluyendo los dispositivos
         # detectados por primera vez en esta sesión.
-        if ($info.Serial) {
-            $activeSaved = @($savedForUi | Where-Object { $_.UsbSerial -ceq $info.Serial -or $_.LastEndpoint -ieq $info.Serial })[0]
+        if ($info.Serial -and $info.Status -ceq 'device') {
+            $activeSaved = $null
+            foreach ($savedRecord in $savedForUi) { if ($savedRecord.UsbSerial -ceq $info.Serial -or $savedRecord.LastEndpoint -ieq $info.Serial) { $activeSaved = $savedRecord; break } }
             if ($activeSaved) {
                 try {
-                    Set-CurrentAdbDevice -Device ([pscustomobject]@{ Id=$activeSaved.Id; FriendlyName=$activeSaved.FriendlyName; Serial=$info.Serial; LastEndpoint=$activeSaved.LastEndpoint; UsbSerial=$activeSaved.UsbSerial; Mode=$activeSaved.Mode }) -Persist | Out-Null
+                    AndroidAdb\Set-CurrentAdbDevice -Device ([pscustomobject]@{ Id=$activeSaved.Id; FriendlyName=$activeSaved.FriendlyName; Serial=$info.Serial; LastEndpoint=$activeSaved.LastEndpoint; UsbSerial=$activeSaved.UsbSerial; Mode=$activeSaved.Mode }) -Persist | Out-Null
                 } catch {
-                    Write-LogEntry -Level 'ERROR' -Message "No se pudo persistir el dispositivo activo '$($info.Serial)': $($_.Exception.Message)"
+                    & $script:WriteLogEntryHandler -Level 'ERROR' -Message "No se pudo persistir el dispositivo activo '$($info.Serial)': $($_.Exception.Message)"
                 }
             }
         }
 
         # Actualizar Combo de Dispositivos en Cabecera
-        Update-HeaderDeviceList -AllDevices $info.AllDevices -SavedDevices $savedForUi -CurrentSerial $info.Serial
+        & $script:UpdateHeaderDeviceListHandler -AllDevices $info.AllDevices -SavedDevices $savedForUi -CurrentSerial $info.Serial
         
         # Actualizar lista de dispositivos en pestaña de Gestion
-        Update-DevicesTabGrid -AllDevices $info.AllDevices -SavedDevices $savedForUi -CurrentSerial $info.Serial
+        & $script:UpdateDevicesTabGridHandler -AllDevices $info.AllDevices -SavedDevices $savedForUi -CurrentSerial $info.Serial
     }
 }
 
@@ -862,7 +1127,8 @@ function Update-HeaderDeviceList {
     $allSaved = @($SavedDevices)
 
     foreach ($dev in $allOnline) {
-        $savedMatch = @($allSaved | Where-Object { $_.UsbSerial -ceq $dev.Serial -or $_.LastEndpoint -ceq $dev.Serial })[0]
+        $savedMatch = $null
+        foreach ($savedRecord in $allSaved) { if ($savedRecord.UsbSerial -ceq $dev.Serial -or $savedRecord.LastEndpoint -ceq $dev.Serial) { $savedMatch = $savedRecord; break } }
         $name = if ($savedMatch) { $savedMatch.FriendlyName } else { $dev.Serial }
         $display = "📱 $name ($($dev.Status))"
         $cboHeaderDevices.Items.Add($display) | Out-Null
@@ -870,7 +1136,8 @@ function Update-HeaderDeviceList {
     }
 
     foreach ($s in $allSaved) {
-        $alreadyInList = @($allOnline | Where-Object { $_.Serial -ceq $s.LastEndpoint -or $_.Serial -ceq $s.UsbSerial }).Count -gt 0
+        $alreadyInList = $false
+        foreach ($onlineRecord in $allOnline) { if ($onlineRecord.Serial -ceq $s.LastEndpoint -or $onlineRecord.Serial -ceq $s.UsbSerial) { $alreadyInList = $true; break } }
         if (-not $alreadyInList) {
             $display = "💾 $($s.FriendlyName) [Guardado]"
             $cboHeaderDevices.Items.Add($display) | Out-Null
@@ -904,21 +1171,39 @@ function Start-ReconnectSavedDevice {
     $deviceId = [string]$Device.Id
     Invoke-GuiAsyncTask -Title "Reconectar $($Device.FriendlyName)" -WorkerScript {
         param($id)
-        $saved = @((Get-SavedAdbDevices) | Where-Object { $_.Id -ceq $id })[0]
+        $saved = @((AndroidAdb\Get-SavedAdbDevices) | Where-Object { $_.Id -ceq $id })[0]
         if ($null -eq $saved) { throw "No existe el dispositivo guardado '$id'." }
-        if (-not (Test-AdbDeviceReady -Device $saved -AutoReconnect $true)) {
-            throw "No se pudo reconectar '$($saved.FriendlyName)'. Revisa la IP, el puerto y que el teléfono esté en la misma red."
+
+        if ([string]::IsNullOrWhiteSpace([string]$saved.LastEndpoint)) {
+            throw "'$($saved.FriendlyName)' no tiene una dirección WiFi guardada. Conéctalo por WiFi una vez desde 'Añadir dispositivo'."
         }
-        $ready = @(Get-AdbDevices | Where-Object { $_.Status -ceq 'device' -and ($_.Serial -ieq $saved.LastEndpoint -or $_.Serial -ieq $saved.UsbSerial) })[0]
+
+        if (-not (AndroidAdb\Test-AdbDeviceReady -Device $saved -AutoReconnect $true)) {
+            $endpoint = if ($saved.LastEndpoint) { [string]$saved.LastEndpoint } else { '(sin endpoint guardado)' }
+            $hint = if ($saved.Mode -eq 'wireless-debugging-tls') {
+                'Verifica que Wireless Debugging esté activo y que el teléfono siga emparejado.'
+            } else {
+                'La misma red no garantiza la misma IP y ADB TCP/IP 5555 normalmente debe activarse de nuevo desde USB cuando cambia o se reinicia el teléfono.'
+            }
+            throw "No se pudo alcanzar '$endpoint'. $hint"
+        }
+        $saved = @((AndroidAdb\Get-SavedAdbDevices) | Where-Object { $_.Id -ceq $id })[0]
+        $ready = @(AndroidAdb\Get-AdbDevices | Where-Object { $_.Status -ceq 'device' -and $_.Serial -match ':[0-9]+$' -and ($_.Serial -ieq $saved.LastEndpoint -or $saved.Mode -eq 'wireless-debugging-tls') })[0]
         if ($null -eq $ready) { throw "ADB no confirmó el estado device para '$($saved.FriendlyName)'." }
-        return [pscustomobject]@{ Id=$saved.Id; Serial=$ready.Serial; FriendlyName=$saved.FriendlyName }
+        $model = ''
+        try { $model = ((AndroidAdb\Invoke-AdbCommand -Serial $ready.Serial -Arguments @('shell','getprop','ro.product.model')) -join ' ').Trim() } catch { }
+        $friendly = [string]$saved.FriendlyName
+        if ([string]::IsNullOrWhiteSpace($friendly) -or $friendly -match '^[^\s]+:\d+$') { $friendly = if ($model) { $model } else { 'Android WiFi' } }
+        $mode = if ($ready.Serial -match ':5555$') { 'tcpip-5555' } else { $saved.Mode }
+        $saved = AndroidAdb\Update-SavedAdbDevice -Id $saved.Id -FriendlyName $friendly -UsbSerial '' -LastEndpoint $ready.Serial -Mode $mode -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+        return [pscustomobject]@{ Id=$saved.Id; Serial=$ready.Serial; FriendlyName=$saved.FriendlyName; Model=$model }
     } -Parameters @{ id=$deviceId } -OnCompleted {
         param($result)
         if ($result -and $result.Success -and $result.Output) {
             $ready = $result.Output[0]
             try {
                 $saved = @((Get-SavedAdbDevices) | Where-Object { $_.Id -ceq $ready.Id })[0]
-                Set-CurrentAdbDevice -Device ([pscustomobject]@{ Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$ready.Serial; LastEndpoint=$saved.LastEndpoint; UsbSerial=$saved.UsbSerial; Mode=$saved.Mode }) -Persist | Out-Null
+                Set-CurrentAdbDevice -Device ([pscustomobject]@{ Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$ready.Serial; LastEndpoint=$saved.LastEndpoint; UsbSerial=$null; Mode=$saved.Mode }) -Persist | Out-Null
                 Write-LogEntry -Level 'SUCCESS' -Message "Reconectado y seleccionado: $($ready.FriendlyName) [$($ready.Serial)]."
                 Show-NotificationBanner -Type 'SUCCESS' -Title 'Dispositivo reconectado' -Message "$($ready.FriendlyName) está activo en $($ready.Serial)." -AutoCloseSeconds 8
             } catch {
@@ -926,7 +1211,6 @@ function Start-ReconnectSavedDevice {
             }
         } else {
             $detail = if ($result -and $result.Error) { $result.Error } else { 'La reconexión no produjo resultado.' }
-            Write-LogEntry -Level 'ERROR' -Message "Reconexión fallida: $detail"
             Show-NotificationBanner -Type 'ERROR' -Title 'Reconexión fallida' -Message $detail -AutoCloseSeconds 10
         }
         Refresh-DeviceStatus -Silent
@@ -1048,8 +1332,8 @@ $btnOpenAdvFull.ForeColor = $script:Theme.PrimaryFg
 $btnOpenAdvFull.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnOpenAdvFull.FlatAppearance.BorderSize = 0
 $btnOpenAdvFull.Cursor = [System.Windows.Forms.Cursors]::Hand
-$btnOpenAdvFull.Add_MouseEnter({ $btnOpenAdvFull.BackColor = $script:Theme.PrimaryHover })
-$btnOpenAdvFull.Add_MouseLeave({ $btnOpenAdvFull.BackColor = $script:Theme.Primary })
+$btnOpenAdvFull.Add_MouseEnter({ param($sender, $eventArgs) $sender.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#1D4ED8') })
+$btnOpenAdvFull.Add_MouseLeave({ param($sender, $eventArgs) $sender.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#2563EB') })
 $btnOpenAdvFull.Add_Click({ Show-AdvancedConsoleWindow })
 $pnlHeaderRight.Controls.Add($btnOpenAdvFull)
 
@@ -1231,14 +1515,14 @@ function New-NavButton {
 }
 
 # Botones de la Barra Lateral
-$btnNavExplorer  = New-NavButton -Icon "📁" -Title "Explorador Android" -OnClick { $tabControlMain.SelectedTab = $tabExplorer; Refresh-AndroidExplorer }
-$btnNavTransfer  = New-NavButton -Icon "⇄"  -Title "Transferir Fotos & Datos" -OnClick { $tabControlMain.SelectedTab = $tabTransfer }
-$btnNavDevices   = New-NavButton -Icon "📱" -Title "Gestion de Dispositivos" -OnClick { $tabControlMain.SelectedTab = $tabDevices; Refresh-DeviceStatus }
+$btnNavExplorer  = New-NavButton -Icon "📁" -Title "Explorador Android" -OnClick { $global:AndroidToolsGuiNavigation.Control.SelectedTab = $global:AndroidToolsGuiNavigation.Explorer; Refresh-AndroidExplorer }
+$btnNavTransfer  = New-NavButton -Icon "⇄"  -Title "Transferir Fotos & Datos" -OnClick { $global:AndroidToolsGuiNavigation.Control.SelectedTab = $global:AndroidToolsGuiNavigation.Transfer }
+$btnNavDevices   = New-NavButton -Icon "📱" -Title "Gestion de Dispositivos" -OnClick { $global:AndroidToolsGuiNavigation.Control.SelectedTab = $global:AndroidToolsGuiNavigation.Devices; Refresh-DeviceStatus }
 $btnNavApps      = New-NavButton -Icon "📦" -Title "Gestion de Aplicaciones" -OnClick { Show-AppsManagerDialog }
 $btnNavScreen    = New-NavButton -Icon "📸" -Title "Captura / Espejo Pantalla" -OnClick { Show-ScreenDialog }
 $btnNavClean     = New-NavButton -Icon "🧹" -Title "Limpieza de Cache" -OnClick { Invoke-DeviceCleanCaches }
 $btnNavDiag      = New-NavButton -Icon "🩺" -Title "Diagnostico Completo" -OnClick { Invoke-FullDiagnostics }
-$btnNavLogs      = New-NavButton -Icon "📜" -Title "Registro de Actividad" -OnClick { $tabControlMain.SelectedTab = $tabLogs }
+$btnNavLogs      = New-NavButton -Icon "📜" -Title "Registro de Actividad" -OnClick { $global:AndroidToolsGuiNavigation.Control.SelectedTab = $global:AndroidToolsGuiNavigation.Logs }
 $btnNavAdvanced  = New-NavButton -Icon "⚡" -Title "Modo Avanzado (Consola)" -OnClick { Show-AdvancedConsoleWindow } -IsHighlight $true
 
 $pnlSidebarButtons.Controls.AddRange(@(
@@ -1299,6 +1583,7 @@ $lblExpPathLabel.Size = New-Object System.Drawing.Size(80, 20)
 $pnlExpTop.Controls.Add($lblExpPathLabel)
 
 $txtExpCurrentPath = New-Object System.Windows.Forms.TextBox
+$script:txtExpCurrentPath = $txtExpCurrentPath
 $txtExpCurrentPath.Font = $script:Fonts.Code
 $txtExpCurrentPath.Text = "/sdcard"
 $txtExpCurrentPath.Location = New-Object System.Drawing.Point(82, 4)
@@ -1308,7 +1593,7 @@ $txtExpCurrentPath.Add_KeyDown({
     param($s, $e)
     if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
         $e.SuppressKeyPress = $true
-        Navigate-AndroidDirectory -Path $txtExpCurrentPath.Text.Trim()
+        Navigate-AndroidDirectory -Path $script:txtExpCurrentPath.Text.Trim()
     }
 })
 $pnlExpTop.Controls.Add($txtExpCurrentPath)
@@ -1322,7 +1607,7 @@ $btnExpGo.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows
 $btnExpGo.BackColor = $script:Theme.Secondary
 $btnExpGo.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnExpGo.Cursor = [System.Windows.Forms.Cursors]::Hand
-$btnExpGo.Add_Click({ Navigate-AndroidDirectory -Path $txtExpCurrentPath.Text.Trim() })
+$btnExpGo.Add_Click({ Navigate-AndroidDirectory -Path $script:txtExpCurrentPath.Text.Trim() })
 $pnlExpTop.Controls.Add($btnExpGo)
 
 $btnExpUp = New-Object System.Windows.Forms.Button
@@ -1385,6 +1670,7 @@ $tabExplorer.Controls.Add($pnlExpTop)
 
 # Lista de Archivos y Carpetas (ListView)
 $lvFiles = New-Object System.Windows.Forms.ListView
+$script:lvFiles = $lvFiles
 $lvFiles.Dock = [System.Windows.Forms.DockStyle]::Fill
 $lvFiles.View = [System.Windows.Forms.View]::Details
 $lvFiles.FullRowSelect = $true
@@ -1603,6 +1889,7 @@ $pnlTransferStatus.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 $pnlTransferStatus.Padding = New-Object System.Windows.Forms.Padding(12)
 
 $lblTransferStatusTitle = New-Object System.Windows.Forms.Label
+$script:lblTransferStatusTitle = $lblTransferStatusTitle
 $lblTransferStatusTitle.Text = "Estado de Transferencia:"
 $lblTransferStatusTitle.Font = $script:Fonts.BodyBold
 $lblTransferStatusTitle.ForeColor = $script:Theme.TextTitle
@@ -1611,6 +1898,7 @@ $lblTransferStatusTitle.Size = New-Object System.Drawing.Size(200, 20)
 $pnlTransferStatus.Controls.Add($lblTransferStatusTitle)
 
 $lblTransferDetails = New-Object System.Windows.Forms.Label
+$script:lblTransferDetails = $lblTransferDetails
 $lblTransferDetails.Text = "Sin transferencias activas. Selecciona una opcion arriba para comenzar."
 $lblTransferDetails.Font = $script:Fonts.Small
 $lblTransferDetails.ForeColor = $script:Theme.TextMuted
@@ -1619,13 +1907,30 @@ $lblTransferDetails.Size = New-Object System.Drawing.Size(650, 24)
 $pnlTransferStatus.Controls.Add($lblTransferDetails)
 
 $pbTransferProgress = New-Object System.Windows.Forms.ProgressBar
+$script:pbTransferProgress = $pbTransferProgress
 $pbTransferProgress.Location = New-Object System.Drawing.Point(12, 62)
 $pbTransferProgress.Size = New-Object System.Drawing.Size(700, 16)
 $pbTransferProgress.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $pbTransferProgress.Visible = $false
 $pnlTransferStatus.Controls.Add($pbTransferProgress)
 
+$btnCancelTransfer = New-Object System.Windows.Forms.Button
+$btnCancelTransfer.Text = "✖ Cancelar transferencia"
+$btnCancelTransfer.Font = $script:Fonts.SmallBold
+$btnCancelTransfer.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#FEE2E2')
+$btnCancelTransfer.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#B91C1C')
+$btnCancelTransfer.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnCancelTransfer.FlatAppearance.BorderColor = [System.Drawing.ColorTranslator]::FromHtml('#FCA5A5')
+$btnCancelTransfer.FlatAppearance.BorderSize = 1
+$btnCancelTransfer.Size = New-Object System.Drawing.Size(190, 28)
+$btnCancelTransfer.Location = New-Object System.Drawing.Point(205, 90)
+$btnCancelTransfer.Visible = $false
+$btnCancelTransfer.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnCancelTransfer.Add_Click({ Cancel-TransferTask })
+$pnlTransferStatus.Controls.Add($btnCancelTransfer)
+
 $btnOpenLocalDir = New-Object System.Windows.Forms.Button
+$script:btnOpenLocalDir = $btnOpenLocalDir
 $btnOpenLocalDir.Text = "📂 Abrir Carpeta en PC"
 $btnOpenLocalDir.Font = $script:Fonts.SmallBold
 $btnOpenLocalDir.BackColor = $script:Theme.Secondary
@@ -1979,12 +2284,12 @@ $pnlHeader.SendToBack()
 function Navigate-AndroidDirectory {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { $Path = '/sdcard' }
-    $txtExpCurrentPath.Text = $Path
+    $script:txtExpCurrentPath.Text = $Path
     Refresh-AndroidExplorer
 }
 
 function Navigate-AndroidParentDirectory {
-    $cur = $txtExpCurrentPath.Text.Trim()
+    $cur = $script:txtExpCurrentPath.Text.Trim()
     if ($cur -eq '/' -or $cur -eq '/sdcard' -or [string]::IsNullOrWhiteSpace($cur)) {
         Navigate-AndroidDirectory -Path '/sdcard'
         return
@@ -1995,7 +2300,7 @@ function Navigate-AndroidParentDirectory {
 }
 
 function Refresh-AndroidExplorer {
-    $path = $txtExpCurrentPath.Text.Trim()
+    $path = $script:txtExpCurrentPath.Text.Trim()
     if ([string]::IsNullOrWhiteSpace($path)) { $path = '/sdcard' }
 
     Write-LogEntry -Level 'INFO' -Message "Explorador Android: Listando carpeta '$path'..."
@@ -2007,20 +2312,20 @@ function Refresh-AndroidExplorer {
             throw "No hay ningun dispositivo conectado y listo."
         }
 
-        # Listar contenido mediante script seguro
+        # Android expone /sdcard como un enlace simbólico y en algunos
+        # dispositivos `find /sdcard ...` devuelve vacío. `ls -1p` resuelve
+        # correctamente el almacenamiento compartido y marca directorios con
+        # una barra final.
         $items = @()
-        $findLines = @(Invoke-AdbCommand -Serial $curDev.Serial -Arguments @('shell','find', $dirPath, '-mindepth', '1', '-maxdepth', '1', '-print'))
+        $listLines = @(Invoke-AdbCommand -Serial $curDev.Serial -Arguments @('shell','ls','-1p', "$dirPath/"))
         
-        foreach ($line in $findLines) {
-            $entryPath = ([string]$line).Trim()
-            if ([string]::IsNullOrWhiteSpace($entryPath)) { continue }
-            $name = Split-Path -Path $entryPath -Leaf
-            
-            $isDir = $false
-            try {
-                Invoke-AdbCommand -Serial $curDev.Serial -Arguments @('shell', 'test', '-d', $entryPath) | Out-Null
-                $isDir = $true
-            } catch { }
+        foreach ($line in $listLines) {
+            $entryName = ([string]$line).Trim()
+            if ([string]::IsNullOrWhiteSpace($entryName) -or $entryName -match '^(total\s+\d+|\.\.?/?$)') { continue }
+            $isDir = $entryName.EndsWith('/')
+            $name = $entryName.TrimEnd('/')
+            if ([string]::IsNullOrWhiteSpace($name)) { continue }
+            $entryPath = ("{0}/{1}" -f $dirPath.TrimEnd('/'), $name)
 
             $size = 0L
             if (-not $isDir) {
@@ -2048,8 +2353,13 @@ function Refresh-AndroidExplorer {
             return
         }
 
-        $lvFiles.BeginUpdate()
-        $lvFiles.Items.Clear()
+        $filesView = $script:lvFiles
+        if ($null -eq $filesView -or $filesView.IsDisposed) {
+            Write-LogEntry -Level 'WARN' -Message 'El control del Explorador Android ya no está disponible.'
+            return
+        }
+        $filesView.BeginUpdate()
+        $filesView.Items.Clear()
 
         # Ordenar: Carpetas primero, luego archivos alfabetico
         $dirs = @($res.Output | Where-Object { $_.IsDir } | Sort-Object Name)
@@ -2062,7 +2372,7 @@ function Refresh-AndroidExplorer {
             $lvi.SubItems.Add($d.Path) | Out-Null
             $lvi.Tag = $d
             $lvi.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#1E40AF')
-            $lvFiles.Items.Add($lvi) | Out-Null
+            $filesView.Items.Add($lvi) | Out-Null
         }
 
         foreach ($f in $files) {
@@ -2072,10 +2382,10 @@ function Refresh-AndroidExplorer {
             $lvi.SubItems.Add((Format-GuiFileSize -Bytes $f.SizeBytes)) | Out-Null
             $lvi.SubItems.Add($f.Path) | Out-Null
             $lvi.Tag = $f
-            $lvFiles.Items.Add($lvi) | Out-Null
+            $filesView.Items.Add($lvi) | Out-Null
         }
 
-        $lvFiles.EndUpdate()
+        $filesView.EndUpdate()
         Write-LogEntry -Level 'SUCCESS' -Message "Explorador: $($dirs.Count) carpetas y $($files.Count) archivos cargados."
     }
 }
@@ -2084,7 +2394,12 @@ function Download-SelectedFile {
     param([string]$AndroidPath)
     if ([string]::IsNullOrWhiteSpace($AndroidPath)) { return }
 
-    $destDir = Join-Path $env:USERPROFILE 'Downloads\AndroidDownloads'
+    $activeDevice = Get-CurrentAdbDevice
+    if ($null -eq $activeDevice) {
+        Show-NotificationBanner -Type 'ERROR' -Title 'Sin dispositivo activo' -Message 'Selecciona un dispositivo antes de extraer archivos.' -AutoCloseSeconds 8
+        return
+    }
+    $destDir = Join-Path (Get-GuiDeviceTransferRoot -Device $activeDevice) 'Archivos_Individuales'
     if (-not (Test-Path -LiteralPath $destDir)) {
         New-Item -ItemType Directory -Path $destDir -Force | Out-Null
     }
@@ -2103,9 +2418,10 @@ function Download-SelectedFile {
         param($res)
         if ($res -and $res.Success) {
             Stop-TransferUi -Result $res
+            $lblTransferDetails.Text = "100% · Guardado en: $destDir"
             Show-NotificationBanner -Type 'SUCCESS' `
                 -Title "Descarga Completada" `
-                -Message "Archivo guardado en: $destDir" `
+                    -Message "Archivo guardado en: $destDir" `
                 -ActionText "Abrir Carpeta" `
                 -ActionScript { Start-Process 'explorer.exe' -ArgumentList $destDir } `
                 -AutoCloseSeconds 10
@@ -2121,7 +2437,8 @@ function Download-SelectedFile {
 }
 
 function Upload-FileToCurrentAndroidPath {
-    $targetPath = $txtExpCurrentPath.Text.Trim()
+    param([string]$TargetDirectory)
+    $targetPath = if ($TargetDirectory) { $TargetDirectory } else { $script:txtExpCurrentPath.Text.Trim() }
     if ([string]::IsNullOrWhiteSpace($targetPath)) { $targetPath = '/sdcard/Download' }
 
     $ofd = New-Object System.Windows.Forms.OpenFileDialog
@@ -2132,26 +2449,98 @@ function Upload-FileToCurrentAndroidPath {
         Write-LogEntry -Level 'INFO' -Message "Subiendo '$localFile' a '$targetPath'..."
         Show-NotificationBanner -Type 'INFO' -Title "Subiendo Archivo" -Message "Transfiriendo '$localFile' al telefono..."
         Start-TransferUi -Title "Subiendo '$localFile' a '$targetPath'..."
-
-        $worker = {
-            param($src, $dst)
-            $cur = Get-CurrentAdbDevice
-            Invoke-AdbCommand -Serial $cur.Serial -Arguments @('push', $src, $dst)
+        $uploadProgressPath = $global:AndroidToolsTransferState.ProgressPath
+        if ([string]::IsNullOrWhiteSpace($uploadProgressPath)) {
+            $uploadProgressPath = Join-Path $env:TEMP ("AndroidTools-upload-{0}.json" -f [guid]::NewGuid().ToString('N'))
+            $global:AndroidToolsTransferState.ProgressPath = $uploadProgressPath
+        }
+        $uploadSerial = [string]$global:AndroidAdbCurrentDevice.Serial
+        if ([string]::IsNullOrWhiteSpace($uploadSerial)) {
+            $readySerials = @()
+            foreach ($deviceLine in @(& adb devices)) {
+                if ($deviceLine -match '^(\S+)\s+device\s*$') { $readySerials += $Matches[1] }
+            }
+            if ($readySerials.Count -eq 1) { $uploadSerial = [string]$readySerials[0] }
         }
 
-        Invoke-GuiAsyncTask -Title "Subida de Archivo" -WorkerScript $worker -Parameters @{ src = $localFile; dst = $targetPath } -OnCompleted {
-            param($res)
+        $worker = {
+            param($src, $dst, $progressPath, $serial)
+            if ([string]::IsNullOrWhiteSpace($serial)) { throw 'No hay un dispositivo listo conectado.' }
+            $file = [IO.FileInfo]::new($src)
+            if (-not $file.Exists) { throw "Archivo no encontrado: $src" }
+            $remotePath = $dst.TrimEnd('/') + '/' + $file.Name
+            $totalBytes = [long]$file.Length
+            $process = $null
+            try {
+                [IO.File]::WriteAllText($progressPath, "0`nSubiendo '$($file.Name)'...")
+                $psi = [Diagnostics.ProcessStartInfo]::new()
+                $psi.FileName = 'adb'
+                $safeSerial = $serial -replace '"', '\"'
+                $safeSource = $src -replace '"', '\"'
+                $safeRemote = $remotePath -replace '"', '\"'
+                $psi.Arguments = '-s "{0}" push "{1}" "{2}"' -f $safeSerial,$safeSource,$safeRemote
+                $psi.UseShellExecute = $false
+                $psi.CreateNoWindow = $true
+                $psi.RedirectStandardOutput = $true
+                $psi.RedirectStandardError = $true
+                $process = [Diagnostics.Process]::new()
+                $process.StartInfo = $psi
+                if (-not $process.Start()) { throw 'No se pudo iniciar adb push.' }
+                $outputTask = $process.StandardOutput.ReadToEndAsync()
+                $errorBuffer = [char[]]::new(2048)
+                $errorRead = $process.StandardError.ReadAsync($errorBuffer, 0, $errorBuffer.Length)
+                $progressText = ''
+                while (-not $process.HasExited) {
+                    if ($errorRead.IsCompleted) {
+                        $received = $errorRead.GetAwaiter().GetResult()
+                        if ($received -gt 0) {
+                            $progressText += -join $errorBuffer[0..($received - 1)]
+                            if ($progressText.Length -gt 1024) { $progressText = $progressText.Substring($progressText.Length - 1024) }
+                            $errorRead = $process.StandardError.ReadAsync($errorBuffer, 0, $errorBuffer.Length)
+                        }
+                    }
+                    $uploaded = 0L
+                    try {
+                        $remoteSize = ((& adb -s $serial shell stat -c '%s' $remotePath 2>$null) -join '').Trim()
+                        [void][long]::TryParse($remoteSize, [ref]$uploaded)
+                    } catch { }
+                    $percent = if ($totalBytes -gt 0) { [Math]::Min(99, [Math]::Max(1, [int](100 * $uploaded / $totalBytes))) } else { 1 }
+                    $adbProgress = [regex]::Matches($progressText, '(?<!\d)(\d{1,3})%(?!\d)')
+                    if ($adbProgress.Count -gt 0) {
+                        $percent = [Math]::Max($percent, [Math]::Min(99, [int]$adbProgress[$adbProgress.Count - 1].Groups[1].Value))
+                    }
+                    [IO.File]::WriteAllText($progressPath, "$percent`nSubiendo '$($file.Name)' a $remotePath")
+                    [Threading.Thread]::Sleep(350)
+                }
+                $process.WaitForExit()
+                $lastRead = $errorRead.GetAwaiter().GetResult()
+                if ($lastRead -gt 0) { $progressText += -join $errorBuffer[0..($lastRead - 1)] }
+                $errorText = $progressText + $process.StandardError.ReadToEnd()
+                $null = $outputTask.GetAwaiter().GetResult()
+                if ($process.ExitCode -ne 0) { throw "adb push fallo con codigo $($process.ExitCode). $errorText" }
+                [IO.File]::WriteAllText($progressPath, "100`nSubido a $remotePath")
+                return [pscustomobject]@{ RemotePath=$remotePath; LocalPath=$src; Msg="Archivo subido correctamente a $remotePath" }
+            } finally {
+                if ($null -ne $process -and -not $process.HasExited) { try { $process.Kill() } catch { } }
+                if ($null -ne $process) { $process.Dispose() }
+            }
+        }
+
+        Invoke-GuiAsyncTask -Title "Subida de Archivo" -WorkerScript $worker -Parameters @{ src = $localFile; dst = $targetPath; progressPath = $uploadProgressPath; serial = $uploadSerial } -CallbackContext ([pscustomobject]@{ LocalFile=$localFile; TargetPath=$targetPath }) -OnCompleted {
+            param($res, $context)
             if ($res -and $res.Success) {
-                Stop-TransferUi -Result $res
-                Show-NotificationBanner -Type 'SUCCESS' -Title "Subida Exitosa" -Message "El archivo se transfirio a $targetPath."
-                Refresh-AndroidExplorer
-                Write-LogEntry -Level 'SUCCESS' -Message "Subida completada: '$localFile' -> '$targetPath'."
+                & $global:AndroidToolsGuiHandlers.StopTransfer -Result $res
+                $uploadInfo = if ($res.Output -and @($res.Output).Count -gt 0) { @($res.Output)[0] } else { $null }
+                $remoteResult = if ($uploadInfo -and $uploadInfo.PSObject.Properties['RemotePath'] -and $uploadInfo.RemotePath) { [string]$uploadInfo.RemotePath } else { "$($context.TargetPath)/$([IO.Path]::GetFileName($context.LocalFile))" }
+                if ($global:AndroidToolsTransferState.Details) { $global:AndroidToolsTransferState.Details.Text = "100% · Subido a: $remoteResult" }
+                & $global:AndroidToolsGuiHandlers.WriteLog -Level 'SUCCESS' -Message "Subida completada: '$($context.LocalFile)' -> '$remoteResult'."
+                try { & $global:AndroidToolsGuiHandlers.ShowNotification -Type 'SUCCESS' -Title "Subida Exitosa" -Message "Archivo subido a: $remoteResult" } catch { }
             } else {
-                Stop-TransferUi -Result $res
+                & $global:AndroidToolsGuiHandlers.StopTransfer -Result $res
                 $detail = if ($res -and $res.Error) { $res.Error } else { 'No se recibió respuesta de ADB.' }
-                $lblTransferDetails.Text = "❌ Error al subir: $detail"
-                Write-LogEntry -Level 'ERROR' -Message "Subida fallida de '$localFile': $detail"
-                Show-NotificationBanner -Type 'ERROR' -Title 'Subida fallida' -Message $detail -AutoCloseSeconds 10
+                if ($global:AndroidToolsTransferState.Details) { $global:AndroidToolsTransferState.Details.Text = "Error al subir: $detail" }
+                & $global:AndroidToolsGuiHandlers.WriteLog -Level 'ERROR' -Message "Subida fallida de '$($context.LocalFile)': $detail"
+                try { & $global:AndroidToolsGuiHandlers.ShowNotification -Type 'ERROR' -Title 'Subida fallida' -Message $detail -AutoCloseSeconds 10 } catch { }
             }
         }
     } else {
@@ -2162,7 +2551,7 @@ function Upload-FileToCurrentAndroidPath {
 }
 
 function Create-AndroidFolderPrompt {
-    $targetPath = $txtExpCurrentPath.Text.Trim()
+    $targetPath = $script:txtExpCurrentPath.Text.Trim()
     $folderName = [Microsoft.VisualBasic.Interaction]::InputBox("Escribe el nombre de la nueva carpeta:", "Nueva Carpeta en Android", "Nueva_Carpeta")
     if (-not [string]::IsNullOrWhiteSpace($folderName)) {
         $fullNew = "$targetPath/$folderName" -replace '/+', '/'
@@ -2207,17 +2596,52 @@ function Delete-SelectedAndroidItem {
 function Invoke-TransferTask {
     param([Parameter(Mandatory=$true)][string]$Type)
 
+    if ($Type -eq 'Upload') {
+        Upload-FileToCurrentAndroidPath -TargetDirectory '/sdcard/Download'
+        return
+    }
+
     Start-TransferUi -Title "Iniciando transferencia ($Type)..."
 
     $worker = {
-        param($opType)
+        param($opType, $progressPath)
         $cur = Get-CurrentAdbDevice
         if ($null -eq $cur -or $cur.Status -cne 'device') {
             throw "No hay un dispositivo listo conectado."
         }
 
-        $baseDownload = Join-Path $env:USERPROFILE 'Downloads\AndroidBackup'
+        $deviceName = if ($cur.FriendlyName) { [string]$cur.FriendlyName } else { 'Dispositivo Android' }
+        $deviceSerial = if ($cur.Serial) { [string]$cur.Serial } else { 'sin-endpoint' }
+        $deviceFolderName = ("$deviceName [$deviceSerial]" -replace '[<>:"/\\|?*]', '_')
+        $deviceFolderName = ($deviceFolderName -replace '\s+', ' ').Trim().TrimEnd('.')
+        if ([string]::IsNullOrWhiteSpace($deviceFolderName)) { $deviceFolderName = 'Dispositivo Android' }
+        $baseDownload = Join-Path (Join-Path $env:USERPROFILE 'Downloads\AndroidBackup') $deviceFolderName
         $todayStr = Get-Date -Format yyyyMMdd_HHmmss
+        $progress = {
+            param([int]$Done, [int]$Total, [string]$Message)
+            $percent = if ($Total -le 0) { 100 } else { [Math]::Min(100, [Math]::Max(0, [int](100 * $Done / $Total))) }
+            try {
+                [IO.File]::WriteAllText($progressPath, (@{ Percent=$percent; Message=$Message } | ConvertTo-Json -Compress))
+            } catch { }
+        }
+        & $progress 0 1 'Preparando archivos...'
+
+        $pullFiles = {
+            param([string[]]$RemoteFiles, [string]$DestinationRoot)
+            $files = @($RemoteFiles | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim() })
+            if ($files.Count -eq 0) {
+                & $progress 100 100 'No se encontraron archivos.'
+                return 0
+            }
+            $done = 0
+            foreach ($remote in $files) {
+                New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+                Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull', $remote, $DestinationRoot) | Out-Null
+                $done++
+                & $progress $done $files.Count ("Transferido: {0}" -f (Split-Path $remote -Leaf))
+            }
+            return $files.Count
+        }
 
         switch ($opType) {
             'RecentPhotos' {
@@ -2225,56 +2649,53 @@ function Invoke-TransferTask {
                 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
                 $files = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','find','/sdcard/DCIM/Camera','-type','f','-mtime','-7','-print') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
                 if ($files.Count -eq 0) {
+                    & $progress 100 100 'No se encontraron fotos.'
                     return [pscustomobject]@{ Count = 0; TargetDir = $targetDir; Msg = "No se encontraron fotos en los ultimos 7 dias." }
                 }
-                foreach ($f in $files) {
-                    Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull', ([string]$f).Trim(), $targetDir) | Out-Null
-                }
+                & $pullFiles $files $targetDir
                 return [pscustomobject]@{ Count = $files.Count; TargetDir = $targetDir; Msg = "$($files.Count) fotos recientes transferidas con exito." }
             }
             'AllPhotos' {
                 $targetDir = Join-Path $baseDownload "DCIM_Completo_$todayStr"
                 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-                Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull', '/sdcard/DCIM/', $targetDir) | Out-Null
-                return [pscustomobject]@{ Count = 1; TargetDir = $targetDir; Msg = "Carpeta DCIM completa transferida." }
+                $files = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','find','/sdcard/DCIM','-type','f','-print'))
+                $count = & $pullFiles $files $targetDir
+                return [pscustomobject]@{ Count = $count; TargetDir = $targetDir; Msg = "Carpeta DCIM completa transferida." }
             }
             'Downloads' {
                 $targetDir = Join-Path $baseDownload "Downloads_$todayStr"
                 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-                Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull', '/sdcard/Download/', $targetDir) | Out-Null
-                return [pscustomobject]@{ Count = 1; TargetDir = $targetDir; Msg = "Carpeta Download transferida." }
+                $files = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','find','/sdcard/Download','-type','f','-print'))
+                $count = & $pullFiles $files $targetDir
+                return [pscustomobject]@{ Count = $count; TargetDir = $targetDir; Msg = "Carpeta Download transferida." }
             }
             'Documents' {
                 $targetDir = Join-Path $baseDownload "Documentos_$todayStr"
                 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-                Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull', '/sdcard/Documents/', $targetDir) | Out-Null
-                return [pscustomobject]@{ Count = 1; TargetDir = $targetDir; Msg = "Documentos transferidos." }
+                $files = @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','find','/sdcard/Documents','-type','f','-print'))
+                $count = & $pullFiles $files $targetDir
+                return [pscustomobject]@{ Count = $count; TargetDir = $targetDir; Msg = "Documentos transferidos." }
             }
             'FullBackup' {
                 $targetDir = Join-Path $baseDownload "Backup_Completo_$todayStr"
                 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
                 $folders = @('DCIM','Download','Documents','Pictures')
+                $allFiles = @()
                 foreach ($f in $folders) {
-                    $sub = Join-Path $targetDir $f
-                    New-Item -ItemType Directory -Path $sub -Force | Out-Null
-                    Invoke-AdbCommand -Serial $cur.Serial -Arguments @('pull', "/sdcard/$f/", $sub) | Out-Null
+                    $allFiles += @(Invoke-AdbCommand -Serial $cur.Serial -Arguments @('shell','find',"/sdcard/$f",'-type','f','-print'))
                 }
-                return [pscustomobject]@{ Count = $folders.Count; TargetDir = $targetDir; Msg = "Backup completo finalizado." }
+                $count = & $pullFiles $allFiles $targetDir
+                return [pscustomobject]@{ Count = $count; TargetDir = $targetDir; Msg = "Backup completo finalizado." }
             }
         }
     }
 
-    if ($Type -eq 'Upload') {
-        Upload-FileToCurrentAndroidPath
-        return
-    }
-
-    Invoke-GuiAsyncTask -Title "Transferencia ($Type)" -WorkerScript $worker -Parameters @{ opType = $Type } -OnCompleted {
+    Invoke-GuiAsyncTask -Title "Transferencia ($Type)" -WorkerScript $worker -Parameters @{ opType = $Type; progressPath = $script:TransferProgressPath } -OnCompleted {
         param($res)
         Stop-TransferUi -Result $res
         if ($res -and $res.Success -and $res.Output) {
             $info = $res.Output[0]
-            $lblTransferDetails.Text = "✅ $($info.Msg)"
+            $lblTransferDetails.Text = "✅ $($info.Msg) · Guardado en: $($info.TargetDir)"
             $lblTransferDetails.ForeColor = $script:Theme.BadgeSuccessFg
             if ($info.TargetDir) {
                 $btnOpenLocalDir.Tag = $info.TargetDir
@@ -2304,14 +2725,22 @@ function Update-DevicesTabGrid {
     $lvDevicesTab.Items.Clear()
 
     $onlineList = @($AllDevices)
-    $savedList = @($SavedDevices)
+    # La tabla de guardados solo representa conexiones WiFi. USB se muestra
+    # mientras está conectado, pero nunca se conserva como perfil.
+    $savedList = @()
+    foreach ($savedRecord in @($SavedDevices)) {
+        if ($savedRecord.LastEndpoint -and $savedRecord.Mode -and $savedRecord.Mode -ne 'usb') { $savedList += $savedRecord }
+    }
 
     foreach ($dev in $onlineList) {
-        $savedMatch = @($savedList | Where-Object { $_.UsbSerial -ceq $dev.Serial -or $_.LastEndpoint -ceq $dev.Serial })[0]
+        $savedMatch = $null
+        foreach ($savedRecord in $savedList) { if ($savedRecord.LastEndpoint -ceq $dev.Serial) { $savedMatch = $savedRecord; break } }
         $name = if ($savedMatch) { $savedMatch.FriendlyName } else { "Dispositivo ADB" }
-        $mode = if ($dev.Serial -match ':[0-9]+$') { 'WiFi (TCP/IP)' } else { 'USB' }
+        $mode = if ($dev.Serial -match ':[0-9]+$') {
+            if ($savedMatch.Mode -eq 'wireless-debugging-tls') { 'WiFi (Wireless Debugging)' } else { 'WiFi (TCP/IP 5555)' }
+        } else { 'USB (no guardado)' }
         
-        $lvi = New-Object System.Windows.Forms.ListViewItem("📱 $name")
+        $lvi = [System.Windows.Forms.ListViewItem]::new("📱 $name")
         $lvi.SubItems.Add($dev.Serial) | Out-Null
         $lvi.SubItems.Add($mode) | Out-Null
         $isActive = $CurrentSerial -and $dev.Serial -ceq $CurrentSerial
@@ -2330,13 +2759,16 @@ function Update-DevicesTabGrid {
     }
 
     foreach ($s in $savedList) {
-        $already = @($onlineList | Where-Object { $_.Serial -ceq $s.LastEndpoint -or $_.Serial -ceq $s.UsbSerial }).Count -gt 0
+        $already = $false
+        foreach ($onlineRecord in $onlineList) { if ($onlineRecord.Serial -ceq $s.LastEndpoint -or $onlineRecord.Serial -ceq $s.UsbSerial) { $already = $true; break } }
         if (-not $already) {
-            $epText = if ($s.LastEndpoint) { $s.LastEndpoint } else { $s.UsbSerial }
-            $lvi = New-Object System.Windows.Forms.ListViewItem("💾 $($s.FriendlyName)")
+            $epText = [string]$s.LastEndpoint
+            $savedName = if ($s.FriendlyName) { [string]$s.FriendlyName } else { 'Dispositivo sin nombre' }
+            $savedMode = if ($s.Mode -eq 'wireless-debugging-tls') { 'WiFi (Wireless Debugging)' } else { 'WiFi (TCP/IP 5555)' }
+            $lvi = [System.Windows.Forms.ListViewItem]::new("💾 $savedName")
             $lvi.SubItems.Add($epText) | Out-Null
-            $lvi.SubItems.Add($s.Mode) | Out-Null
-            $activeText = if ($CurrentSerial -and (($s.LastEndpoint -and $s.LastEndpoint -ceq $CurrentSerial) -or ($s.UsbSerial -and $s.UsbSerial -ceq $CurrentSerial))) { 'ACTIVO · Offline' } else { 'Guardado · Offline' }
+            $lvi.SubItems.Add($savedMode) | Out-Null
+            $activeText = if ($CurrentSerial -and $s.LastEndpoint -ceq $CurrentSerial) { 'ACTIVO · Offline' } else { 'Guardado · Offline' }
             $lvi.SubItems.Add($activeText) | Out-Null
             $lvi.Tag = $s
             $lvi.ForeColor = $script:Theme.TextMuted
@@ -2924,7 +3356,7 @@ function Show-AdvancedConsoleWindow {
 function Show-NewDeviceWizardDialog {
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = "Conectar Nuevo Dispositivo Android"
-    $dlg.Size = New-Object System.Drawing.Size(460, 240)
+    $dlg.Size = New-Object System.Drawing.Size(460, 300)
     $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $dlg.MaximizeBox = $false
@@ -2945,25 +3377,52 @@ function Show-NewDeviceWizardDialog {
     $txtIp.Size = New-Object System.Drawing.Size(400, 28)
     $dlg.Controls.Add($txtIp)
 
+    $lblName = New-Object System.Windows.Forms.Label
+    $lblName.Text = "Nombre del dispositivo (opcional):"
+    $lblName.Location = New-Object System.Drawing.Point(20, 92)
+    $lblName.Size = New-Object System.Drawing.Size(400, 20)
+    $dlg.Controls.Add($lblName)
+
+    $txtName = New-Object System.Windows.Forms.TextBox
+    $txtName.Text = "Android WiFi"
+    $txtName.Location = New-Object System.Drawing.Point(20, 118)
+    $txtName.Size = New-Object System.Drawing.Size(400, 28)
+    $dlg.Controls.Add($txtName)
+
     $btnConn = New-Object System.Windows.Forms.Button
     $btnConn.Text = "Conectar"
     $btnConn.Font = $script:Fonts.BodyBold
     $btnConn.BackColor = $script:Theme.Primary
     $btnConn.ForeColor = $script:Theme.PrimaryFg
     $btnConn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-    $btnConn.Location = New-Object System.Drawing.Point(290, 140)
+    $btnConn.Location = New-Object System.Drawing.Point(290, 190)
     $btnConn.Size = New-Object System.Drawing.Size(130, 36)
     $btnConn.Cursor = [System.Windows.Forms.Cursors]::Hand
     $btnConn.Add_Click({
         $ep = $txtIp.Text.Trim()
+        $friendlyName = $txtName.Text.Trim()
         $dlg.Close()
         if (-not [string]::IsNullOrWhiteSpace($ep)) {
             Invoke-GuiAsyncTask -Title "Conectar a $ep" -WorkerScript {
-                param($endpoint)
-                Invoke-AdbCommand -Arguments @('connect', $endpoint)
-            } -Parameters @{ endpoint = $ep } -OnCompleted {
+                param($endpoint, $friendly)
+                $output = @(Invoke-AdbCommand -Arguments @('connect', $endpoint))
+                $record = @(Get-AdbDevices | Where-Object { $_.Serial -ieq $endpoint -and $_.Status -ceq 'device' })[0]
+                if ($null -eq $record) { throw "ADB no confirmó la conexión a $endpoint. $($output -join ' ')" }
+                $mode = if ($endpoint -match ':5555$') { 'tcpip-5555' } else { 'wireless-debugging-tls' }
+                $model = ''
+                try { $model = ((Invoke-AdbCommand -Serial $record.Serial -Arguments @('shell','getprop','ro.product.model')) -join ' ').Trim() } catch { }
+                if ([string]::IsNullOrWhiteSpace($friendly) -or $friendly -eq 'Android WiFi') { $friendly = if ($model) { $model } else { 'Android WiFi' } }
+                $saved = Save-GuiAdbDevice -FriendlyName $friendly -Mode $mode -LastEndpoint $record.Serial -IsPaired ($mode -eq 'wireless-debugging-tls')
+                return [pscustomobject]@{ Saved=$saved; Serial=$record.Serial; FriendlyName=$friendly }
+            } -Parameters @{ endpoint = $ep; friendly = $friendlyName } -OnCompleted {
                 param($res)
-                Refresh-DeviceStatus
+                if ($res -and $res.Success -and $res.Output) {
+                    Refresh-DeviceStatus
+                    $savedResult = $res.Output[0]
+                    Show-NotificationBanner -Type 'SUCCESS' -Title 'Dispositivo guardado' -Message "$($savedResult.FriendlyName) quedó guardado como conexión WiFi." -AutoCloseSeconds 8
+                } elseif ($res -and $res.Error) {
+                    Show-NotificationBanner -Type 'ERROR' -Title 'Conexión fallida' -Message $res.Error -AutoCloseSeconds 10
+                }
             }
         }
     })
@@ -3115,37 +3574,112 @@ function Invoke-FullDiagnostics {
 # =============================================================================
 # INICIALIZACION Y EVENTO SHOWN
 # =============================================================================
-# Los delegados de WinForms se ejecutan fuera del ámbito del script. Publicar
-# las funciones de esta GUI en Global evita que el temporizador o los botones
-# pierdan acceso a ellas (por ejemplo Invoke-UsbAutoDetection).
-$script:GuiFunctionFile = $PSCommandPath
-Get-ChildItem -Path Function: | Where-Object {
-    $_.ScriptBlock.File -eq $script:GuiFunctionFile
-} | ForEach-Object {
-    Set-Item -Path ("Function:global:{0}" -f $_.Name) -Value $_.ScriptBlock -Force
+# Los eventos de WinForms pueden ejecutarse fuera del ámbito del script. En
+# Windows PowerShell 5.1 ScriptBlock.File puede venir vacío, por lo que no se
+# debe usar ese metadato para descubrir las funciones. El AST del archivo sí
+# permite publicar de forma determinista todos los handlers de la GUI.
+$script:MainLoopCompleteHandler = ${function:Complete-GuiAsyncTasks}
+$script:SetUiBusyHandler = ${function:Set-UiBusyState}
+$script:EnsureGuiAdbDeviceSavedHandler = ${function:Ensure-GuiAdbDeviceSaved}
+$script:UpdateHeaderDeviceListHandler = ${function:Update-HeaderDeviceList}
+$script:UpdateDevicesTabGridHandler = ${function:Update-DevicesTabGrid}
+$script:MainLoopProgressHandler = ${function:Update-TransferProgress}
+$script:MainLoopUsbHandler = ${function:Invoke-UsbAutoDetection}
+$script:MainLoopRefreshHandler = ${function:Refresh-DeviceStatus}
+$script:MainLoopHideNotificationHandler = ${function:Hide-NotificationBanner}
+$tabControlMain.Add_SelectedIndexChanged({
+    if ($tabControlMain.SelectedTab -eq $tabDevices) {
+        & $script:MainLoopRefreshHandler -Silent
+    }
+})
+$guiTokens = $null
+$guiParseErrors = $null
+$guiAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $PSCommandPath,
+    [ref]$guiTokens,
+    [ref]$guiParseErrors
+)
+$guiFunctionNames = @(
+    $guiAst.FindAll(
+        { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },
+        $true
+    ) | Select-Object -ExpandProperty Name -Unique
+)
+foreach ($guiFunctionName in $guiFunctionNames) {
+    try {
+        $guiFunction = Get-Item -LiteralPath ("Function:{0}" -f $guiFunctionName) -ErrorAction Stop
+        Set-Item -Path ("Function:global:{0}" -f $guiFunctionName) -Value $guiFunction.ScriptBlock -Force
+    } catch {
+        # Un handler no disponible no debe impedir que la ventana se abra.
+    }
 }
 
+# Garantizar explícitamente las dos utilidades usadas por el ciclo principal y
+# por los callbacks de notificación, incluso si el proveedor Function no expone
+# correctamente sus metadatos en Windows PowerShell 5.1.
+Set-Item -Path 'Function:global:Write-LogEntry' -Value $script:WriteLogEntryHandler -Force
+Set-Item -Path 'Function:global:Hide-NotificationBanner' -Value ${function:Hide-NotificationBanner} -Force
+Set-Item -Path 'Function:global:Show-NotificationBanner' -Value ${function:Show-NotificationBanner} -Force
+Set-Item -Path 'Function:global:Invoke-GuiAsyncTask' -Value ${function:Invoke-GuiAsyncTask} -Force
+Set-Item -Path 'Function:global:Refresh-AndroidExplorer' -Value ${function:Refresh-AndroidExplorer} -Force
+Set-Item -Path 'Function:global:Navigate-AndroidDirectory' -Value ${function:Navigate-AndroidDirectory} -Force
+Set-Item -Path 'Function:global:Download-SelectedFile' -Value ${function:Download-SelectedFile} -Force
+
+$global:AndroidToolsGuiNavigation = @{
+    Control = $tabControlMain
+    Explorer = $tabExplorer
+    Transfer = $tabTransfer
+    Devices = $tabDevices
+    Logs = $tabLogs
+}
+$global:AndroidToolsGuiHandlers = @{
+    StopTransfer = ${function:Stop-TransferUi}
+    ShowNotification = ${function:Show-NotificationBanner}
+    WriteLog = $script:WriteLogEntryHandler
+}
+$script:GuiPrimaryRunspace = [System.Management.Automation.Runspaces.Runspace]::DefaultRunspace
+
+Normalize-GuiWifiDeviceStore
+
+$form.Show()
 $form.Activate()
 $form.BringToFront()
 Write-LogEntry -Level 'INFO' -Message 'Bienvenido a Android ADB Tools. Inicializando interfaz y escaneo inteligente...'
 Refresh-DeviceStatus -Silent
 Invoke-UsbAutoDetection
 
-$script:UsbAutoScanTimer = New-Object System.Windows.Forms.Timer
-$script:UsbAutoScanTimer.Interval = 2500
-$script:UsbAutoScanTimer.Add_Tick({
-    try { Invoke-UsbAutoDetection }
-    catch { Write-LogEntry -Level 'ERROR' -Message "Error en escaneo automático USB: $($_.Exception.Message)" }
-})
-$script:UsbAutoScanTimer.Start()
-
-$form.Add_FormClosed({
-    if ($null -ne $script:UsbAutoScanTimer) {
-        $script:UsbAutoScanTimer.Stop()
-        $script:UsbAutoScanTimer.Dispose()
-        $script:UsbAutoScanTimer = $null
+# Mantener vivo el ámbito de PowerShell mientras la ventana exista. Los
+# delegados Timer.Tick de WinForms pueden perderlo y lanzar "Global scope
+# cannot be removed"; el ciclo principal atiende las tareas sin delegados.
+$nextUsbScanUtc = [datetime]::UtcNow.AddMilliseconds(2500)
+$nextStatusRefreshUtc = [datetime]::UtcNow.AddSeconds(6)
+while (-not $form.IsDisposed) {
+    [System.Management.Automation.Runspaces.Runspace]::DefaultRunspace = $script:GuiPrimaryRunspace
+    [System.Windows.Forms.Application]::DoEvents()
+    [System.Management.Automation.Runspaces.Runspace]::DefaultRunspace = $script:GuiPrimaryRunspace
+    try { & $script:MainLoopCompleteHandler }
+    catch {
+        $guiLoopError = [string]$_.Exception.Message
+        if ([string]::IsNullOrWhiteSpace($guiLoopError)) { $guiLoopError = [string]$_ }
+        [Console]::Error.WriteLine("Error al finalizar tarea GUI: $guiLoopError")
+        & $script:WriteLogEntryHandler -Level 'ERROR' -Message "Error al finalizar tarea GUI: $guiLoopError"
     }
-})
-
-# Lanzar la aplicacion
-[System.Windows.Forms.Application]::Run($form)
+    try { & $script:MainLoopProgressHandler }
+    catch { }
+    if ([datetime]::UtcNow -ge $nextUsbScanUtc) {
+        $nextUsbScanUtc = [datetime]::UtcNow.AddMilliseconds(2500)
+        try { & $script:MainLoopUsbHandler }
+        catch { & $script:WriteLogEntryHandler -Level 'ERROR' -Message ("Error en escaneo automático USB: " + [string]$_) }
+    }
+    if ([datetime]::UtcNow -ge $nextStatusRefreshUtc) {
+        $nextStatusRefreshUtc = [datetime]::UtcNow.AddSeconds(6)
+        if ($script:RunningAsyncTasks -eq 0) {
+            try { & $script:MainLoopRefreshHandler -Silent }
+            catch { & $script:WriteLogEntryHandler -Level 'ERROR' -Message ("Error al actualizar el estado ADB: " + [string]$_) }
+        }
+    }
+    if ($script:NotifDeadlineUtc -and [datetime]::UtcNow -ge $script:NotifDeadlineUtc) {
+        & $script:MainLoopHideNotificationHandler
+    }
+    [System.Threading.Thread]::Sleep(100)
+}

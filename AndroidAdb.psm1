@@ -6,6 +6,10 @@ if (-not (Get-Variable -Name AndroidAdbCurrentDevice -Scope Global -ErrorAction 
     $global:AndroidAdbCurrentDevice = $null
 }
 
+if (-not (Get-Variable -Name AndroidAdbCurrentDeviceCleared -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:AndroidAdbCurrentDeviceCleared = $false
+}
+
 if (-not (Get-Variable -Name AndroidAdbDebugLogging -Scope Global -ErrorAction SilentlyContinue)) {
     $global:AndroidAdbDebugLogging = $false
 }
@@ -19,8 +23,11 @@ function Get-AdbLogPath {
     param([datetime]$UtcDate)
 
     if ($null -eq $UtcDate -or $UtcDate -eq [datetime]::MinValue) { $UtcDate = [datetime]::UtcNow }
-    $directory = Join-Path (Join-Path (Join-Path $env:USERPROFILE 'AndroidTools') 'logs') ''
-    return (Join-Path $directory ("adb-tools-{0}.log" -f $UtcDate.ToUniversalTime().ToString('yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture)))
+    $profilePath = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ([string]::IsNullOrWhiteSpace($profilePath)) { $profilePath = [string]$env:USERPROFILE }
+    $directory = [IO.Path]::Combine($profilePath, 'AndroidTools', 'logs')
+    $fileName = "adb-tools-{0}.log" -f $UtcDate.ToUniversalTime().ToString('yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture)
+    return [IO.Path]::Combine($directory, $fileName)
 }
 
 function Initialize-AdbLog {
@@ -36,17 +43,19 @@ function Initialize-AdbLog {
     if ($DisableDebug) { $global:AndroidAdbDebugLogging = $false }
 
     $logPath = Get-AdbLogPath
-    $logDirectory = Split-Path -Parent $logPath
+    $logDirectory = [IO.Path]::GetDirectoryName($logPath)
     try {
-        New-Item -ItemType Directory -Path $logDirectory -Force -ErrorAction Stop | Out-Null
+        [void][IO.Directory]::CreateDirectory($logDirectory)
         $cutoff = [datetime]::UtcNow.Date.AddDays(-$RetentionDays + 1)
-        Get-ChildItem -LiteralPath $logDirectory -Filter 'adb-tools-*.log' -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTimeUtc -lt $cutoff } |
-            Remove-Item -Force -ErrorAction SilentlyContinue
+        foreach ($existingLog in [IO.Directory]::EnumerateFiles($logDirectory, 'adb-tools-*.log')) {
+            try {
+                if ([IO.File]::GetLastWriteTimeUtc($existingLog) -lt $cutoff) { [IO.File]::Delete($existingLog) }
+            } catch { }
+        }
         $global:AndroidAdbLogInitialized = $true
     } catch {
         $global:AndroidAdbLogInitialized = $false
-        Write-Warning "No se pudo inicializar el log '$logPath': $($_.Exception.Message)"
+        [Console]::Error.WriteLine("No se pudo inicializar el log '$logPath': $($_.Exception.Message)")
     }
     return $logPath
 }
@@ -68,11 +77,11 @@ function Write-AdbLog {
         $safeMessage = ([string]$Message) -replace "`r?`n", ' | '
         $serialText = if ([string]::IsNullOrWhiteSpace($Serial)) { '' } else { " [Serial=$Serial]" }
         $line = "{0} [{1}] [{2}]{3} {4}{5}" -f $timestamp,$Level,$Source,$serialText,$safeMessage,[Environment]::NewLine
-        $mutex = New-Object -TypeName System.Threading.Mutex -ArgumentList $false,'Local\AndroidAdbLogMutex'
+        $mutex = [Threading.Mutex]::new($false,'Local\AndroidAdbLogMutex')
         $acquired = $false
         try {
             $acquired = $mutex.WaitOne(5000)
-            if ($acquired) { [IO.File]::AppendAllText((Get-AdbLogPath),$line,(New-Object Text.UTF8Encoding($false))) }
+            if ($acquired) { [IO.File]::AppendAllText((Get-AdbLogPath),$line,([Text.UTF8Encoding]::new($false))) }
         } finally {
             if ($acquired) { $mutex.ReleaseMutex() }
             $mutex.Dispose()
@@ -152,16 +161,29 @@ function Get-CurrentAdbDevice {
     [CmdletBinding()]
     param()
 
+    if ($global:AndroidAdbCurrentDeviceCleared) { return $null }
+
+    # Este getter también corre en runspaces aislados de la GUI. Resolver las
+    # colecciones con bucles evita depender de Where-Object en esos contextos.
+    $store = $null
+
     if ($null -eq $global:AndroidAdbCurrentDevice) {
         try {
             $store = Read-AdbDeviceStore
             if ($store.CurrentDeviceId) {
-                $saved = @($store.Devices | Where-Object { $_.Id -ceq $store.CurrentDeviceId })[0]
+                $saved = $null
+                foreach ($savedCandidate in @($store.Devices)) {
+                    if ($savedCandidate.Id -ceq $store.CurrentDeviceId) { $saved = $savedCandidate; break }
+                }
                 if ($null -ne $saved) {
-                    $ready = @(Get-AdbDevices | Where-Object {
-                        $_.Serial -ieq $saved.LastEndpoint -or
-                        ($saved.UsbSerial -and $_.Serial -ceq $saved.UsbSerial)
-                    })[0]
+                    $ready = $null
+                    foreach ($readyCandidate in @(Get-AdbDevices)) {
+                        if ($readyCandidate.Serial -ieq $saved.LastEndpoint -or
+                            ($saved.UsbSerial -and $readyCandidate.Serial -ceq $saved.UsbSerial)) {
+                            $ready = $readyCandidate
+                            break
+                        }
+                    }
                     if ($null -ne $ready -and $ready.Status -ceq 'device') {
                         $global:AndroidAdbCurrentDevice = [pscustomobject][ordered]@{
                             Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$ready.Serial; LastEndpoint=$saved.LastEndpoint; UsbSerial=$saved.UsbSerial
@@ -172,9 +194,46 @@ function Get-CurrentAdbDevice {
             }
         } catch { }
     }
-    if ($null -eq $global:AndroidAdbCurrentDevice) { return $null }
+    $readyDevices = @()
+    foreach ($deviceCandidate in @(Get-AdbDevices)) {
+        $status = $deviceCandidate.PSObject.Properties['Status']
+        if ($null -ne $status -and $status.Value -ceq 'device') { $readyDevices += $deviceCandidate }
+    }
+    if ($null -eq $global:AndroidAdbCurrentDevice) {
+        if ($readyDevices.Count -ne 1) { return $null }
+        return Set-CurrentAdbDevice -Device $readyDevices[0]
+    }
     $serial = [string]$global:AndroidAdbCurrentDevice.Serial
-    $record = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $serial })[0]
+    $record = $null
+    foreach ($readyCandidate in $readyDevices) {
+        if ($readyCandidate.Serial -ceq $serial) { $record = $readyCandidate; break }
+    }
+    if ($null -eq $record) {
+        $savedEndpoint = [string]$global:AndroidAdbCurrentDevice.LastEndpoint
+        foreach ($readyCandidate in $readyDevices) {
+            if ($savedEndpoint -and $readyCandidate.Serial -ieq $savedEndpoint) { $record = $readyCandidate; break }
+        }
+        if ($null -eq $record -and $readyDevices.Count -eq 1) { $record = $readyDevices[0] }
+        if ($null -ne $record) {
+            if ($null -eq $store) { $store = Read-AdbDeviceStore }
+            $saved = $null
+            foreach ($savedCandidate in @($store.Devices)) {
+                if ($savedCandidate.LastEndpoint -ieq $record.Serial -or $savedCandidate.UsbSerial -ceq $record.Serial) {
+                    $saved = $savedCandidate
+                    break
+                }
+            }
+            if ($null -ne $saved) {
+                return Set-CurrentAdbDevice -Device ([pscustomobject]@{
+                    Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$record.Serial
+                    LastEndpoint=$saved.LastEndpoint; UsbSerial=$saved.UsbSerial; Mode=$saved.Mode
+                })
+            }
+            return Set-CurrentAdbDevice -Device $record
+        }
+        $global:AndroidAdbCurrentDevice.Status = 'offline'
+        return $global:AndroidAdbCurrentDevice
+    }
     if ($null -ne $record) {
         $global:AndroidAdbCurrentDevice.Status = $record.Status
         $global:AndroidAdbCurrentDevice.Raw = $record.Raw
@@ -191,6 +250,7 @@ function Set-CurrentAdbDevice {
         [switch]$Persist
     )
 
+    $global:AndroidAdbCurrentDeviceCleared = $false
     $serial = Resolve-AdbSerial -DeviceOrEndpoint $Device
     $record = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $serial })[0]
     if ($null -eq $record -or $record.Status -cne 'device') {
@@ -232,6 +292,7 @@ function Clear-CurrentAdbDevice {
     param([switch]$Persist)
 
     $global:AndroidAdbCurrentDevice = $null
+    $global:AndroidAdbCurrentDeviceCleared = $true
     if ($Persist) {
         $store = Read-AdbDeviceStore
         $store | Add-Member -NotePropertyName CurrentDeviceId -NotePropertyValue $null -Force
@@ -1049,8 +1110,25 @@ function Read-AdbDeviceStore {
             NetworkProfiles  = @($networkProfiles)
         }
     }
+    # Si ya existe el almacén nuevo pero aún queda un perfil en la
+    # configuración heredada, incorporarlo una sola vez en vez de ocultarlo.
+    $legacyDevice = Import-LegacyAdbDeviceConfig
+    if ($null -ne $legacyDevice) {
+        $legacyAlreadyStored = $false
+        foreach ($storedDevice in $normalized) {
+            if ($storedDevice.LastEndpoint -and $storedDevice.LastEndpoint -ieq $legacyDevice.LastEndpoint) {
+                $legacyAlreadyStored = $true
+                break
+            }
+        }
+        if (-not $legacyAlreadyStored) { $normalized += $legacyDevice }
+    }
     $currentDeviceId = if ($null -eq $store.PSObject.Properties['CurrentDeviceId']) { $null } else { [string]$store.CurrentDeviceId }
-    return [pscustomobject][ordered]@{ SchemaVersion=1; UpdatedUtc=$updatedUtc; CurrentDeviceId=$currentDeviceId; Devices=@($normalized) }
+    $normalizedStore = [pscustomobject][ordered]@{ SchemaVersion=1; UpdatedUtc=$updatedUtc; CurrentDeviceId=$currentDeviceId; Devices=@($normalized) }
+    if ($null -ne $legacyDevice -and -not $legacyAlreadyStored) {
+        Save-AdbDeviceStore -Store $normalizedStore | Out-Null
+    }
+    return $normalizedStore
 }
 
 function Get-SavedAdbDevices {
@@ -1078,7 +1156,12 @@ function Add-SavedAdbDevice {
     $name = Assert-AdbFriendlyName $FriendlyName
     $storedMode = ConvertTo-AdbStoredMode $Mode
     $endpoint = if ([string]::IsNullOrWhiteSpace($LastEndpoint)) { $null } else { (ConvertTo-AdbEndpoint $LastEndpoint).Endpoint }
-    $usb = if ([string]::IsNullOrWhiteSpace($UsbSerial)) { $null } else { $UsbSerial.Trim() }
+    if ([string]::IsNullOrWhiteSpace($endpoint) -or $storedMode -eq 'usb') {
+        throw 'Solo se guardan conexiones WiFi verificadas con un endpoint host:puerto.'
+    }
+    # El USB puede servir para preparar la conexión, pero no forma parte del
+    # registro persistente. La reconexión debe intentar siempre el endpoint WiFi.
+    $usb = $null
     $duplicate = @($store.Devices | Where-Object {
         ($usb -and $_.UsbSerial -ceq $usb) -or ($endpoint -and $_.LastEndpoint -ieq $endpoint)
     })[0]
@@ -1113,8 +1196,13 @@ function Update-SavedAdbDevice {
     $store = Read-AdbDeviceStore
     $device = @($store.Devices | Where-Object { $_.Id -ceq $Id })[0]
     if ($null -eq $device) { throw "No existe un dispositivo con Id '$Id'." }
+    # Migración: las versiones anteriores guardaban el serial USB junto con la
+    # conexión WiFi. Ya no debe persistirse.
+    $device.UsbSerial = $null
     if ($PSBoundParameters.ContainsKey('FriendlyName')) { $device.FriendlyName = Assert-AdbFriendlyName $FriendlyName }
-    if ($PSBoundParameters.ContainsKey('UsbSerial')) { $device.UsbSerial = if ([string]::IsNullOrWhiteSpace($UsbSerial)) { $null } else { $UsbSerial.Trim() } }
+    # UsbSerial se acepta por compatibilidad con callers antiguos, pero nunca
+    # vuelve a escribirse en el registro persistente.
+    $device.UsbSerial = $null
     if ($PSBoundParameters.ContainsKey('LastEndpoint')) { $device.LastEndpoint = if ([string]::IsNullOrWhiteSpace($LastEndpoint)) { $null } else { (ConvertTo-AdbEndpoint $LastEndpoint).Endpoint } }
     if ($PSBoundParameters.ContainsKey('Mode')) { $device.Mode = ConvertTo-AdbStoredMode $Mode }
     if ($PSBoundParameters.ContainsKey('IsPaired')) { $device.IsPaired = [bool]$IsPaired }

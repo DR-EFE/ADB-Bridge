@@ -132,19 +132,15 @@ function Connect-And-Save {
     $configPath = Save-AndroidConfig -HostName $HostName -Port $Port -Endpoint $endpoint -Mode $Mode -Serial $record.Serial
     $storedMode = if ($Mode -eq 'ModernPairing') { 'wireless-debugging-tls' } else { 'tcpip-5555' }
     $savedDevices = @(Get-SavedAdbDevices)
-    $existing = @($savedDevices | Where-Object {
-        ($UsbSerial -and $_.UsbSerial -ceq $UsbSerial) -or $_.LastEndpoint -ieq $record.Serial
-    })[0]
+    $existing = @($savedDevices | Where-Object { $_.LastEndpoint -ieq $record.Serial })[0]
     if ($null -eq $existing) {
         $sameName = @($savedDevices | Where-Object { $_.FriendlyName -ieq $FriendlyName })
         if ($sameName.Count -eq 1) { $existing = $sameName[0] }
     }
     if ($null -eq $existing) {
-        $saved = Add-SavedAdbDevice -FriendlyName $FriendlyName -Mode $storedMode -UsbSerial $UsbSerial -LastEndpoint $record.Serial -IsPaired $IsPaired -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
-    } elseif ($UsbSerial) {
-        $saved = Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -UsbSerial $UsbSerial -LastEndpoint $record.Serial -Mode $storedMode -IsPaired $IsPaired -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+        $saved = Add-SavedAdbDevice -FriendlyName $FriendlyName -Mode $storedMode -UsbSerial '' -LastEndpoint $record.Serial -IsPaired $IsPaired -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
     } else {
-        $saved = Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -LastEndpoint $record.Serial -Mode $storedMode -IsPaired $IsPaired -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+        $saved = Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -UsbSerial '' -LastEndpoint $record.Serial -Mode $storedMode -IsPaired $IsPaired -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
     }
     Write-Host ("Conexion valida. Estado: {0}" -f $record.Status) -ForegroundColor Green
     Write-Host ("Configuracion JSON guardada en: {0}" -f $configPath) -ForegroundColor Green

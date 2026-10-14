@@ -102,7 +102,7 @@ function Connect-And-RememberDevice {
     Write-Host ("Conectando {0} a {1}..." -f $Device.FriendlyName,$Endpoint) -ForegroundColor Cyan
     try { $record = Connect-AdbEndpoint -Endpoint $Endpoint -TimeoutSeconds 10 }
     catch { Write-AdbLog -Level ERROR -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $Endpoint -Message $_.Exception.Message; Write-Host ("Fallo: {0}" -f $_.Exception.Message) -ForegroundColor Yellow; return $null }
-    Update-SavedAdbDevice -Id $Device.Id -LastEndpoint $record.Serial -LastConnectedUtc ([DateTime]::UtcNow.ToString('o')) | Out-Null
+    Update-SavedAdbDevice -Id $Device.Id -UsbSerial '' -LastEndpoint $record.Serial -LastConnectedUtc ([DateTime]::UtcNow.ToString('o')) | Out-Null
     Write-AdbLog -Level SUCCESS -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $record.Serial -Message ("Conexion exitosa para {0}." -f $Device.FriendlyName)
     Write-Host ("OK: {0} conectado en estado device ({1})." -f $Device.FriendlyName,$record.Serial) -ForegroundColor Green
     return $record
@@ -125,19 +125,6 @@ function Invoke-SmartReconnect {
         if ($mdnsEndpoint) {
             $record = Connect-And-RememberDevice -Device $device -Endpoint $mdnsEndpoint
             if ($null -ne $record) { return $record }
-        }
-    } elseif ($device.Mode -eq 'tcpip-5555' -and $device.UsbSerial) {
-        $usbRecord = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $device.UsbSerial })[0]
-        if ($null -ne $usbRecord -and $usbRecord.Status -ceq 'device') {
-            Write-Host 'USB detectado; obteniendo la IP nueva automaticamente...' -ForegroundColor Cyan
-            $usbIp = Get-AdbDeviceIpv4 -Serial $device.UsbSerial
-            if ($usbIp) {
-                Invoke-AdbCommand -Serial $device.UsbSerial -Arguments @('tcpip','5555') | Out-Host
-                Start-Sleep -Seconds 2
-                $usbEndpoint = (ConvertTo-AdbEndpoint ("{0}:5555" -f $usbIp)).Endpoint
-                $record = Connect-And-RememberDevice -Device $device -Endpoint $usbEndpoint
-                if ($null -ne $record) { return $record }
-            }
         }
     }
 
@@ -184,7 +171,7 @@ function Add-LegacyUsbDevice {
     Start-Sleep -Seconds 2
     $endpoint = (ConvertTo-AdbEndpoint ("{0}:5555" -f $ip)).Endpoint
     $record = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 15
-    $device = Add-SavedAdbDevice -FriendlyName $name -Mode 'tcpip-5555' -UsbSerial $usb.Serial -LastEndpoint $record.Serial -IsPaired $false -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+    $device = Add-SavedAdbDevice -FriendlyName $name -Mode 'tcpip-5555' -UsbSerial '' -LastEndpoint $record.Serial -IsPaired $false -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
     Write-Host ("Dispositivo guardado: {0} [{1}]" -f $device.FriendlyName,$device.Id) -ForegroundColor Green
 }
 
