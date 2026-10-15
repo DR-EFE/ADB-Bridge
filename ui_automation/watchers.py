@@ -1,78 +1,217 @@
-"""Módulo de observadores (watchers) automáticos para popups y diálogos del sistema."""
+"""Módulo de observadores (Watchers) automáticos para popups y diálogos en Android.
+
+Gestiona la detección y cierre automático de ventanas emergentes, diálogos de permisos
+y alertas del sistema usando uiautomator2, con soporte para fallback de IA/OCR.
+"""
 
 import logging
-from typing import List, Callable, Optional
+from typing import List, Callable, Optional, Sequence
 import uiautomator2 as u2
 
 logger = logging.getLogger("ui_automation.watchers")
 
+# Textos habituales en botones de diálogo, permisos y confirmaciones del sistema
+DEFAULT_POPUP_TEXTS: List[str] = [
+    "Permitir",
+    "Aceptar",
+    "OK",
+    "Sí",
+    "Continuar",
+    "Cerrar",
+    "Allow",
+    "Accept",
+    "No, gracias",
+]
+
+
+def try_ai_fallback(
+    d: u2.Device,
+    target_texts: Optional[Sequence[str]] = None,
+    screenshot_path: Optional[str] = None,
+) -> bool:
+    """
+    Hook de fallback inteligente asistido por IA / OCR.
+
+    Se invoca cuando los selectores nativos de UIAutomator no logran encontrar o interactuar
+    con un botón de diálogo (por ejemplo, en interfaces renderizadas con WebView/Canvas,
+    elementos con identificadores dinámicos u ofuscados, o diálogos con texto dentro de imágenes).
+
+    Flujo de integración sugerido con IA Local (Ollama / RapidOCR):
+      1. Captura de pantalla en memoria:
+         `image = d.screenshot(format="pillow")`
+      2. Detección de texto y coordenadas con OCR ligero o VLM:
+         `boxes = ocr_engine.detect(image, keywords=target_texts)`
+      3. Si se localiza el botón, calcular su centro y hacer clic directo en coordenadas físicas:
+         `d.click(center_x, center_y)`
+
+    :param d: Dispositivo uiautomator2 activo.
+    :param target_texts: Lista de textos que se buscan visualmente.
+    :param screenshot_path: Ruta opcional para almacenar la captura si se desea depurar.
+    :return: True si la IA resolvió la interacción con éxito, False de lo contrario.
+    """
+    target_texts = target_texts or DEFAULT_POPUP_TEXTS
+    logger.debug(
+        "try_ai_fallback convocado para textos: %s (Hook disponible para motor OCR/VLM)",
+        target_texts,
+    )
+
+    # -------------------------------------------------------------------------
+    # NOTA DE INTEGRACIÓN FUTURA CON IA LOCAL:
+    # Aquí se puede invocar un motor local como RapidOCR / PaddleOCR o consultar
+    # el endpoint de Ollama (ej. llama3.2-vision) pasando d.screenshot().
+    # -------------------------------------------------------------------------
+    return False
+
+
+def setup_auto_popup_watcher(
+    d: u2.Device,
+    target_texts: Optional[Sequence[str]] = None,
+    watcher_name: str = "auto_popup",
+    start_monitoring: bool = False,
+    interval: float = 2.0,
+) -> None:
+    """
+    Registra un Watcher global en uiautomator2 (por defecto "auto_popup") que detecta
+    y hace clic automáticamente en botones de diálogo que contengan cualquiera de los textos
+    indicados.
+
+    Textos monitoreados por defecto:
+    "Permitir", "Aceptar", "OK", "Sí", "Continuar", "Cerrar", "Allow", "Accept", "No, gracias"
+
+    :param d: Dispositivo uiautomator2.
+    :param target_texts: Lista personalizada de textos. Si es None, usa DEFAULT_POPUP_TEXTS.
+    :param watcher_name: Nombre asignado al watcher (por defecto "auto_popup").
+    :param start_monitoring: Si es True, inicia el hilo de monitoreo en segundo plano.
+    :param interval: Intervalo en segundos entre cada chequeo en segundo plano.
+    """
+    texts = list(target_texts) if target_texts is not None else DEFAULT_POPUP_TEXTS
+    logger.info("Configurando watcher '%s' para %d términos...", watcher_name, len(texts))
+
+    # Eliminar registros previos con el mismo nombre para evitar duplicaciones
+    d.watcher.remove(watcher_name)
+
+    for text in texts:
+        # XPath flexible que busca coincidencias parciales por texto o descripción de contenido
+        xpath_query = (
+            f"//*[contains(@text, '{text}') or contains(@content-desc, '{text}')]"
+        )
+
+        def _create_click_callback(target_kw: str):
+            def _callback(selector, device: u2.Device):
+                try:
+                    el = selector.get_last_match()
+                    if el:
+                        logger.info("Watcher '%s': Clic automático en '%s'", watcher_name, target_kw)
+                        el.click()
+                        return
+                except Exception as click_err:
+                    logger.warning(
+                        "Watcher '%s': Falló clic nativo en '%s': %s. Intentando fallback IA...",
+                        watcher_name,
+                        target_kw,
+                        click_err,
+                    )
+
+                # Si el selector nativo falló en concretar el clic, intentamos el hook de IA
+                try_ai_fallback(device, target_texts=[target_kw])
+
+            return _callback
+
+        d.watcher(watcher_name).when(xpath_query).call(_create_click_callback(text))
+
+    logger.info("Watcher '%s' configurado exitosamente.", watcher_name)
+
+    if start_monitoring:
+        if not d.watcher.running():
+            logger.info("Iniciando servicio de watchers en segundo plano (intervalo=%.1fs)...", interval)
+            d.watcher.start(interval=interval)
+
+
+def remove_all_watchers(d: u2.Device) -> None:
+    """
+    Detiene el monitor de watchers y elimina todos los observadores registrados en el dispositivo.
+
+    :param d: Instancia del dispositivo uiautomator2.
+    """
+    logger.info("Eliminando todos los watchers del dispositivo...")
+    try:
+        if d.watcher.running():
+            d.watcher.stop()
+        d.watcher.remove()
+        d.watcher.reset()
+        logger.info("Todos los watchers fueron detenidos y eliminados.")
+    except Exception as exc:
+        logger.warning("Excepción al remover watchers: %s", exc)
+
 
 class UIWatcherManager:
-    """Gestiona observadores de uiautomator2 para interceptar y resolver diálogos inesperados."""
+    """Clase gestora para el ciclo de vida y configuración de observadores en uiautomator2."""
 
     def __init__(self, device: u2.Device):
         self.d = device
         self._registered_names: List[str] = []
 
+    def setup_auto_popup(
+        self,
+        target_texts: Optional[Sequence[str]] = None,
+        name: str = "auto_popup",
+        start_monitoring: bool = False,
+    ) -> None:
+        """Configura el watcher global 'auto_popup' a través del gestor."""
+        setup_auto_popup_watcher(
+            self.d,
+            target_texts=target_texts,
+            watcher_name=name,
+            start_monitoring=start_monitoring,
+        )
+        if name not in self._registered_names:
+            self._registered_names.append(name)
+
     def register_common_watchers(self) -> None:
+        """Alias para registrar el conjunto estándar de auto_popup."""
+        self.setup_auto_popup(name="auto_popup", start_monitoring=False)
+
+    def register_custom_watcher(
+        self,
+        name: str,
+        target_text: str,
+        action: Optional[Callable] = None,
+    ) -> None:
         """
-        Registra observadores comunes del sistema Android:
-        - Diálogos de permisos del sistema (Permitir, Allow, Continuar).
-        - Alertas ANR ('La app no responde' -> Esperar).
-        - Alertas de cierre inesperado o confirmaciones comunes.
+        Registra un observador personalizado para un texto o selector específico.
+
+        :param name: Nombre del watcher.
+        :param target_text: Texto o fragmento a vigilar.
+        :param action: Función callback a ejecutar. Si es None, hace clic.
         """
-        logger.info("Registrando observadores del sistema comunes...")
-
-        # 1. Permisos del sistema Android
-        self.d.watcher("ALLOW_PERMISSION").when("Permitir").click()
-        self.d.watcher("ALLOW_PERMISSION_EN").when("Allow").click()
-        self.d.watcher("WHILE_USING_APP").when("Mientras la app está en uso").click()
-        self.d.watcher("WHILE_USING_APP_EN").when("While using the app").click()
-
-        # 2. Diálogos de advertencia o confirmación frecuentes
-        self.d.watcher("SYSTEM_OK").when("Aceptar").click()
-        self.d.watcher("SYSTEM_OK_EN").when("OK").click()
-
-        # 3. ANR (App Not Responding) -> Intentar esperar antes de forzar cierre
-        self.d.watcher("ANR_WAIT").when("Esperar").click()
-        self.d.watcher("ANR_WAIT_EN").when("Wait").click()
-
-        self._registered_names.extend([
-            "ALLOW_PERMISSION", "ALLOW_PERMISSION_EN",
-            "WHILE_USING_APP", "WHILE_USING_APP_EN",
-            "SYSTEM_OK", "SYSTEM_OK_EN",
-            "ANR_WAIT", "ANR_WAIT_EN"
-        ])
-        logger.info("Observadores registrados: %s", self._registered_names)
-
-    def register_custom_watcher(self, name: str, target_text: str, action: Optional[Callable] = None) -> None:
-        """
-        Registra un observador personalizado para un texto específico.
-
-        :param name: Nombre identificador único.
-        :param target_text: Texto que activa el watcher.
-        :param action: Función a ejecutar cuando aparece. Si es None, hace click en el elemento.
-        """
-        rule = self.d.watcher(name).when(target_text)
+        xpath_query = f"//*[contains(@text, '{target_text}')]"
+        rule = self.d.watcher(name).when(xpath_query)
         if action:
             rule.call(action)
         else:
             rule.click()
-        self._registered_names.append(name)
+
+        if name not in self._registered_names:
+            self._registered_names.append(name)
         logger.info("Observador personalizado registrado: %s (detecta '%s')", name, target_text)
 
     def start(self, interval: float = 2.0) -> None:
-        """Inicia el monitoreo de watchers en un hilo en segundo plano."""
-        logger.info("Iniciando servicio de watchers en segundo plano (intervalo=%ss)...", interval)
-        self.d.watcher.start(interval=interval)
+        """Inicia la vigilancia continua en segundo plano."""
+        if not self.d.watcher.running():
+            logger.info("Iniciando vigilancia de watchers en segundo plano (cada %.1fs)...", interval)
+            self.d.watcher.start(interval=interval)
 
     def stop(self) -> None:
-        """Detiene el servicio de watchers en segundo plano."""
-        logger.info("Deteniendo servicio de watchers...")
-        self.d.watcher.stop()
+        """Detiene la vigilancia en segundo plano."""
+        if self.d.watcher.running():
+            logger.info("Deteniendo vigilancia de watchers...")
+            self.d.watcher.stop()
 
     def remove_all(self) -> None:
-        """Elimina todos los observadores registrados."""
-        self.d.watcher.reset()
+        """Elimina todos los observadores y resetea el estado."""
+        remove_all_watchers(self.d)
         self._registered_names.clear()
-        logger.info("Todos los observadores fueron eliminados.")
+
+    def is_running(self) -> bool:
+        """Indica si el hilo de monitoreo de watchers está en ejecución."""
+        return self.d.watcher.running()

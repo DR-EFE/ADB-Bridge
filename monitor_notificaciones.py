@@ -11,11 +11,16 @@ import logging
 import sys
 from pathlib import Path
 
-from ui_automation.monitor import NotificationMonitor
+from ui_automation.monitor import DEFAULT_DEVICE_COPY_PATH, NotificationMonitor
 
 
 def setup_logging():
     """Configura formato de logs en consola."""
+    # Evita UnicodeEncodeError con emojis en consolas cp1252 de Windows.
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -52,6 +57,22 @@ def parse_arguments():
         action="store_true",
         help="Desactiva los observadores automáticos de popups/permisos.",
     )
+    parser.add_argument(
+        "--no-ai",
+        action="store_true",
+        help="Clasifica solo con reglas (no consulta Ollama).",
+    )
+    parser.add_argument(
+        "--device-copy-path",
+        type=str,
+        default=DEFAULT_DEVICE_COPY_PATH,
+        help=f"Ruta en el teléfono para la copia de eventos importantes (predeterminado: {DEFAULT_DEVICE_COPY_PATH}).",
+    )
+    parser.add_argument(
+        "--no-device-copy",
+        action="store_true",
+        help="No copiar los eventos importantes al teléfono.",
+    )
     return parser.parse_args()
 
 
@@ -65,7 +86,10 @@ def main():
     print(f"Dispositivo  : {args.serial or 'Autodetección'}")
     print(f"Intervalo    : {args.interval}s")
     print(f"Carpeta logs : {Path(args.logs_dir).resolve()}")
+    device_copy_path = None if args.no_device_copy else args.device_copy_path
     print(f"Watchers     : {'Desactivados' if args.no_watchers else 'Activos'}")
+    print(f"Clasificación: {'Solo reglas' if args.no_ai else 'IA local (Ollama) con fallback a reglas'}")
+    print(f"Copia móvil  : {device_copy_path or 'Desactivada'}")
     print("Presiona Ctrl+C para finalizar.\n")
 
     monitor = NotificationMonitor(
@@ -73,6 +97,8 @@ def main():
         logs_dir=args.logs_dir,
         poll_interval=args.interval,
         enable_watchers=not args.no_watchers,
+        use_ai=not args.no_ai,
+        device_copy_path=device_copy_path,
     )
 
     try:
