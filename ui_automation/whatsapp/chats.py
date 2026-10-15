@@ -1,0 +1,288 @@
+"""Módulo para listar y exportar chats recientes de WhatsApp."""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
+
+import uiautomator2 as u2
+
+if TYPE_CHECKING:
+    from .client import WhatsAppClient
+
+logger = logging.getLogger("ui_automation.whatsapp.chats")
+
+# Etiquetas comunes del sistema que no corresponden a nombres de chats reales
+IGNORED_CHAT_TITLES = {
+    "chats",
+    "conversaciones",
+    "novedades",
+    "updates",
+    "estados",
+    "status",
+    "llamadas",
+    "calls",
+    "comunidades",
+    "communities",
+    "archivados",
+    "archived",
+    "leídos",
+    "no leídos",
+    "unread",
+    "favoritos",
+    "favorites",
+    "meta ai",
+    "buscar",
+    "search",
+    "bloqueados",
+    "blocked",
+    "mensajes destacados",
+    "starred messages",
+}
+
+
+@dataclass
+class ChatExportSummary:
+    """Resultado individual de la exportación de un chat."""
+    chat_name: str
+    success: bool
+    local_path: Optional[str] = None
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class WhatsAppChatManager:
+    """Gestiona la lectura de chats visibles y la exportación por lotes de los primeros N chats."""
+
+    def __init__(self, client: "WhatsAppClient"):
+        self.client = client
+
+    @property
+    def d(self) -> u2.Device:
+        return self.client.d
+
+    def _extract_visible_chat_names(self) -> List[str]:
+        """Extrae los nombres de chats visibles en la pantalla actual ordenados de arriba a abajo."""
+        found_names: List[str] = []
+
+        # 1. Selector primario: ID oficial de nombre de contacto en fila de conversación
+        elements = self.d(resourceIdMatches=r".*id/conversations_row_contact_name.*")
+
+        # 2. Selector secundario si el primero no arrojó elementos
+        if not elements.exists:
+            elements = self.d(resourceIdMatches=r".*id/conversation_contact_name.*")
+
+        if elements.exists:
+            # Obtener elementos ordenados por posición vertical (y)
+            try:
+                # Recopilar textos de los nodos detectados
+                count = elements.count
+                for i in range(count):
+                    el = elements[i]
+                    text = el.get_text() if el.exists else ""
+                    text = text.strip() if text else ""
+                    if text and text.lower() not in IGNORED_CHAT_TITLES:
+                        if text not in found_names:
+                            found_names.append(text)
+            except Exception as exc:
+                logger.debug("Error iterando elementos de chat: %s", exc)
+
+        # 3. Fallback complementario por XPath si los selectores por ID cambiaron
+        if not found_names:
+            try:
+                xpath_query = (
+                    "//*[@resource-id='com.whatsapp:id/conversations_row_contact_name' "
+                    "or @resource-id='com.whatsapp.w4b:id/conversations_row_contact_name']"
+                )
+                nodes = self.d.xpath(xpath_query).all()
+                for node in nodes:
+                    text = (node.text or "").strip()
+                    if text and text.lower() not in IGNORED_CHAT_TITLES:
+                        if text not in found_names:
+                            found_names.append(text)
+            except Exception as exc:
+                logger.debug("Error en fallback XPath de chats: %s", exc)
+
+        return found_names
+
+    def get_top_chat_names(self, limit: int = 10, max_scrolls: int = 8) -> List[str]:
+        """
+        Extrae los primeros N nombres de chats más recientes de WhatsApp.
+        Realiza scroll hacia abajo de forma controlada si se solicitan más de los que caben en pantalla.
+
+        :param limit: Cantidad máxima de chats a obtener.
+        :param max_scrolls: Número máximo de scrolls de seguridad.
+        :return: Lista de nombres de chats únicos ordenados de más recientes a más antiguos.
+        """
+        logger.info("Obteniendo los primeros %d chats de WhatsApp...", limit)
+
+        # Asegurar estar en la lista principal de chats
+        if not self.client.is_on_chat_list():
+            logger.info("No estamos en la lista de chats. Navegando hacia la lista principal...")
+            self.client.go_back_to_chat_list()
+            if not self.client.is_on_chat_list():
+                self.client.open_whatsapp()
+
+        top_names: List[str] = []
+        seen: Set[str] = set()
+
+        for scroll_idx in range(max_scrolls + 1):
+            visible_names = self._extract_visible_chat_names()
+            new_added = 0
+
+            for name in visible_names:
+                if name not in seen:
+                    seen.add(name)
+                    top_names.append(name)
+                    new_added += 1
+                    if len(top_names) >= limit:
+                        break
+
+            logger.debug(
+                "Scroll %d: %d nuevos chats detectados. Total acumulado: %d/%d",
+                scroll_idx, new_added, len(top_names), limit
+            )
+
+            if len(top_names) >= limit:
+                break
+
+            # Si ya no se descubren nuevos chats tras un scroll, llegamos al final de la lista
+            if scroll_idx > 0 and new_added == 0:
+                logger.info("No se encontraron más chats adicionales tras el scroll.")
+                break
+
+            # Realizar scroll suave hacia abajo para revelar más conversaciones
+            try:
+                # swipe_ext 'up' desplaza el contenido hacia arriba (scroll down)
+                self.d.swipe_ext("up", scale=0.55)
+                time.sleep(1.0)
+            except Exception as scroll_err:
+                logger.debug("Fallback de scroll con swipe manual: %s", scroll_err)
+                w, h = self.d.window_size()
+                self.d.swipe(w * 0.5, h * 0.75, w * 0.5, h * 0.30, 0.25)
+                time.sleep(1.0)
+
+        # Regresar al inicio de la lista de chats haciendo scroll hacia arriba
+        try:
+            for _ in range(min(scroll_idx, 3)):
+                self.d.swipe_ext("down", scale=0.7)
+                time.sleep(0.3)
+        except Exception:
+            pass
+
+        result = top_names[:limit]
+        logger.info("Chats detectados (%d): %s", len(result), result)
+        return result
+
+    def export_top_chats(
+        self,
+        n: int = 10,
+        include_media: bool = False,
+        local_dir: Union[str, Path] = "./exports",
+    ) -> List[Dict[str, Any]]:
+        """
+        Obtiene los primeros N chats y exporta cada uno de ellos descargándolo al PC
+        y limpiando el archivo temporal en el teléfono.
+
+        :param n: Número de chats más recientes a exportar.
+        :param include_media: True para incluir multimedia (.zip), False para solo texto (.txt).
+        :param local_dir: Carpeta local en el PC donde se guardarán las exportaciones.
+        :return: Lista de resúmenes con el resultado de cada chat.
+        """
+        output_dir = Path(local_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        print("\n============================================================")
+        print(f"   EXPORTACION POR LOTES DE CHATS RECIENTES DE WHATSAPP    ")
+        print("============================================================")
+        print(f"Cantidad objetivo : {n} chats")
+        print(f"Incluir medios    : {'Sí (.zip)' if include_media else 'No (.txt)'}")
+        print(f"Destino local     : {output_dir.resolve()}\n")
+
+        # 1. Asegurar WhatsApp abierto y obtener nombres
+        if not self.client.is_on_chat_list():
+            self.client.open_whatsapp()
+
+        chat_names = self.get_top_chat_names(limit=n)
+        if not chat_names:
+            logger.warning("No se encontraron chats disponibles para exportar.")
+            print("[AVISO] No se detectaron chats en la lista.")
+            return []
+
+        total = len(chat_names)
+        print(f"Se identificaron {total} chat(s) para exportar:")
+        for idx, name in enumerate(chat_names, 1):
+            print(f"  {idx}. {name}")
+        print("------------------------------------------------------------\n")
+
+        results: List[ChatExportSummary] = []
+
+        # 2. Iterar por cada chat realizando exportación y descarga
+        for index, chat_name in enumerate(chat_names, 1):
+            print(f"[{index}/{total}] Procesando chat: '{chat_name}'...")
+            logger.info("[%d/%d] Iniciando exportación de '%s'...", index, total, chat_name)
+
+            summary = ChatExportSummary(chat_name=chat_name, success=False)
+
+            try:
+                # Asegurar estar en la lista antes de buscar
+                self.client.go_back_to_chat_list()
+
+                # Ejecutar exportación nativa
+                remote_file = self.client.export_chat(
+                    chat_name=chat_name,
+                    include_media=include_media,
+                    timeout=30.0,
+                )
+
+                if not remote_file:
+                    # Búsqueda por mtime reciente si no se capturó la ruta directa
+                    remote_file = self.client.find_exported_chat_file(
+                        chat_name=chat_name,
+                        prefer_zip=include_media,
+                    )
+
+                if not remote_file:
+                    raise RuntimeError("No se pudo detectar el archivo exportado en el dispositivo.")
+
+                print(f"    Archivo remoto: {remote_file}")
+
+                # Descargar al PC vía ADB
+                local_file = self.client.pull_exported_chat(remote_file, local_dir=output_dir)
+                summary.local_path = str(local_file.resolve())
+                summary.success = True
+                print(f"    Descarga exitosa: {local_file.name} ({local_file.stat().st_size} bytes)")
+
+                # Limpieza en el teléfono
+                self.client.delete_exported_file(remote_file)
+                print(f"    Limpieza remota completada.")
+
+            except Exception as exc:
+                error_msg = str(exc)
+                summary.error = error_msg
+                logger.error("Error exportando chat '%s': %s", chat_name, exc)
+                print(f"    [ERROR] Falló exportación de '{chat_name}': {error_msg}")
+
+            finally:
+                # Regresar a la lista de chats para que el siguiente chat comience limpio
+                self.client.go_back_to_chat_list()
+                results.append(summary)
+                time.sleep(0.8)
+
+        # 3. Resumen final en consola
+        success_count = sum(1 for r in results if r.success)
+        print("\n============================================================")
+        print(f"   RESUMEN FINAL: {success_count}/{total} chats exportados exitosamente")
+        print("============================================================")
+        for r in results:
+            status = "[OK]   " if r.success else "[FALLO]"
+            details = r.local_path if r.success else f"Error: {r.error}"
+            print(f"{status} {r.chat_name} -> {details}")
+        print("============================================================\n")
+
+        return [r.to_dict() for r in results]

@@ -141,18 +141,49 @@ Android/
 │   ├── ollama.py                  # OllamaServiceManager (arranque y apagado automático)
 │   ├── watchers.py                # UIWatcherManager + setup_auto_popup_watcher()
 │   ├── notifications.py           # Extracción dumpsys/UI + clasificación (IA y reglas)
-│   └── monitor.py                 # NotificationMonitor (orquestador resiliente)
+│   ├── monitor.py                 # NotificationMonitor (orquestador resiliente)
+│   └── whatsapp/                  # Módulo de extracción de WhatsApp
+│       ├── __init__.py            # Exporta clientes y gestores
+│       ├── client.py              # WhatsAppClient (apertura, detección y navegación)
+│       ├── export.py              # WhatsAppExporter (exportación nativa individual)
+│       └── chats.py               # WhatsAppChatManager (listado y exportación de top N)
 ├── android_notification_monitor.ps1 # Integración nativa con PowerShell y devices.json
-├── monitor_notificaciones.py      # Entrypoint CLI Python
+├── monitor_notificaciones.py      # Entrypoint CLI Python para notificaciones
+├── export_chat_example.py         # Ejemplo CLI para exportar un chat específico
+├── export_top_chats.py            # Entrypoint CLI para exportar los primeros N chats
 ├── logs/                          # Registros locales JSON
 │   ├── notificaciones_importantes.json
 │   └── notifications_YYYY-MM-DD.json
+├── exports/                       # Descargas locales de chats (.txt o .zip)
 └── UI_AUTOMATION.md               # Este documento
 ```
 
 ---
 
-## 9. Solución de Problemas
+## 9. Extracción y Exportación de WhatsApp
+
+El módulo `ui_automation/whatsapp/` permite automatizar la exportación nativa de chats sin requerir accesos root ni APIs no oficiales:
+
+```powershell
+# Exportar los primeros 10 chats más recientes (solo texto .txt):
+python export_top_chats.py --limit 10
+
+# Exportar los primeros 5 chats incluyendo multimedia (.zip):
+python export_top_chats.py -n 5 --include-media --output-dir "./mis_chats"
+
+# Exportar un chat individual por nombre:
+python export_chat_example.py --chat "NombreContacto"
+```
+
+El flujo:
+1. Lee los nombres visibles desde arriba (más recientes primero).
+2. Si requiere más de los que caben en pantalla, realiza scroll controlado hacia abajo evitando duplicados.
+3. Abre cada conversación, solicita la exportación nativa, descarga el `.txt` o `.zip` al PC mediante ADB y elimina el archivo temporal del teléfono.
+4. Si un chat en particular falla (ej. chat bloqueado o vacío), registra el error y continúa automáticamente con el siguiente.
+
+---
+
+## 10. Solución de Problemas
 
 | Problema | Causa | Solución |
 |---|---|---|
