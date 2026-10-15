@@ -12,8 +12,26 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Asegurar adb en PATH (si no está globalmente, usar el binario de adbutils)
+if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
+    try {
+        $adbDir = (python -c "import adbutils, os; print(os.path.dirname(adbutils.adb_path()))" 2>$null)
+        if ($adbDir) {
+            $adbDir = $adbDir.Trim()
+            if (Test-Path -LiteralPath $adbDir) {
+                $env:PATH = "$adbDir;$env:PATH"
+            }
+        }
+    } catch { }
+}
+
+if (Get-Command adb -ErrorAction SilentlyContinue) {
+    try { & adb start-server 2>$null } catch { }
+}
+
 $modulePath = Join-Path $PSScriptRoot 'AndroidAdb.psm1'
-Import-Module $modulePath -Force
+Import-Module $modulePath -Force -WarningAction SilentlyContinue
 Initialize-AdbLog | Out-Null
 
 function Invoke-NotificationMonitor {

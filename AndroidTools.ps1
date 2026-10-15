@@ -56,7 +56,8 @@ try {
         Write-Host '6. Captura / Grabacion de pantalla'
         Write-Host '7. Sincronizacion por perfiles'
         Write-Host '8. Monitor de Notificaciones (UI Automation + IA)'
-        Write-Host '9. Diagnostico del sistema'
+        Write-Host '9. Exportar chats de WhatsApp (primeros N)'
+        Write-Host '10. Diagnostico del sistema'
         Write-Host '0. Salir'
         switch (Read-Host 'Selecciona una opcion') {
             '1' { Invoke-AndroidToolScript 'android_reconnect.ps1' }
@@ -67,7 +68,22 @@ try {
             '6' { Invoke-AndroidToolScript 'android_screen.ps1' }
             '7' { Invoke-AndroidToolScript 'android_sync.ps1' }
             '8' { Invoke-AndroidToolScript 'android_notification_monitor.ps1' }
-            '9' { Invoke-AndroidToolScript 'android_diagnostics.ps1' }
+            '9' {
+                $countInput = Read-Host 'Cuantos chats recientes deseas exportar? [Enter = 10]'
+                $n = 10
+                if (-not [string]::IsNullOrWhiteSpace($countInput)) {
+                    [int]::TryParse($countInput, [ref]$n) | Out-Null
+                    if ($n -lt 1) { $n = 10 }
+                }
+                $mediaChoice = Read-Host 'Incluir archivos multimedia (.zip)? (s/N)'
+                $extraArgs = @('-Top', $n.ToString())
+                if ($mediaChoice -match '^(s|si|y|yes)$') {
+                    $extraArgs += '-IncludeMedia'
+                }
+                Invoke-AndroidToolScript 'android_whatsapp_export.ps1' $extraArgs
+                Read-Host 'Presiona Enter para continuar' | Out-Null
+            }
+            '10' { Invoke-AndroidToolScript 'android_diagnostics.ps1' }
             '0' { break }
             default { Write-Host 'Opcion invalida.' -ForegroundColor Red; Start-Sleep -Seconds 1 }
         }

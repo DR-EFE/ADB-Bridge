@@ -148,6 +148,7 @@ Android/
 │       ├── export.py              # WhatsAppExporter (exportación nativa individual)
 │       └── chats.py               # WhatsAppChatManager (listado y exportación de top N)
 ├── android_notification_monitor.ps1 # Integración nativa con PowerShell y devices.json
+├── android_whatsapp_export.ps1     # Exportación de chats integrada con PowerShell
 ├── monitor_notificaciones.py      # Entrypoint CLI Python para notificaciones
 ├── export_chat_example.py         # Ejemplo CLI para exportar un chat específico
 ├── export_top_chats.py            # Entrypoint CLI para exportar los primeros N chats
@@ -162,8 +163,36 @@ Android/
 
 ## 9. Extracción y Exportación de WhatsApp
 
-El módulo `ui_automation/whatsapp/` permite automatizar la exportación nativa de chats sin requerir accesos root ni APIs no oficiales:
+El módulo `ui_automation/whatsapp/` permite automatizar la exportación nativa de chats sin requerir accesos root ni APIs no oficiales, integrado con la selección de dispositivos de `devices.json`.
 
+### 9.1 Desde el Menú Principal Integrado
+Ejecuta `.\Lanzar_GUI.cmd` o `powershell -File .\AndroidTools.ps1` y selecciona:
+`9. Exportar chats de WhatsApp (primeros N)`
+El menú te preguntará cuántos chats deseas exportar y si deseas incluir archivos multimedia.
+
+### 9.2 Script Integrado de PowerShell (`android_whatsapp_export.ps1`)
+Utiliza automáticamente el dispositivo activo guardado en `devices.json` o detectado por ADB, validando previamente que esté en estado `device`:
+
+```powershell
+# Exportar los 10 chats más recientes (predeterminado, solo texto .txt):
+powershell -File .\android_whatsapp_export.ps1
+
+# Exportar los 5 primeros chats con multimedia (.zip):
+powershell -File .\android_whatsapp_export.ps1 -Top 5 -IncludeMedia
+
+# Especificar carpeta de salida y dispositivo específico:
+powershell -File .\android_whatsapp_export.ps1 -n 3 -OutputDir "C:\Backups\WhatsApp" -Serial "192.168.1.50:5555"
+```
+
+| Parámetro | Alias | Descripción | Valor por defecto |
+|---|---|---|---|
+| `-Top` | `-n` | Número de chats más recientes a exportar | `10` |
+| `-IncludeMedia` | - | Descargar paquete `.zip` con fotos y multimedia | Solo texto (`.txt`) |
+| `-OutputDir` | - | Carpeta local donde guardar las descargas | `.\exports` |
+| `-Serial` | - | Serial o IP:puerto ADB (si se omite, usa el dispositivo actual) | Auto (`devices.json`) |
+| `-Help` | - | Muestra la ayuda detallada del script | - |
+
+### 9.3 Ejecución directa en Python (CLI)
 ```powershell
 # Exportar los primeros 10 chats más recientes (solo texto .txt):
 python export_top_chats.py --limit 10
@@ -175,11 +204,12 @@ python export_top_chats.py -n 5 --include-media --output-dir "./mis_chats"
 python export_chat_example.py --chat "NombreContacto"
 ```
 
-El flujo:
-1. Lee los nombres visibles desde arriba (más recientes primero).
-2. Si requiere más de los que caben en pantalla, realiza scroll controlado hacia abajo evitando duplicados.
-3. Abre cada conversación, solicita la exportación nativa, descarga el `.txt` o `.zip` al PC mediante ADB y elimina el archivo temporal del teléfono.
-4. Si un chat en particular falla (ej. chat bloqueado o vacío), registra el error y continúa automáticamente con el siguiente.
+### 9.4 Flujo de Ejecución y Resiliencia
+1. Valida el estado del dispositivo mediante `Test-AdbDeviceReady`.
+2. Lee los nombres visibles desde arriba (más recientes primero).
+3. Si requiere más de los que caben en pantalla, realiza scroll controlado hacia abajo evitando duplicados.
+4. Abre cada conversación, solicita la exportación nativa, descarga el `.txt` o `.zip` al PC mediante ADB y elimina el archivo temporal del teléfono.
+5. **Aislamiento de fallos:** Si un chat en particular falla (ej. chat bloqueado o vacío), registra el error y continúa automáticamente con el siguiente.
 
 ---
 
