@@ -121,6 +121,7 @@ function Save-GuiAdbDevice {
         [string]$FriendlyName,
         [Parameter(Mandatory=$true)][string]$Mode,
         [string]$UsbSerial,
+        [string]$WifiMacAddress,
         [string]$LastEndpoint,
         [bool]$IsPaired = $false
     )
@@ -132,14 +133,26 @@ function Save-GuiAdbDevice {
     $store = Read-AdbDeviceStore
     $existing = @($store.Devices | Where-Object {
         ($UsbSerial -and $_.UsbSerial -and $_.UsbSerial -ceq $UsbSerial) -or
+        ($WifiMacAddress -and $_.WifiMacAddress -and $_.WifiMacAddress -ieq $WifiMacAddress) -or
         ($LastEndpoint -and $_.LastEndpoint -and $_.LastEndpoint -ieq $LastEndpoint)
     })[0]
 
     $timestamp = [DateTime]::UtcNow.ToString('o')
     if ($null -ne $existing) {
-        return (Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -UsbSerial $UsbSerial -LastEndpoint $LastEndpoint -Mode $Mode -IsPaired $IsPaired -LastConnectedUtc $timestamp)
+        $effectiveMac = if ([string]::IsNullOrWhiteSpace($WifiMacAddress)) { $existing.WifiMacAddress } else { $WifiMacAddress }
+        # Conserva endpoints WiFi anteriores para poder reintentarlos al volver
+        # a una red conocida, antes de actualizar la IP preferida.
+        if ($existing.LastEndpoint -and $LastEndpoint -and $existing.LastEndpoint -ine $LastEndpoint) {
+            $oldProfile = @($existing.NetworkProfiles | Where-Object { $_.PreferredEndpoint -ieq $existing.LastEndpoint })[0]
+            if ($null -eq $oldProfile) {
+                try {
+                    Add-SavedAdbNetworkProfile -DeviceId $existing.Id -Name ("Anterior {0}" -f $existing.LastEndpoint) -PreferredEndpoint $existing.LastEndpoint -LastUsedUtc $existing.LastConnectedUtc | Out-Null
+                } catch { }
+            }
+        }
+        return (Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -UsbSerial $UsbSerial -WifiMacAddress $effectiveMac -LastEndpoint $LastEndpoint -Mode $Mode -IsPaired $IsPaired -LastConnectedUtc $timestamp)
     }
-    return (Add-SavedAdbDevice -FriendlyName $FriendlyName -Mode $Mode -UsbSerial $UsbSerial -LastEndpoint $LastEndpoint -IsPaired $IsPaired -LastConnectedUtc $timestamp)
+    return (Add-SavedAdbDevice -FriendlyName $FriendlyName -Mode $Mode -UsbSerial $UsbSerial -WifiMacAddress $WifiMacAddress -LastEndpoint $LastEndpoint -IsPaired $IsPaired -LastConnectedUtc $timestamp)
 }
 
 # -----------------------------------------------------------------------------
@@ -254,7 +267,7 @@ $script:AdvancedCommandExamples = @(
 # -----------------------------------------------------------------------------
 # EJECUTOR ASINCRONO SEGURO PARA WINFORMS (Sin congelar interfaz)
 # -----------------------------------------------------------------------------
-$script:RunningAsyncTasks = 0
+$global:RunningAsyncTasks = 0
 
 function Invoke-GuiAsyncTask {
     param(
@@ -264,18 +277,28 @@ function Invoke-GuiAsyncTask {
         [scriptblock]$OnCompleted = $null
     )
 
-    $script:RunningAsyncTasks++
+    $global:RunningAsyncTasks++
     Set-UiBusyState -IsBusy $true -Operation $Title
     Write-LogEntry -Level 'INFO' -Message "Iniciando: $Title..."
 
-    $ps = [powershell]::Create()
+    # CreateDefault carga los cmdlets integrados (Write-Warning, etc.) en la
+    # runspace secundaria. [PowerShell]::Create() sola inicia una sesión vacía.
+    $initialSessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $ps = [powershell]::Create($initialSessionState)
     $wrapper = {
-        param($mPath, $subScript, $pHash)
+        param($mPath, $subScriptText, $pHash, $selectedDevice)
         $result = [ordered]@{ Success = $false; Output = @(); Error = $null }
         try {
             if (Test-Path -LiteralPath $mPath) {
-                Import-Module $mPath -Force -DisableNameChecking
+                Import-Module $mPath -Force -DisableNameChecking -ErrorAction Stop
             }
+            if ($null -ne $selectedDevice) {
+                $global:AndroidAdbCurrentDevice = $selectedDevice | ConvertFrom-Json
+            }
+            # Un ScriptBlock creado en la runspace de WinForms retiene su
+            # SessionState original al pasarlo como argumento. Compilar el
+            # texto aqui lo vincula a esta runspace y a sus cmdlets/modulo.
+            $subScript = [scriptblock]::Create($subScriptText)
             $out = & $subScript @pHash
             $result.Output = @($out)
             $result.Success = $true
@@ -286,23 +309,27 @@ function Invoke-GuiAsyncTask {
         return [pscustomobject]$result
     }
 
-    $null = $ps.AddScript($wrapper).AddArgument($script:ModulePath).AddArgument($WorkerScript).AddArgument($Parameters)
+    $selectionJson = if ($null -ne $global:AndroidAdbCurrentDevice) { $global:AndroidAdbCurrentDevice | ConvertTo-Json -Depth 10 } else { $null }
+    $null = $ps.AddScript($wrapper).AddArgument($script:ModulePath).AddArgument($WorkerScript.ToString()).AddArgument($Parameters).AddArgument($selectionJson)
     $asyncHandle = $ps.BeginInvoke()
 
     $timer = New-Object System.Windows.Forms.Timer
     $timer.Interval = 100
-    $timer.Add_Tick({
+    # Los controladores de eventos de WinForms se ejecutan en un ámbito nuevo.
+    # Capturamos explícitamente las variables locales necesarias para que
+    # $asyncHandle, $ps y los callbacks sigan disponibles en cada Tick.
+    $onTimerTick = {
         if ($asyncHandle.IsCompleted) {
             $timer.Stop()
             $timer.Dispose()
-            $script:RunningAsyncTasks--
+            $global:RunningAsyncTasks--
 
             try {
                 $execResult = $ps.EndInvoke($asyncHandle)
                 $resObj = if ($execResult) { $execResult[0] } else { $null }
 
-                if ($script:RunningAsyncTasks -le 0) {
-                    $script:RunningAsyncTasks = 0
+                if ($global:RunningAsyncTasks -le 0) {
+                    $global:RunningAsyncTasks = 0
                     Set-UiBusyState -IsBusy $false -Operation $Title
                 }
 
@@ -321,7 +348,8 @@ function Invoke-GuiAsyncTask {
                 $ps.Dispose()
             }
         }
-    })
+    }.GetNewClosure()
+    $timer.Add_Tick($onTimerTick)
     $timer.Start()
 }
 
@@ -471,6 +499,10 @@ function Hide-NotificationBanner {
 $script:UsbAutoScanEnabled = $true
 $script:UsbAutoScanBusy = $false
 $script:UsbProcessedSerials = @{}
+$script:UsbLastDeviceSnapshot = $null
+$script:LastWifiHealthCheckUtc = [datetime]::MinValue
+$script:LastAutoReconnectAttemptUtc = [datetime]::MinValue
+$script:LastAutoReconnectDeviceId = $null
 
 function Start-UsbAutoWifiConversion {
     param([Parameter(Mandatory=$true)][string]$UsbSerial)
@@ -479,6 +511,9 @@ function Start-UsbAutoWifiConversion {
         return
     }
     $script:UsbProcessedSerials[$UsbSerial] = 'Converting'
+    $lblStatusBadge.Text = '○ CONECTANDO WIFI'
+    $lblStatusBadge.BackColor = $script:Theme.BadgeWarningBg
+    $lblStatusBadge.ForeColor = $script:Theme.BadgeWarningFg
 
     Write-LogEntry -Level 'INFO' -Message "⚡ Dispositivo USB detectado ($UsbSerial). Iniciando preparacion automatica para conexion WiFi..."
     Show-NotificationBanner -Type 'INFO' -Title "Dispositivo USB Detectado" -Message "Configurando puerto TCP/IP y obteniendo IP WiFi para $UsbSerial..." -AutoCloseSeconds 6
@@ -490,6 +525,7 @@ function Start-UsbAutoWifiConversion {
             UsbSerial = $s
             Ip = $null
             Model = $null
+            WifiMacAddress = $null
             WifiSerial = $null
             Error = $null
         }
@@ -500,11 +536,16 @@ function Start-UsbAutoWifiConversion {
                 $info.Model = ($m -join ' ').Trim()
             } catch { }
 
-            # 1. Habilitar TCP/IP 5555
-            Invoke-AdbCommand -Serial $s -Arguments @('tcpip','5555') | Out-Null
-            Start-Sleep -Milliseconds 800
+            try {
+                $macOut = @(Invoke-AdbCommand -Serial $s -Arguments @('shell','cat','/sys/class/net/wlan0/address'))
+                $macText = ($macOut -join '').Trim().ToLowerInvariant()
+                if ($macText -match '^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$' -and $macText -ne '02:00:00:00:00:00') {
+                    $info.WifiMacAddress = $macText
+                }
+            } catch { }
 
-            # 2. Descubrir IP WiFi
+            # Obtener la IP antes de tcpip: ese comando reinicia adbd y puede
+            # hacer desaparecer el transporte USB inmediatamente.
             $ipFound = $null
             $ipOut = @(Invoke-AdbCommand -Serial $s -Arguments @('shell','ip','-4','addr','show','wlan0'))
             foreach ($line in $ipOut) {
@@ -535,29 +576,20 @@ function Start-UsbAutoWifiConversion {
             $info.Ip = $ipFound
             $endpoint = "${ipFound}:5555"
 
-            # 3. Conectar por WiFi
-            $connOut = @(Invoke-AdbCommand -Arguments @('connect', $endpoint))
-            $connText = $connOut -join ' '
-
-            if ($connText -match '(connected to|already connected to)') {
-                $info.Success = $true
-                $info.WifiSerial = $endpoint
-                
-                # 4. Guardar en devices.json
-                $friendly = if ($info.Model) { "$($info.Model) ($endpoint)" } else { "Android WiFi ($endpoint)" }
-                Save-GuiAdbDevice -FriendlyName $friendly -Mode 'tcpip' -UsbSerial $s -LastEndpoint $endpoint -IsPaired $true | Out-Null
-                
-                # 5. Establecer como dispositivo activo
-                Set-CurrentAdbDevice -Device ([pscustomobject]@{
-                    Serial = $endpoint
-                    FriendlyName = $friendly
-                    LastEndpoint = $endpoint
-                    UsbSerial = $s
-                    Mode = 'tcpip'
-                    Status = 'device'
-                }) -Persist | Out-Null
-            } else {
-                $info.Error = "Fallo al conectar a $endpoint. Respuesta: $connText"
+            Invoke-Adb -Serial $s -Arguments @('tcpip','5555') | Out-Null
+            for ($attempt = 0; $attempt -lt 5; $attempt++) {
+                try {
+                    Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 3 | Out-Null
+                    $state = (@(Invoke-Adb -Serial $endpoint -Arguments @('get-state')) -join '').Trim()
+                    $probe = (@(Invoke-Adb -Serial $endpoint -Arguments @('shell','echo','android-tools-ready')) -join '').Trim()
+                    if ($state -cne 'device' -or $probe -cne 'android-tools-ready') { throw 'ADB WiFi aun no responde completamente.' }
+                    $info.Success = $true
+                    $info.WifiSerial = $endpoint
+                    break
+                } catch {
+                    if ($attempt -eq 4) { throw }
+                    Start-Sleep -Seconds 1
+                }
             }
         } catch {
             $info.Error = $_.Exception.Message
@@ -566,11 +598,31 @@ function Start-UsbAutoWifiConversion {
         return [pscustomobject]$info
     }
 
-    Invoke-GuiAsyncTask -Title "Auto-Conexion USB a WiFi ($UsbSerial)" -WorkerScript $worker -Parameters @{ s = $UsbSerial } -OnCompleted {
+    $onUsbWifiCompleted = {
         param($res)
         if ($res -and $res.Success -and $res.Output -and $res.Output[0].Success) {
             $data = $res.Output[0]
             $script:UsbProcessedSerials[$UsbSerial] = 'Connected'
+
+            try {
+                $savedByUsb = @(Get-SavedAdbDevices | Where-Object { $_.UsbSerial -ceq $UsbSerial })[0]
+                $friendly = if ($savedByUsb) { $savedByUsb.FriendlyName } elseif ($data.Model) { [string]$data.Model } else { "Android ($UsbSerial)" }
+                $saved = Save-GuiAdbDevice -FriendlyName $friendly -Mode 'tcpip-5555' -UsbSerial $UsbSerial -WifiMacAddress $data.WifiMacAddress -LastEndpoint $data.WifiSerial -IsPaired $true
+                Set-CurrentAdbDevice -Device ([pscustomobject]@{
+                    Id = $saved.Id
+                    Serial = $data.WifiSerial
+                    FriendlyName = $saved.FriendlyName
+                    LastEndpoint = $data.WifiSerial
+                    UsbSerial = $UsbSerial
+                    WifiMacAddress = $data.WifiMacAddress
+                    Mode = 'tcpip-5555'
+                }) -Persist | Out-Null
+            } catch {
+                Write-LogEntry -Level 'WARN' -Message "ADB conecto por WiFi, pero no se pudo guardar el perfil: $($_.Exception.Message)"
+                $script:UsbProcessedSerials[$UsbSerial] = 'Failed'
+                Refresh-DeviceStatus -Silent
+                return
+            }
             
             Write-LogEntry -Level 'SUCCESS' -Message "🎉 Dispositivo conectado por WiFi con exito en $($data.WifiSerial). ¡Ya puedes desconectar el cable USB de forma segura!"
             
@@ -578,7 +630,7 @@ function Start-UsbAutoWifiConversion {
                 -Title "¡Conectado por WiFi! ($($data.WifiSerial))" `
                 -Message "Se configuro y guardo automaticamente. YA PUEDES DESCONECTAR EL CABLE USB." `
                 -ActionText "Verificar" `
-                -ActionScript { Refresh-DeviceStatus } `
+                -ActionScript ${function:Refresh-DeviceStatus} `
                 -AutoCloseSeconds 12
 
             Refresh-DeviceStatus -Silent
@@ -591,16 +643,17 @@ function Start-UsbAutoWifiConversion {
                 -Title "Conexion WiFi Incompleta" `
                 -Message "$errMsg (El dispositivo sigue utilizable por USB)." `
                 -ActionText "Reintentar" `
-                -ActionScript { Start-UsbAutoWifiConversion -UsbSerial $UsbSerial } `
+                -ActionScript ({ Start-UsbAutoWifiConversion -UsbSerial $UsbSerial }.GetNewClosure()) `
                 -AutoCloseSeconds 10
             
             Refresh-DeviceStatus -Silent
         }
-    }
+    }.GetNewClosure()
+    Invoke-GuiAsyncTask -Title "Auto-Conexion USB a WiFi ($UsbSerial)" -WorkerScript $worker -Parameters @{ s = $UsbSerial } -OnCompleted $onUsbWifiCompleted
 }
 
 function Invoke-UsbAutoDetection {
-    if (-not $script:UsbAutoScanEnabled -or $script:UsbAutoScanBusy -or $script:RunningAsyncTasks -gt 0) {
+    if (-not $script:UsbAutoScanEnabled -or $script:UsbAutoScanBusy -or $global:RunningAsyncTasks -gt 0) {
         return
     }
 
@@ -609,6 +662,8 @@ function Invoke-UsbAutoDetection {
         if (-not (Get-Command adb -ErrorAction SilentlyContinue)) { return }
         
         $lines = @(adb devices 2>$null)
+        $observed = @()
+        $presentUsbSerials = @()
         foreach ($line in $lines) {
             $trimmed = $line.Trim()
             if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith('List of devices')) { continue }
@@ -618,11 +673,13 @@ function Invoke-UsbAutoDetection {
             
             $serial = $parts[0]
             $status = $parts[1]
+            $observed += "$serial=$status"
 
             # Ignorar si ya es conexion de red IP:PUERTO
             if ($serial -match '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$') {
                 continue
             }
+            $presentUsbSerials += $serial
 
             if ($status -ceq 'unauthorized') {
                 if (-not $script:UsbProcessedSerials.ContainsKey($serial) -or $script:UsbProcessedSerials[$serial] -ne 'UnauthorizedNotified') {
@@ -640,11 +697,20 @@ function Invoke-UsbAutoDetection {
                 continue
             }
 
-            if ($status -ceq 'device') {
-                if (-not $script:UsbProcessedSerials.ContainsKey($serial) -or $script:UsbProcessedSerials[$serial] -eq 'UnauthorizedNotified') {
-                    Start-UsbAutoWifiConversion -UsbSerial $serial
-                }
+            if ($status -ceq 'device' -and
+                (-not $script:UsbProcessedSerials.ContainsKey($serial) -or $script:UsbProcessedSerials[$serial] -eq 'UnauthorizedNotified')) {
+                $script:UsbProcessedSerials[$serial] = 'Ready'
+                Write-LogEntry -Level 'INFO' -Message "USB listo: $serial. Para pasar a WiFi usa 'Convertir USB a WiFi' en Gestion de Dispositivos."
             }
+        }
+        foreach ($knownSerial in @($script:UsbProcessedSerials.Keys)) {
+            if ($presentUsbSerials -notcontains $knownSerial) { $script:UsbProcessedSerials.Remove($knownSerial) }
+        }
+        $snapshot = (@($observed | Sort-Object) -join '|')
+        if ($snapshot -cne $script:UsbLastDeviceSnapshot -or ([datetime]::UtcNow - $script:LastWifiHealthCheckUtc).TotalSeconds -ge 10) {
+            $script:UsbLastDeviceSnapshot = $snapshot
+            $script:LastWifiHealthCheckUtc = [datetime]::UtcNow
+            Refresh-DeviceStatus -Silent
         }
     } catch {
         Write-LogEntry -Level 'WARN' -Message "Auto-Scanner USB: $($_.Exception.Message)"
@@ -658,6 +724,9 @@ function Invoke-UsbAutoDetection {
 # -----------------------------------------------------------------------------
 function Refresh-DeviceStatus {
     param([switch]$Silent)
+
+    # No publicar una captura vieja mientras otra tarea cambia el transporte.
+    if ($global:RunningAsyncTasks -gt 0) { return }
 
     if (-not $Silent) {
         Write-LogEntry -Level 'INFO' -Message 'Consultando estado de dispositivos...'
@@ -677,9 +746,18 @@ function Refresh-DeviceStatus {
             AdbAvailable  = $false
             AllDevices    = @()
             SavedDevices  = @()
+            AutoSelectedDevice = $null
         }
 
-        if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
+        # Evitar Get-Command en la runspace de fondo; algunas instalaciones
+        # limitadas de Windows PowerShell no exponen ese cmdlet allí aunque
+        # adb.exe sí sea invocable desde PATH.
+        $adbUsable = $false
+        try {
+            $null = @(& adb version 2>$null)
+            $adbUsable = ($LASTEXITCODE -eq 0)
+        } catch { }
+        if (-not $adbUsable) {
             $devInfo.FriendlyName = 'ADB no encontrado en PATH'
             return [pscustomobject]$devInfo
         }
@@ -691,13 +769,51 @@ function Refresh-DeviceStatus {
         $devInfo.SavedDevices = $savedDevices
 
         $cur = Get-CurrentAdbDevice
+        $currentRecord = if ($null -ne $cur) {
+            @($onlineDevices | Where-Object { $_.Serial -ieq $cur.Serial -and $_.Status -ceq 'device' })[0]
+        } else { $null }
+        if ($null -ne $currentRecord -and -not $cur.Id) {
+            $devInfo.AutoSelectedDevice = $currentRecord
+        }
 
-        if ($null -eq $cur -and $onlineDevices.Count -gt 0) {
-            $candidate = @($onlineDevices | Where-Object { $_.Status -ceq 'device' })[0]
+        # El dispositivo activo anterior puede ser una IP WiFi caducada aunque
+        # el mismo teléfono siga visible por USB. En ese caso cambia al endpoint
+        # conectado; el callback de la GUI conserva el registro y el nombre.
+        if ($null -eq $currentRecord -and ($null -eq $cur -or $cur.Serial -notmatch ':\d+$')) {
+            $candidate = $null
+            $knownIdentity = $false
+            if ($null -ne $cur) {
+                $savedCurrent = @($savedDevices | Where-Object { $_.Id -ceq $cur.Id -or $_.UsbSerial -ceq $cur.UsbSerial -or $_.LastEndpoint -ieq $cur.LastEndpoint })[0]
+                if ($savedCurrent -and ($savedCurrent.UsbSerial -or $savedCurrent.WifiMacAddress)) {
+                    $knownIdentity = $true
+                    if ($savedCurrent.UsbSerial) {
+                        $candidate = @($onlineDevices | Where-Object { $_.Serial -ceq $savedCurrent.UsbSerial -and $_.Status -ceq 'device' })[0]
+                    }
+                    if ($null -eq $candidate) {
+                        foreach ($readyCandidate in @($onlineDevices | Where-Object { $_.Status -ceq 'device' })) {
+                            try {
+                                $remoteSerial = (@(Invoke-AdbCommand -Serial $readyCandidate.Serial -Arguments @('shell','getprop','ro.serialno')) -join '').Trim()
+                                $remoteMac = (@(Invoke-AdbCommand -Serial $readyCandidate.Serial -Arguments @('shell','cat','/sys/class/net/wlan0/address')) -join '').Trim()
+                                if (($savedCurrent.UsbSerial -and $remoteSerial -and $remoteSerial -ieq $savedCurrent.UsbSerial) -or
+                                    ($savedCurrent.WifiMacAddress -and $remoteMac -and $remoteMac -ieq $savedCurrent.WifiMacAddress)) {
+                                    $candidate = $readyCandidate
+                                    break
+                                }
+                            } catch { }
+                        }
+                    }
+                }
+            }
+            if ($null -eq $candidate -and -not $knownIdentity) {
+                $candidate = @($onlineDevices | Where-Object { $_.Status -ceq 'device' })[0]
+            }
             if ($null -ne $candidate) {
                 try {
                     $cur = Set-CurrentAdbDevice -Device $candidate
-                } catch { }
+                    $devInfo.AutoSelectedDevice = $candidate
+                } catch { $cur = $null }
+            } else {
+                $cur = $null
             }
         }
 
@@ -709,6 +825,16 @@ function Refresh-DeviceStatus {
             
             $record = @($onlineDevices | Where-Object { $_.Serial -ceq $cur.Serial })[0]
             $devInfo.Status = if ($null -ne $record) { [string]$record.Status } else { 'offline' }
+            if ($devInfo.Status -ceq 'device') {
+                if ($cur.Serial -notmatch ':\d+$') {
+                    $devInfo.Status = 'usb-ready'
+                } else {
+                    try {
+                        $probe = (@(Invoke-Adb -Serial $cur.Serial -Arguments @('shell','echo','android-tools-ready')) -join '').Trim()
+                        if ($probe -cne 'android-tools-ready') { throw 'WiFi sin respuesta ADB.' }
+                    } catch { $devInfo.Status = 'offline' }
+                }
+            }
 
             if ($devInfo.Status -ceq 'device') {
                 try {
@@ -735,7 +861,7 @@ function Refresh-DeviceStatus {
         } elseif ($onlineDevices.Count -gt 0) {
             $first = $onlineDevices[0]
             $devInfo.FriendlyName = "Dispositivo disponible: $($first.Serial)"
-            $devInfo.Status = $first.Status
+            $devInfo.Status = if ($first.Status -ceq 'device') { 'pending' } else { $first.Status }
             $devInfo.Endpoint = $first.Serial
         }
 
@@ -764,6 +890,39 @@ function Refresh-DeviceStatus {
             return
         }
 
+        # El worker se ejecuta en otra runspace. Si eligió automáticamente un
+        # equipo ADB, repetir la selección aquí la hace efectiva y persistente
+        # para todos los botones de la interfaz.
+        if ($null -ne $info.AutoSelectedDevice) {
+            try {
+                $autoSerial = [string]$info.AutoSelectedDevice.Serial
+                $savedMatch = @($info.SavedDevices | Where-Object {
+                    $_.UsbSerial -ceq $autoSerial -or $_.LastEndpoint -ceq $autoSerial
+                })[0]
+                if ($null -eq $savedMatch) {
+                    $friendly = if ($info.Model) { [string]$info.Model } else { "Android ($autoSerial)" }
+                    $mode = if ($autoSerial -match ':[0-9]+$') { 'tcpip-5555' } else { 'usb' }
+                    $savedMatch = Save-GuiAdbDevice -FriendlyName $friendly -Mode $mode -UsbSerial $(if ($mode -eq 'usb') { $autoSerial } else { $null }) -LastEndpoint $(if ($mode -eq 'tcpip-5555') { $autoSerial } else { $null })
+                }
+                # El registro guardado puede conservar una IP WiFi antigua;
+                # Serial fuerza el endpoint que ADB acaba de detectar por USB.
+                $activeDevice = [pscustomobject]@{
+                    Id = if ($savedMatch) { $savedMatch.Id } else { $null }
+                    FriendlyName = if ($savedMatch) { $savedMatch.FriendlyName } else { $friendly }
+                    Serial = $autoSerial
+                    LastEndpoint = if ($savedMatch) { $savedMatch.LastEndpoint } else { $null }
+                    UsbSerial = if ($savedMatch) { $savedMatch.UsbSerial } elseif ($autoSerial -notmatch ':[0-9]+$') { $autoSerial } else { $null }
+                    Mode = if ($savedMatch) { $savedMatch.Mode } else { $mode }
+                }
+                Set-CurrentAdbDevice -Device $activeDevice -Persist | Out-Null
+                Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo seleccionado automaticamente: $autoSerial"
+                Refresh-DeviceStatus -Silent
+                return
+            } catch {
+                Write-LogEntry -Level 'WARN' -Message "No se pudo guardar la seleccion automatica: $($_.Exception.Message)"
+            }
+        }
+
         # Actualizar Nombre
         if ($info.Model) {
             $lblDeviceName.Text = "$($info.FriendlyName) ($($info.Model))"
@@ -774,9 +933,19 @@ function Refresh-DeviceStatus {
         # Actualizar Badge
         switch ($info.Status) {
             'device' {
-                $lblStatusBadge.Text = "● CONECTADO"
+                $lblStatusBadge.Text = "● CONECTADO WIFI"
                 $lblStatusBadge.BackColor = $script:Theme.BadgeSuccessBg
                 $lblStatusBadge.ForeColor = $script:Theme.BadgeSuccessFg
+            }
+            'usb-ready' {
+                $lblStatusBadge.Text = '○ USB / WIFI PENDIENTE'
+                $lblStatusBadge.BackColor = $script:Theme.BadgeWarningBg
+                $lblStatusBadge.ForeColor = $script:Theme.BadgeWarningFg
+            }
+            'pending' {
+                $lblStatusBadge.Text = '○ WIFI SIN VERIFICAR'
+                $lblStatusBadge.BackColor = $script:Theme.BadgeWarningBg
+                $lblStatusBadge.ForeColor = $script:Theme.BadgeWarningFg
             }
             'offline' {
                 $lblStatusBadge.Text = "● OFFLINE"
@@ -810,8 +979,43 @@ function Refresh-DeviceStatus {
         
         # Actualizar lista de dispositivos en pestaña de Gestion
         Update-DevicesTabGrid -AllDevices $info.AllDevices -SavedDevices $info.SavedDevices
+
+        # Al iniciar o refrescar, si no hay ningun endpoint ADB utilizable,
+        # reintentar en segundo plano el dispositivo guardado actualmente.
+        # Así el usuario no necesita abrir la pestaña y pulsar "Usar activo".
+        $readyOnline = @($info.AllDevices | Where-Object { $_.Status -ceq 'device' -and $_.Serial -match ':\d+$' })
+        if ($readyOnline.Count -eq 0 -and @($info.SavedDevices).Count -gt 0 -and $lvDevicesTab.Items.Count -gt 0) {
+            $currentId = $null
+            try { $currentId = (Read-AdbDeviceStore).CurrentDeviceId } catch { }
+            $savedItem = $null
+            if ($currentId) {
+                foreach ($candidateItem in $lvDevicesTab.Items) {
+                    if ($candidateItem.Tag.Id -ceq $currentId) { $savedItem = $candidateItem; break }
+                }
+            }
+            # No probar un perfil WiFi cualquiera cuando el USB desaparece.
+            # Reintentar solo el perfil activo, con pausa para evitar bucles.
+            $hasEndpoint = $null -ne $savedItem -and (
+                $savedItem.Tag.LastEndpoint -or
+                @($savedItem.Tag.NetworkProfiles | Where-Object { $_.PreferredEndpoint -and -not $_.ForceUsbOnly }).Count -gt 0
+            )
+            $retryDue = $script:LastAutoReconnectDeviceId -cne $currentId -or
+                ([datetime]::UtcNow - $script:LastAutoReconnectAttemptUtc).TotalSeconds -ge 30
+            if ($hasEndpoint -and $retryDue) {
+                $script:LastAutoReconnectDeviceId = $currentId
+                $script:LastAutoReconnectAttemptUtc = [datetime]::UtcNow
+                $lvDevicesTab.SelectedItems.Clear()
+                $savedItem.Selected = $true
+                $savedItem.Focused = $true
+                $btnDevSetActive.PerformClick()
+            }
+        }
     }
 }
+
+# Referencia estable para los eventos de WinForms, que se ejecutan fuera del
+# ámbito original del script una vez que la interfaz ya está abierta.
+$script:RefreshDeviceStatusAction = ${function:Refresh-DeviceStatus}
 
 function Update-HeaderDeviceList {
     param($AllDevices, $SavedDevices, [string]$CurrentSerial)
@@ -906,7 +1110,7 @@ $cboHeaderDevices.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDown
 $cboHeaderDevices.Font = $script:Fonts.Small
 $cboHeaderDevices.Size = New-Object System.Drawing.Size(240, 26)
 $cboHeaderDevices.Location = New-Object System.Drawing.Point(142, 11)
-$cboHeaderDevices.Add_SelectedIndexChanged({
+$cboHeaderDevices.Add_SelectionChangeCommitted({
     if ($cboHeaderDevices.SelectedIndex -ge 0 -and $script:HeaderDeviceMap.Count -gt $cboHeaderDevices.SelectedIndex) {
         $selectedEntry = $script:HeaderDeviceMap[$cboHeaderDevices.SelectedIndex]
         if ($selectedEntry.Serial -and $selectedEntry.IsOnline) {
@@ -931,7 +1135,7 @@ $btnHeaderRefresh.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnHeaderRefresh.FlatAppearance.BorderSize = 1
 $btnHeaderRefresh.FlatAppearance.BorderColor = $script:Theme.BorderCard
 $btnHeaderRefresh.Cursor = [System.Windows.Forms.Cursors]::Hand
-$btnHeaderRefresh.Add_Click({ Refresh-DeviceStatus })
+$btnHeaderRefresh.Add_Click({ & $script:RefreshDeviceStatusAction })
 $pnlHeaderRight.Controls.Add($btnHeaderRefresh)
 
 # Toggle Auto-Scan USB
@@ -1155,14 +1359,16 @@ function New-NavButton {
 }
 
 # Botones de la Barra Lateral
-$btnNavExplorer  = New-NavButton -Icon "📁" -Title "Explorador Android" -OnClick { $tabControlMain.SelectedTab = $tabExplorer; Refresh-AndroidExplorer }
-$btnNavTransfer  = New-NavButton -Icon "⇄"  -Title "Transferir Fotos & Datos" -OnClick { $tabControlMain.SelectedTab = $tabTransfer }
-$btnNavDevices   = New-NavButton -Icon "📱" -Title "Gestion de Dispositivos" -OnClick { $tabControlMain.SelectedTab = $tabDevices; Refresh-DeviceStatus }
+$btnNavExplorer  = New-NavButton -Icon "📁" -Title "Explorador Android" -OnClick { $script:tabControlMain.SelectedTab = $script:tabExplorer; Refresh-AndroidExplorer }
+$btnNavTransfer  = New-NavButton -Icon "⇄"  -Title "Transferir Fotos & Datos" -OnClick { $script:tabControlMain.SelectedTab = $script:tabTransfer }
+$btnNavDevices   = New-NavButton -Icon "📱" -Title "Gestion de Dispositivos" -OnClick { $script:tabControlMain.SelectedTab = $script:tabDevices; & $script:RefreshDeviceStatusAction }
 $btnNavApps      = New-NavButton -Icon "📦" -Title "Gestion de Aplicaciones" -OnClick { Show-AppsManagerDialog }
 $btnNavScreen    = New-NavButton -Icon "📸" -Title "Captura / Espejo Pantalla" -OnClick { Show-ScreenDialog }
+$btnNavNotifications = New-NavButton -Icon "🔔" -Title "Visor de Notificaciones" -OnClick { Show-NotificationMonitorDialog }
+$btnNavWhatsApp  = New-NavButton -Icon "💬" -Title "Exportar Chats WhatsApp" -OnClick { Show-WhatsAppExportDialog }
 $btnNavClean     = New-NavButton -Icon "🧹" -Title "Limpieza de Cache" -OnClick { Invoke-DeviceCleanCaches }
 $btnNavDiag      = New-NavButton -Icon "🩺" -Title "Diagnostico Completo" -OnClick { Invoke-FullDiagnostics }
-$btnNavLogs      = New-NavButton -Icon "📜" -Title "Registro de Actividad" -OnClick { $tabControlMain.SelectedTab = $tabLogs }
+$btnNavLogs      = New-NavButton -Icon "📜" -Title "Registro de Actividad" -OnClick { $script:tabControlMain.SelectedTab = $script:tabLogs }
 $btnNavAdvanced  = New-NavButton -Icon "⚡" -Title "Modo Avanzado (Consola)" -OnClick { Show-AdvancedConsoleWindow } -IsHighlight $true
 
 $pnlSidebarButtons.Controls.AddRange(@(
@@ -1171,6 +1377,8 @@ $pnlSidebarButtons.Controls.AddRange(@(
     $btnNavDevices,
     $btnNavApps,
     $btnNavScreen,
+    $btnNavNotifications,
+    $btnNavWhatsApp,
     $btnNavClean,
     $btnNavDiag,
     $btnNavLogs,
@@ -1196,15 +1404,15 @@ $cardWorkspace.BackColor = $script:Theme.BgCard
 $cardWorkspace.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 $cardWorkspace.Padding = New-Object System.Windows.Forms.Padding(10)
 
-$tabControlMain = New-Object System.Windows.Forms.TabControl
-$tabControlMain.Dock = [System.Windows.Forms.DockStyle]::Fill
-$tabControlMain.Font = $script:Fonts.TitleSmall
-$tabControlMain.Padding = New-Object System.Drawing.Point(16, 8)
+$script:tabControlMain = New-Object System.Windows.Forms.TabControl
+$script:tabControlMain.Dock = [System.Windows.Forms.DockStyle]::Fill
+$script:tabControlMain.Font = $script:Fonts.TitleSmall
+$script:tabControlMain.Padding = New-Object System.Drawing.Point(16, 8)
 
 # =============================================================================
 # PESTANA 1: 📁 EXPLORADOR DE ARCHIVOS ANDROID (Navegacion Visual)
 # =============================================================================
-$tabExplorer = New-Object System.Windows.Forms.TabPage
+$script:tabExplorer = New-Object System.Windows.Forms.TabPage
 $tabExplorer.Text = "  📁 Explorador Android  "
 $tabExplorer.BackColor = $script:Theme.BgCard
 $tabExplorer.Padding = New-Object System.Windows.Forms.Padding(8)
@@ -1409,7 +1617,7 @@ $tabControlMain.TabPages.Add($tabExplorer)
 # =============================================================================
 # PESTANA 2: ⇄ TRANSFERENCIAS RAPIDAS Y FOTOS (Centro de Datos y Progreso)
 # =============================================================================
-$tabTransfer = New-Object System.Windows.Forms.TabPage
+$script:tabTransfer = New-Object System.Windows.Forms.TabPage
 $tabTransfer.Text = "  ⇄ Transferencias & Fotos  "
 $tabTransfer.BackColor = $script:Theme.BgCard
 $tabTransfer.Padding = New-Object System.Windows.Forms.Padding(8)
@@ -1581,7 +1789,7 @@ $tabControlMain.TabPages.Add($tabTransfer)
 # =============================================================================
 # PESTANA 3: 📱 GESTION DE DISPOSITIVOS Y RED
 # =============================================================================
-$tabDevices = New-Object System.Windows.Forms.TabPage
+$script:tabDevices = New-Object System.Windows.Forms.TabPage
 $tabDevices.Text = "  📱 Dispositivos & Red  "
 $tabDevices.BackColor = $script:Theme.BgCard
 $tabDevices.Padding = New-Object System.Windows.Forms.Padding(12)
@@ -1647,9 +1855,125 @@ $btnDevSetActive.Add_Click({
         $item = $lvDevicesTab.SelectedItems[0]
         $devObj = $item.Tag
         if ($devObj) {
-            Set-CurrentAdbDevice -Device $devObj -Persist | Out-Null
-            Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo activo cambiado a: $($devObj.Serial)"
-            Refresh-DeviceStatus
+            try {
+                $serial = Resolve-AdbSerial -DeviceOrEndpoint $devObj
+                $record = @(Get-AdbDevices | Where-Object { $_.Serial -ieq $serial -and $_.Status -ceq 'device' })[0]
+                if ($null -ne $record) {
+                    Set-CurrentAdbDevice -Device $devObj -Persist | Out-Null
+                    Write-LogEntry -Level 'SUCCESS' -Message "Dispositivo activo cambiado a: $serial"
+                    & $script:RefreshDeviceStatusAction
+                    return
+                }
+
+                # Para un dispositivo guardado, probar primero sus endpoints
+                # conocidos con un sondeo TCP corto; después verificar su serial
+                # o MAC desde Android antes de marcarlo como activo.
+                $savedId = [string]$devObj.Id
+                $savedSerial = [string]$devObj.UsbSerial
+                $savedMac = [string]$devObj.WifiMacAddress
+                $endpoints = @()
+                if ($devObj.LastEndpoint) { $endpoints += [string]$devObj.LastEndpoint }
+                foreach ($profile in @($devObj.NetworkProfiles)) {
+                    if (-not $profile.ForceUsbOnly -and $profile.PreferredEndpoint) { $endpoints += [string]$profile.PreferredEndpoint }
+                }
+                $endpoints = @($endpoints | Where-Object { $_ } | Select-Object -Unique)
+                if (-not $endpoints.Count) {
+                    throw "'$($devObj.FriendlyName)' no tiene endpoints guardados. Conectalo por USB para aprender su direccion WiFi."
+                }
+
+                Write-LogEntry -Level 'INFO' -Message "Probando $($endpoints.Count) endpoint(s) guardados para $($devObj.FriendlyName)..."
+                $onReconnectCompleted = {
+                    param($res)
+                    if (-not $res -or -not $res.Success -or -not $res.Output -or -not $res.Output[0].Connected) {
+                        $message = if ($res -and $res.Error) { $res.Error } elseif ($res -and $res.Output -and $res.Output[0].Error) { $res.Output[0].Error } else { 'No respondio ninguno de los endpoints guardados.' }
+                        Write-LogEntry -Level 'WARN' -Message "No se pudo reconectar $($devObj.FriendlyName): $message"
+                        Show-NotificationBanner -Type 'WARN' -Title 'No se encontro el dispositivo' -Message $message
+                        return
+                    }
+                    try {
+                        $connected = $res.Output[0]
+                        $saved = @(Get-SavedAdbDevices | Where-Object { $_.Id -ceq $savedId })[0]
+                        if ($saved) {
+                            Update-SavedAdbDevice -Id $savedId -LastEndpoint $connected.Endpoint -Mode 'tcpip-5555' -LastConnectedUtc ([DateTime]::UtcNow.ToString('o')) | Out-Null
+                            $saved = @(Get-SavedAdbDevices | Where-Object { $_.Id -ceq $savedId })[0]
+                            $active = [pscustomobject]@{
+                                Id = $saved.Id; FriendlyName = $saved.FriendlyName; Serial = $connected.Endpoint
+                                LastEndpoint = $connected.Endpoint; UsbSerial = $saved.UsbSerial
+                                WifiMacAddress = $saved.WifiMacAddress; Mode = $saved.Mode
+                            }
+                            Set-CurrentAdbDevice -Device $active -Persist | Out-Null
+                        } else {
+                            Set-CurrentAdbDevice -Device ([pscustomobject]@{ Serial=$connected.Endpoint; LastEndpoint=$connected.Endpoint; FriendlyName=$devObj.FriendlyName }) | Out-Null
+                        }
+                        Write-LogEntry -Level 'SUCCESS' -Message "Reconectado y verificado: $($devObj.FriendlyName) en $($connected.Endpoint)"
+                        & $script:RefreshDeviceStatusAction
+                    } catch {
+                        Show-NotificationBanner -Type 'ERROR' -Title 'Error al activar dispositivo' -Message $_.Exception.Message
+                    }
+                }.GetNewClosure()
+
+                Invoke-GuiAsyncTask -Title "Reconectar $($devObj.FriendlyName)" -WorkerScript {
+                    param($knownEndpoints, $expectedSerial, $expectedMac)
+                    $result = [ordered]@{ Connected=$false; Endpoint=$null; Error=$null }
+                    $candidateEndpoints = @($knownEndpoints)
+                    # Si DHCP cambio la IP, buscar la MAC WiFi guardada en la
+                    # tabla ARP local y probarla en el puerto TCP/IP conocido.
+                    if ($expectedMac) {
+                        try {
+                            $arpPort = 5555
+                            if ($knownEndpoints.Count -gt 0 -and $knownEndpoints[0] -match ':(\d+)$') { $arpPort = [int]$Matches[1] }
+                            foreach ($arpLine in @(& arp -a 2>$null)) {
+                                if ($arpLine -match '^\s*(?<ip>(?:\d{1,3}\.){3}\d{1,3})\s+(?<mac>[0-9a-fA-F:-]{17})(?:\s+\S+)?\s*$') {
+                                    $arpMac = $Matches.mac.Replace('-',':').ToLowerInvariant()
+                                    if ($arpMac -ceq $expectedMac.ToLowerInvariant()) { $candidateEndpoints += ("{0}:{1}" -f $Matches.ip,$arpPort) }
+                                }
+                            }
+                        } catch { }
+                    }
+                    # mDNS descubre puertos TLS que cambian entre sesiones;
+                    # la identidad remota se verifica antes de aceptar uno.
+                    try { $candidateEndpoints += @(Get-AdbMdnsServices | ForEach-Object { [string]$_.Endpoint }) } catch { }
+                    $candidateEndpoints = @($candidateEndpoints | Where-Object { $_ } | Select-Object -Unique | Select-Object -First 12)
+
+                    foreach ($endpointCandidate in $candidateEndpoints) {
+                        try {
+                            $parts = ConvertTo-AdbEndpoint $endpointCandidate
+                            $client = New-Object System.Net.Sockets.TcpClient
+                            $pending = $null
+                            try {
+                                $pending = $client.BeginConnect($parts.Host, $parts.Port, $null, $null)
+                                if (-not $pending.AsyncWaitHandle.WaitOne(350)) { continue }
+                                $client.EndConnect($pending)
+                            } finally {
+                                if ($null -ne $pending) { $pending.AsyncWaitHandle.Close() }
+                                $client.Close()
+                            }
+
+                            $null = Connect-AdbEndpoint -Endpoint $endpointCandidate -TimeoutSeconds 3
+                            $remoteSerial = (@(Invoke-AdbCommand -Serial $endpointCandidate -Arguments @('shell','getprop','ro.serialno')) -join '').Trim()
+                            $remoteMac = (@(Invoke-AdbCommand -Serial $endpointCandidate -Arguments @('shell','cat','/sys/class/net/wlan0/address')) -join '').Trim().ToLowerInvariant()
+                            $identityMatches = $false
+                            if ($expectedSerial -and $remoteSerial -and $remoteSerial -ieq $expectedSerial) { $identityMatches = $true }
+                            if (-not $identityMatches -and $expectedMac -and $remoteMac -and $remoteMac -ieq $expectedMac) { $identityMatches = $true }
+                            if (($expectedSerial -or $expectedMac) -and -not $identityMatches) {
+                                Invoke-AdbHost -Arguments @('disconnect',$endpointCandidate) | Out-Null
+                                continue
+                            }
+                            $result.Connected = $true
+                            $result.Endpoint = $parts.Endpoint
+                            return [pscustomobject]$result
+                        } catch {
+                            $result.Error = $_.Exception.Message
+                        }
+                    }
+                    if (-not $result.Error) { $result.Error = 'Ninguna IP guardada respondio en el puerto ADB o el dispositivo no coincidio por serial/MAC.' }
+                    return [pscustomobject]$result
+                } -Parameters @{ knownEndpoints=$endpoints; expectedSerial=$savedSerial; expectedMac=$savedMac } -OnCompleted $onReconnectCompleted
+            } catch {
+                Write-LogEntry -Level 'WARN' -Message "No se pudo activar el dispositivo: $($_.Exception.Message)"
+                Show-NotificationBanner -Type 'WARN' -Title 'Dispositivo no conectado' -Message $_.Exception.Message
+                & $script:RefreshDeviceStatusAction
+            }
         }
     }
 })
@@ -1679,6 +2003,81 @@ $btnDevConvertToWifi.Add_Click({
 })
 $pnlDevBottom.Controls.Add($btnDevConvertToWifi)
 
+$btnDevRename = New-Object System.Windows.Forms.Button
+$btnDevRename.Text = "✏ Renombrar"
+$btnDevRename.Font = $script:Fonts.Small
+$btnDevRename.BackColor = $script:Theme.Secondary
+$btnDevRename.ForeColor = $script:Theme.SecondaryFg
+$btnDevRename.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnDevRename.FlatAppearance.BorderSize = 1
+$btnDevRename.FlatAppearance.BorderColor = $script:Theme.BorderCard
+$btnDevRename.Size = New-Object System.Drawing.Size(120, 30)
+$btnDevRename.Location = New-Object System.Drawing.Point(360, 8)
+$btnDevRename.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnDevRename.Add_Click({
+    if ($lvDevicesTab.SelectedItems.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show('Selecciona un dispositivo de la lista.', 'Renombrar dispositivo', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+    try {
+        $device = $lvDevicesTab.SelectedItems[0].Tag
+        $serial = Resolve-AdbSerial -DeviceOrEndpoint $device
+        $saved = @(Get-SavedAdbDevices | Where-Object { $_.UsbSerial -ceq $serial -or $_.LastEndpoint -ceq $serial })[0]
+        $currentName = if ($saved) { $saved.FriendlyName } else { $serial }
+
+        $renameDialog = New-Object System.Windows.Forms.Form
+        $renameDialog.Text = 'Renombrar dispositivo'
+        $renameDialog.Size = New-Object System.Drawing.Size(430, 180)
+        $renameDialog.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        $renameDialog.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $renameDialog.MaximizeBox = $false
+        $renameDialog.MinimizeBox = $false
+        $renameDialog.BackColor = $script:Theme.BgWindow
+
+        $label = New-Object System.Windows.Forms.Label
+        $label.Text = "Nombre para ${serial}:"
+        $label.Location = New-Object System.Drawing.Point(18, 18)
+        $label.Size = New-Object System.Drawing.Size(380, 24)
+        $renameDialog.Controls.Add($label)
+        $nameBox = New-Object System.Windows.Forms.TextBox
+        $nameBox.Text = $currentName
+        $nameBox.Location = New-Object System.Drawing.Point(18, 48)
+        $nameBox.Size = New-Object System.Drawing.Size(380, 26)
+        $renameDialog.Controls.Add($nameBox)
+        $saveButton = New-Object System.Windows.Forms.Button
+        $saveButton.Text = 'Guardar nombre'
+        $saveButton.BackColor = $script:Theme.Primary
+        $saveButton.ForeColor = $script:Theme.PrimaryFg
+        $saveButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $saveButton.Location = New-Object System.Drawing.Point(258, 92)
+        $saveButton.Size = New-Object System.Drawing.Size(140, 32)
+        $saveButton.Add_Click({
+            try {
+                $newName = $nameBox.Text.Trim()
+                if ([string]::IsNullOrWhiteSpace($newName)) { throw 'Escribe un nombre para el dispositivo.' }
+                if ($null -eq $saved) {
+                    $mode = if ($serial -match ':[0-9]+$') { 'tcpip' } else { 'usb' }
+                    $saved = Save-GuiAdbDevice -FriendlyName $newName -Mode $mode -UsbSerial $(if ($mode -eq 'usb') { $serial } else { $null }) -LastEndpoint $(if ($mode -eq 'tcpip-5555') { $serial } else { $null })
+                } else {
+                    $saved = Update-SavedAdbDevice -Id $saved.Id -FriendlyName $newName
+                }
+                if ($device.Status -ceq 'device') { Set-CurrentAdbDevice -Device $saved -Persist | Out-Null }
+                Write-LogEntry -Level 'SUCCESS' -Message "Nombre actualizado: $newName ($serial)"
+                $renameDialog.Close()
+                & $script:RefreshDeviceStatusAction
+            } catch {
+                [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'No se pudo renombrar', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            }
+        })
+        $renameDialog.Controls.Add($saveButton)
+        $renameDialog.AcceptButton = $saveButton
+        $null = $renameDialog.ShowDialog($form)
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'No se pudo preparar el cambio de nombre', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+$pnlDevBottom.Controls.Add($btnDevRename)
+
 $btnDevPing = New-Object System.Windows.Forms.Button
 $btnDevPing.Text = "🌐 Probar Ping"
 $btnDevPing.Font = $script:Fonts.Small
@@ -1688,7 +2087,7 @@ $btnDevPing.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnDevPing.FlatAppearance.BorderSize = 1
 $btnDevPing.FlatAppearance.BorderColor = $script:Theme.BorderCard
 $btnDevPing.Size = New-Object System.Drawing.Size(120, 30)
-$btnDevPing.Location = New-Object System.Drawing.Point(360, 8)
+$btnDevPing.Location = New-Object System.Drawing.Point(490, 8)
 $btnDevPing.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnDevPing.Add_Click({
     Invoke-GuiAsyncTask -Title "Ping a Dispositivo" -WorkerScript {
@@ -1708,7 +2107,7 @@ $tabControlMain.TabPages.Add($tabDevices)
 # =============================================================================
 # PESTANA 4: 📜 REGISTRO Y LOGS EN VIVO
 # =============================================================================
-$tabLogs = New-Object System.Windows.Forms.TabPage
+$script:tabLogs = New-Object System.Windows.Forms.TabPage
 $tabLogs.Text = "  📜 Registro & Salida  "
 $tabLogs.BackColor = $script:Theme.BgCard
 $tabLogs.Padding = New-Object System.Windows.Forms.Padding(8)
@@ -2035,17 +2434,39 @@ function Delete-SelectedAndroidItem {
 function Invoke-TransferTask {
     param([Parameter(Mandatory=$true)][string]$Type)
 
+    # La transferencia se ejecuta en una runspace independiente. Capturar el
+    # serial en la GUI evita que esa runspace pierda la seleccion mientras ADB
+    # vuelve a enumerar un USB que acaba de reconectarse.
+    $currentDevice = Get-CurrentAdbDevice
+    if ($null -eq $currentDevice) {
+        $lblTransferDetails.Text = '⚠️ No hay un dispositivo seleccionado. Conecta y autoriza el telefono, luego actualiza el estado.'
+        $lblTransferDetails.ForeColor = $script:Theme.BadgeErrorFg
+        return
+    }
+    try {
+        $targetSerial = Resolve-AdbSerial -DeviceOrEndpoint $currentDevice
+        if ($targetSerial -notmatch ':\d+$') {
+            throw "WiFi pendiente. Usa 'Convertir USB a WiFi' y espera CONECTADO WIFI antes de transferir o quitar el cable."
+        }
+    } catch {
+        $lblTransferDetails.Text = "⚠️ No se pudo identificar el dispositivo seleccionado: $($_.Exception.Message)"
+        $lblTransferDetails.ForeColor = $script:Theme.BadgeErrorFg
+        return
+    }
+
     $lblTransferDetails.Text = "Iniciando transferencia ($Type)..."
     $pbTransferProgress.Visible = $true
     $pbTransferProgress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
     $btnOpenLocalDir.Visible = $false
 
     $worker = {
-        param($opType)
-        $cur = Get-CurrentAdbDevice
-        if ($null -eq $cur -or $cur.Status -cne 'device') {
-            throw "No hay un dispositivo listo conectado."
-        }
+        param($opType, $serial)
+        # Un cable/puerto USB inestable puede hacer que una sola consulta de
+        # `adb devices` no devuelva el teléfono durante un instante. Esperar
+        # brevemente al serial ya elegido es seguro y evita abortar una copia
+        # por un parpadeo de enumeración.
+        $readyRecord = Wait-AdbDevice -Serial $serial -TimeoutSeconds 12
+        $cur = [pscustomobject]@{ Serial = $readyRecord.Serial; Status = $readyRecord.Status }
 
         $baseDownload = Join-Path $env:USERPROFILE 'Downloads\AndroidBackup'
         $todayStr = Get-Date -Format yyyyMMdd_HHmmss
@@ -2101,7 +2522,7 @@ function Invoke-TransferTask {
         return
     }
 
-    Invoke-GuiAsyncTask -Title "Transferencia ($Type)" -WorkerScript $worker -Parameters @{ opType = $Type } -OnCompleted {
+    Invoke-GuiAsyncTask -Title "Transferencia ($Type)" -WorkerScript $worker -Parameters @{ opType = $Type; serial = $targetSerial } -OnCompleted {
         param($res)
         $pbTransferProgress.Visible = $false
         if ($res -and $res.Success -and $res.Output) {
@@ -2119,7 +2540,8 @@ function Invoke-TransferTask {
                     -AutoCloseSeconds 12
             }
         } else {
-            $lblTransferDetails.Text = "❌ Error en la transferencia: $($res.Error)"
+            $detail = if ($res -and $res.Error) { $res.Error } else { 'No se obtuvo respuesta de la tarea.' }
+            $lblTransferDetails.Text = "❌ Error en la transferencia: $detail"
             $lblTransferDetails.ForeColor = $script:Theme.BadgeErrorFg
         }
     }
@@ -2903,6 +3325,199 @@ function Show-ScreenDialog {
     $null = $dlg.ShowDialog($form)
 }
 
+function Get-SelectedDeviceSerial {
+    $current = Get-CurrentAdbDevice
+    if ($null -eq $current) {
+        throw 'Selecciona primero un dispositivo Android conectado.'
+    }
+    $serial = Resolve-AdbSerial -DeviceOrEndpoint $current
+    if (-not (Test-AdbDeviceReady -Device $current -AutoReconnect $true)) {
+        throw "El dispositivo '$serial' no esta listo para ADB."
+    }
+    return $serial
+}
+
+function Show-NotificationMonitorDialog {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = 'Visor de Notificaciones Android'
+    $dlg.Size = New-Object System.Drawing.Size(540, 370)
+    $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $dlg.BackColor = $script:Theme.BgWindow
+    $dlg.Font = $script:Fonts.Body
+
+    $intro = New-Object System.Windows.Forms.Label
+    $intro.Text = 'Lee y clasifica notificaciones nuevas del dispositivo. El monitor se abre en una consola para mostrar los eventos en vivo.'
+    $intro.Location = New-Object System.Drawing.Point(22, 18)
+    $intro.Size = New-Object System.Drawing.Size(490, 42)
+    $dlg.Controls.Add($intro)
+
+    $lblInterval = New-Object System.Windows.Forms.Label
+    $lblInterval.Text = 'Intervalo (segundos):'
+    $lblInterval.Location = New-Object System.Drawing.Point(22, 78)
+    $lblInterval.Size = New-Object System.Drawing.Size(180, 24)
+    $dlg.Controls.Add($lblInterval)
+
+    $numInterval = New-Object System.Windows.Forms.NumericUpDown
+    $numInterval.DecimalPlaces = 1
+    $numInterval.Increment = [decimal]0.5
+    $numInterval.Minimum = [decimal]0.5
+    $numInterval.Maximum = [decimal]60
+    $numInterval.Value = [decimal]3
+    $numInterval.Location = New-Object System.Drawing.Point(210, 74)
+    $numInterval.Size = New-Object System.Drawing.Size(90, 26)
+    $dlg.Controls.Add($numInterval)
+
+    $chkAi = New-Object System.Windows.Forms.CheckBox
+    $chkAi.Text = 'Clasificar con IA local (Ollama), con respaldo por reglas'
+    $chkAi.Checked = $true
+    $chkAi.Location = New-Object System.Drawing.Point(22, 118)
+    $chkAi.Size = New-Object System.Drawing.Size(470, 26)
+    $dlg.Controls.Add($chkAi)
+
+    $chkCopy = New-Object System.Windows.Forms.CheckBox
+    $chkCopy.Text = 'Copiar alertas importantes a /sdcard/Download/notificaciones_otp.json'
+    $chkCopy.Checked = $true
+    $chkCopy.Location = New-Object System.Drawing.Point(22, 150)
+    $chkCopy.Size = New-Object System.Drawing.Size(490, 26)
+    $dlg.Controls.Add($chkCopy)
+
+    $logsDir = Join-Path $script:RootPath 'logs'
+    $btnOpenLogs = New-Object System.Windows.Forms.Button
+    $btnOpenLogs.Text = 'Abrir registros'
+    $btnOpenLogs.Location = New-Object System.Drawing.Point(22, 278)
+    $btnOpenLogs.Size = New-Object System.Drawing.Size(145, 36)
+    $btnOpenLogs.Add_Click({
+        if (-not (Test-Path -LiteralPath $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+        Start-Process -FilePath $logsDir
+    })
+    $dlg.Controls.Add($btnOpenLogs)
+
+    $btnStart = New-Object System.Windows.Forms.Button
+    $btnStart.Text = '▶ Iniciar monitor'
+    $btnStart.Font = $script:Fonts.BodyBold
+    $btnStart.BackColor = $script:Theme.Primary
+    $btnStart.ForeColor = $script:Theme.PrimaryFg
+    $btnStart.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnStart.Location = New-Object System.Drawing.Point(330, 278)
+    $btnStart.Size = New-Object System.Drawing.Size(170, 36)
+    $btnStart.Add_Click({
+        try {
+            $serial = Get-SelectedDeviceSerial
+            $monitorScript = Join-Path $script:RootPath 'monitor_notificaciones.py'
+            if (-not (Test-Path -LiteralPath $monitorScript)) { throw 'No se encontro el monitor de notificaciones.' }
+            $args = @("`"$monitorScript`"", '--serial', $serial, '--interval', ([string]$numInterval.Value), '--logs-dir', "`"$logsDir`"")
+            if (-not $chkAi.Checked) { $args += '--no-ai' }
+            if (-not $chkCopy.Checked) { $args += '--no-device-copy' }
+            $null = Start-Process -FilePath 'python' -ArgumentList $args -WorkingDirectory $script:RootPath -WindowStyle Normal
+            Write-LogEntry -Level 'INFO' -Message "Monitor de notificaciones iniciado para $serial."
+            Show-NotificationBanner -Type 'SUCCESS' -Title 'Monitor iniciado' -Message 'El visor se esta ejecutando en una consola. Sus registros se guardan en la carpeta logs.'
+            $dlg.Close()
+        } catch {
+            Show-NotificationBanner -Type 'ERROR' -Title 'No se pudo iniciar el monitor' -Message $_.Exception.Message
+        }
+    })
+    $dlg.Controls.Add($btnStart)
+    $null = $dlg.ShowDialog($form)
+}
+
+function Show-WhatsAppExportDialog {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = 'Exportar Chats de WhatsApp'
+    $dlg.Size = New-Object System.Drawing.Size(540, 365)
+    $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $dlg.BackColor = $script:Theme.BgWindow
+    $dlg.Font = $script:Fonts.Body
+
+    $intro = New-Object System.Windows.Forms.Label
+    $intro.Text = 'Exporta los chats recientes mediante automatizacion en el dispositivo. Mantén WhatsApp desbloqueado mientras se ejecuta.'
+    $intro.Location = New-Object System.Drawing.Point(22, 18)
+    $intro.Size = New-Object System.Drawing.Size(490, 42)
+    $dlg.Controls.Add($intro)
+
+    $lblCount = New-Object System.Windows.Forms.Label
+    $lblCount.Text = 'Chats recientes a exportar:'
+    $lblCount.Location = New-Object System.Drawing.Point(22, 82)
+    $lblCount.Size = New-Object System.Drawing.Size(210, 24)
+    $dlg.Controls.Add($lblCount)
+
+    $numCount = New-Object System.Windows.Forms.NumericUpDown
+    $numCount.Minimum = 1
+    $numCount.Maximum = 100
+    $numCount.Value = 10
+    $numCount.Location = New-Object System.Drawing.Point(242, 78)
+    $numCount.Size = New-Object System.Drawing.Size(80, 26)
+    $dlg.Controls.Add($numCount)
+
+    $chkMedia = New-Object System.Windows.Forms.CheckBox
+    $chkMedia.Text = 'Incluir archivos multimedia (.zip)'
+    $chkMedia.Location = New-Object System.Drawing.Point(22, 118)
+    $chkMedia.Size = New-Object System.Drawing.Size(330, 26)
+    $dlg.Controls.Add($chkMedia)
+
+    $lblDestination = New-Object System.Windows.Forms.Label
+    $lblDestination.Text = 'Carpeta de destino:'
+    $lblDestination.Location = New-Object System.Drawing.Point(22, 158)
+    $lblDestination.Size = New-Object System.Drawing.Size(160, 24)
+    $dlg.Controls.Add($lblDestination)
+
+    $txtDestination = New-Object System.Windows.Forms.TextBox
+    $txtDestination.Text = (Join-Path $script:RootPath 'exports')
+    $txtDestination.Location = New-Object System.Drawing.Point(22, 184)
+    $txtDestination.Size = New-Object System.Drawing.Size(390, 26)
+    $dlg.Controls.Add($txtDestination)
+
+    $btnBrowse = New-Object System.Windows.Forms.Button
+    $btnBrowse.Text = '...'
+    $btnBrowse.Location = New-Object System.Drawing.Point(422, 182)
+    $btnBrowse.Size = New-Object System.Drawing.Size(78, 30)
+    $btnBrowse.Add_Click({
+        $picker = New-Object System.Windows.Forms.FolderBrowserDialog
+        $picker.SelectedPath = $txtDestination.Text
+        if ($picker.ShowDialog($dlg) -eq [System.Windows.Forms.DialogResult]::OK) { $txtDestination.Text = $picker.SelectedPath }
+    })
+    $dlg.Controls.Add($btnBrowse)
+
+    $btnExport = New-Object System.Windows.Forms.Button
+    $btnExport.Text = '💬 Exportar chats'
+    $btnExport.Font = $script:Fonts.BodyBold
+    $btnExport.BackColor = $script:Theme.Primary
+    $btnExport.ForeColor = $script:Theme.PrimaryFg
+    $btnExport.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnExport.Location = New-Object System.Drawing.Point(330, 270)
+    $btnExport.Size = New-Object System.Drawing.Size(170, 36)
+    $btnExport.Add_Click({
+        try {
+            $serial = Get-SelectedDeviceSerial
+            $destination = $txtDestination.Text.Trim()
+            if ([string]::IsNullOrWhiteSpace($destination)) { throw 'Selecciona una carpeta de destino.' }
+            $scriptPath = Join-Path $script:RootPath 'export_top_chats.py'
+            if (-not (Test-Path -LiteralPath $scriptPath)) { throw 'No se encontro el exportador de WhatsApp.' }
+            $count = [int]$numCount.Value
+            $includeMedia = $chkMedia.Checked
+            $dlg.Close()
+            $onExportCompleted = {
+                param($res)
+                if ($res -and $res.Success) {
+                    $openExportFolder = { Start-Process -FilePath $destination }.GetNewClosure()
+                    Show-NotificationBanner -Type 'SUCCESS' -Title 'Chats exportados' -Message "Exportacion terminada. Revisa: $destination" -ActionText 'Abrir carpeta' -ActionScript $openExportFolder
+                }
+            }.GetNewClosure()
+            Invoke-GuiAsyncTask -Title "Exportar $count chats de WhatsApp" -WorkerScript {
+                param($pyScript, $limit, $outputDir, $targetSerial, $withMedia)
+                $pythonArgs = @($pyScript, '-n', [string]$limit, '--output-dir', $outputDir, '--serial', $targetSerial)
+                if ($withMedia) { $pythonArgs += '--include-media' }
+                $result = @(& python @pythonArgs 2>&1)
+                if ($LASTEXITCODE -ne 0) { throw "El exportador termino con codigo $LASTEXITCODE. $($result -join [Environment]::NewLine)" }
+                return $result
+            } -Parameters @{ pyScript = $scriptPath; limit = $count; outputDir = $destination; targetSerial = $serial; withMedia = $includeMedia } -OnCompleted $onExportCompleted
+        } catch {
+            Show-NotificationBanner -Type 'ERROR' -Title 'No se pudo exportar WhatsApp' -Message $_.Exception.Message
+        }
+    })
+    $dlg.Controls.Add($btnExport)
+    $null = $dlg.ShowDialog($form)
+}
+
 function Invoke-DeviceCleanCaches {
     $confirm = [System.Windows.Forms.MessageBox]::Show("¿Deseas ejecutar la optimizacion y limpieza de caches de aplicaciones en el dispositivo?", "Confirmar Limpieza", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
     if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
@@ -2918,7 +3533,7 @@ function Invoke-DeviceCleanCaches {
 }
 
 function Invoke-FullDiagnostics {
-    $tabControlMain.SelectedTab = $tabLogs
+    $script:tabControlMain.SelectedTab = $script:tabLogs
     Write-LogEntry -Level 'INFO' -Message "Iniciando analisis de diagnostico del entorno ADB..."
     Invoke-GuiAsyncTask -Title "Diagnostico Completo" -WorkerScript {
         Invoke-AdbDiagnostics -NoPause
@@ -2933,6 +3548,32 @@ function Invoke-FullDiagnostics {
     }
 }
 
+# Los manejadores WinForms se invocan después de que el script principal ya
+# terminó de cargarse y no heredan automáticamente su ámbito. Publicamos las
+# funciones y controles de esta interfaz en el ámbito global para que los
+# eventos puedan invocar el mismo contexto de la GUI de forma fiable.
+function Publish-GuiEventContext {
+    $automaticNames = @('args','input','this','PSBoundParameters','PSCommandPath','PSScriptRoot','MyInvocation','ExecutionContext','Host','PID','PROFILE','HOME','Error','ErrorActionPreference')
+    foreach ($variable in @(Get-Variable -Scope Script)) {
+        if ($automaticNames -contains $variable.Name -or $variable.Name -like 'PS*' -or $variable.Name -in @('true','false','null')) { continue }
+        # No copiar constantes/variables protegidas de PowerShell al global:
+        # nombres como ShellId, true y false no se pueden reemplazar.
+        if (($variable.Options -band [System.Management.Automation.ScopedItemOptions]::ReadOnly) -ne 0 -or
+            ($variable.Options -band [System.Management.Automation.ScopedItemOptions]::Constant) -ne 0) { continue }
+        $globalExisting = Get-Variable -Scope Global -Name $variable.Name -ErrorAction SilentlyContinue
+        if ($null -ne $globalExisting -and (($globalExisting.Options -band [System.Management.Automation.ScopedItemOptions]::ReadOnly) -ne 0 -or
+            ($globalExisting.Options -band [System.Management.Automation.ScopedItemOptions]::Constant) -ne 0)) { continue }
+        try { Set-Variable -Scope Global -Name $variable.Name -Value $variable.Value -Force } catch { }
+    }
+    foreach ($functionInfo in @(Get-ChildItem -Path Function:script:\*)) {
+        if ($functionInfo.ScriptBlock.File -ceq $PSCommandPath) {
+            try { Set-Item -Path ("Function:global:{0}" -f $functionInfo.Name) -Value $functionInfo.ScriptBlock -Force } catch { }
+        }
+    }
+}
+
+Publish-GuiEventContext
+
 # =============================================================================
 # INICIALIZACION Y EVENTO SHOWN
 # =============================================================================
@@ -2945,6 +3586,8 @@ $form.Add_Shown({
 
     $script:UsbAutoScanTimer = New-Object System.Windows.Forms.Timer
     $script:UsbAutoScanTimer.Interval = 2500
+    # Los eventos que siguen activos después de cargar el script no conservan
+    # las funciones del ámbito principal. Capturamos la función explícitamente.
     $script:UsbAutoScanTimer.Add_Tick({ Invoke-UsbAutoDetection })
     $script:UsbAutoScanTimer.Start()
 })
