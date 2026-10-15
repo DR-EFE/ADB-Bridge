@@ -32,6 +32,7 @@ from .notifications import (
     classify_notification,
     extract_otp_code,
 )
+from .ollama import OllamaServiceManager
 from .watchers import UIWatcherManager
 
 logger = logging.getLogger("ui_automation.monitor")
@@ -135,6 +136,7 @@ class NotificationMonitor:
         self.save_all_notifications = save_all_notifications
 
         self.device_mgr = DeviceManager(serial=self.serial)
+        self.ollama_mgr = OllamaServiceManager()
         self.watcher_mgr: Optional[UIWatcherManager] = None
         self.extractor: Optional[NotificationExtractor] = None
 
@@ -316,6 +318,10 @@ class NotificationMonitor:
         self._running = True
         self._cleaned_up = False
         try:
+            # Si use_ai está activo, verificar o arrancar Ollama local en segundo plano
+            if self.use_ai:
+                self.ollama_mgr.start_if_needed(wait_seconds=5.0)
+
             device = self.device_mgr.get_device()
             self._device_serial = getattr(device, "serial", None) or self._device_serial
 
@@ -350,7 +356,7 @@ class NotificationMonitor:
             self._cleanup()
 
     def _cleanup(self) -> None:
-        """Libera watchers y conexión una sola vez."""
+        """Libera watchers, conexión y detiene Ollama si lo iniciamos nosotros."""
         if self._cleaned_up:
             return
         self._cleaned_up = True
@@ -361,6 +367,11 @@ class NotificationMonitor:
                 logger.debug("Error deteniendo watchers: %s", exc)
             self.watcher_mgr = None
         self.device_mgr.disconnect()
+
+        # Detener Ollama solo si fue iniciado por el monitor
+        if self.use_ai:
+            self.ollama_mgr.stop_if_started_by_us()
+
         logger.info(
             "Monitor detenido. Nuevas=%d | Importantes=%d | Clasificadas por IA=%d | por reglas=%d | Copias al teléfono=%d",
             self.stats["nuevas"],

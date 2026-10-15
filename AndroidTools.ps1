@@ -55,6 +55,7 @@ try {
         Write-Host '5. Gestion de aplicaciones'
         Write-Host '6. Captura / Grabacion de pantalla'
         Write-Host '7. Sincronizacion por perfiles'
+        Write-Host '8. Monitor de Notificaciones (UI Automation + IA)'
         Write-Host '9. Diagnostico del sistema'
         Write-Host '0. Salir'
         switch (Read-Host 'Selecciona una opcion') {
@@ -65,6 +66,7 @@ try {
             '5' { Invoke-AndroidToolScript 'android_apps.ps1' }
             '6' { Invoke-AndroidToolScript 'android_screen.ps1' }
             '7' { Invoke-AndroidToolScript 'android_sync.ps1' }
+            '8' { Invoke-AndroidToolScript 'android_notification_monitor.ps1' }
             '9' { Invoke-AndroidToolScript 'android_diagnostics.ps1' }
             '0' { break }
             default { Write-Host 'Opcion invalida.' -ForegroundColor Red; Start-Sleep -Seconds 1 }

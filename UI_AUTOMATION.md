@@ -1,211 +1,162 @@
 # UI Automation & Monitor de Notificaciones
 
-Documentación para poder instalar, configurar y ejecutar el sistema de monitoreo de notificaciones en **cualquier computadora Windows**.
+Documentación para instalar, configurar y ejecutar el sistema de automatización de interfaz y monitoreo de notificaciones en **cualquier computadora Windows**, respetando la filosofía del proyecto: **uso mínimo de USB, todo el resto por ADB inalámbrico (Wireless Debugging / TCP-IP)**.
 
 ---
 
 ## 1. ¿Qué es este módulo?
 
-Extiende el proyecto Android Tools (PowerShell + ADB) con una capa de automatización de interfaz usando **uiautomator2** + clasificación opcional con **IA local (Ollama)**.
+Extiende el proyecto Android Tools (PowerShell + ADB) con una capa de automatización de interfaz usando **uiautomator2** junto a clasificación inteligente con **IA local (Ollama)** y fallback a reglas deterministas.
 
 **Capacidad principal actual:**
-- Monitoreo en tiempo real de notificaciones del teléfono
-- Detección automática de OTP y alertas importantes
-- Guardado local en el PC + copia opcional en el teléfono
-- Clasificación inteligente (IA local) con fallback a reglas clásicas
+- Monitoreo en tiempo real de notificaciones del teléfono.
+- Detección y extracción automática de códigos OTP y alertas críticas (bancos, accesos, verificación).
+- Clasificación con IA local (Ollama) gestionada de forma automática (se enciende y apaga con el monitor).
+- Persistencia estructurada en JSON local (`logs/`) y sincronización opcional en `/sdcard/Download/notificaciones_otp.json`.
+- Integración nativa con `devices.json` y el menú de PowerShell (`AndroidTools.ps1`).
 
 ---
 
-## 2. Requisitos
+## 2. Filosofía de conexión: USB Mínimo ➔ Todo por WiFi
+
+En este proyecto, el cable USB solo se usa el tiempo estrictamente necesario (o nunca, si se usa Wireless Debugging por código de vinculación mDNS):
+
+1. **Paso 1 (USB mínimo o Vinculación WiFi):** Conectar el teléfono por USB solo para autorizar la clave RSA y habilitar TCP/IP, o vincular directamente por Wireless Debugging.
+2. **Paso 2 (Desconexión de USB):** Desconectar el cable USB inmediatamente después de obtener la IP y puerto ADB.
+3. **Paso 3 (Init y Automatización 100% por WiFi):**
+   - **`uiautomator2` NO requiere USB para su inicialización (`init`).**
+   - El método `ensure_uiautomator_ready()` detecta automáticamente si el dispositivo inalámbrico necesita dependencias y las transfiere por WiFi en segundo plano.
+   - Todo el monitoreo, cierre de popups y lectura de pantalla opera a través de la red local.
+
+---
+
+## 3. Requisitos
 
 ### Obligatorios
-- Windows 10/11
-- Python 3.8 o superior
-- ADB (Android Platform Tools) instalado y en el `PATH`
-- Teléfono Android con **Depuración USB** o **Depuración inalámbrica** activada
-- El teléfono debe aparecer como `device` en `adb devices`
+- Windows 10/11 (PowerShell 5.1 o superior).
+- Python 3.8 o superior.
+- Dispositivo Android en la misma red WiFi, en estado `device` en ADB (ej: `192.168.1.50:5555`).
 
-### Opcionales (recomendados)
-- [Ollama](https://ollama.com/) instalado (para clasificación con IA local)
-- Modelo ligero: `llama3.2:1b` (o cualquier otro modelo de texto disponible)
-
----
-
-## 3. Instalación (paso a paso)
-
-Abre PowerShell o CMD en la carpeta del proyecto (`Android/`).
-
-### 3.1 Verificar Python
-```powershell
-python --version
-```
-Si no está instalado o es menor a 3.8, instálalo desde [python.org](https://www.python.org/downloads/) o Microsoft Store.
-
-### 3.2 Instalar dependencias Python
-```powershell
-pip install uiautomator2
-```
-
-### 3.3 Inicializar uiautomator2 en el teléfono
-Con el teléfono conectado y autorizado:
-```powershell
-python -m uiautomator2 init
-```
-Este comando instala el servicio necesario en el dispositivo (solo se hace una vez por teléfono).
-
-### 3.4 (Opcional) Preparar IA local
-```powershell
-# Instalar Ollama desde https://ollama.com
-ollama pull llama3.2:1b
-```
-Deja Ollama corriendo en segundo plano.
+### Opcionales (para IA Local)
+- [Ollama](https://ollama.com/) instalado en Windows.
+- Modelo descargado: `ollama pull llama3.2:1b`.
+  *(El monitor detecta Ollama, lo inicia en segundo plano si está apagado y lo cierra limpiamente al salir).*
 
 ---
 
-## 4. Estructura de archivos
+## 4. Flujo recomendado de primer uso (Teléfono Nuevo)
+
+1. **Configurar el teléfono:**
+   - Activar **Opciones de desarrollador**.
+   - Activar **Depuración USB** o **Depuración inalámbrica**.
+2. **Conectar mediante el menú de Android Tools:**
+   ```powershell
+   .\Conectar_Android.cmd
+   # o bien: powershell -File .\android_reconnect.ps1
+   ```
+   - Elige el modo **Wireless Debugging** (Android 11+) o **TCP/IP 5555**.
+   - Una vez que figure conectado como `192.168.x.x:puerto`, **desconecta el cable USB**.
+3. **Lanzar el Monitor:**
+   - No necesitas ejecutar `python -m uiautomator2 init` manualmente. El sistema verifica e inicializa el dispositivo por WiFi en su primera ejecución.
+
+---
+
+## 5. Formas de Ejecución
+
+### Opción A: Desde el Menú Principal Integrado (Recomendado)
+Abre el menú interactivo:
+```powershell
+.\Lanzar_GUI.cmd   # Interfaz gráfica
+# o consola tradicional:
+powershell -File .\AndroidTools.ps1
+```
+Selecciona la opción:
+`8. Monitor de Notificaciones (UI Automation + IA)`
+
+### Opción B: Script directo de PowerShell (`android_notification_monitor.ps1`)
+Usa automáticamente el dispositivo activo guardado en `devices.json` o detectado por ADB:
+```powershell
+powershell -File .\android_notification_monitor.ps1
+```
+
+Parámetros opcionales:
+```powershell
+# Sin IA (solo reglas deterministas):
+powershell -File .\android_notification_monitor.ps1 -NoAi
+
+# Intervalo personalizado y dispositivo específico:
+powershell -File .\android_notification_monitor.ps1 -Serial "192.168.1.50:5555" -Interval 2.0
+
+# Sin copiar archivo al teléfono:
+powershell -File .\android_notification_monitor.ps1 -NoDeviceCopy
+```
+
+### Opción C: Ejecución directa en Python (CLI)
+```powershell
+python monitor_notificaciones.py --help
+```
+| Opción | Descripción | Valor por defecto |
+|---|---|---|
+| `--serial` | Endpoint del teléfono (USB o `IP:PORT`) | Auto-detecta dispositivo activo |
+| `--interval` | Segundos entre cada sondeo | `3.0` |
+| `--no-ai` | Desactiva Ollama y usa solo reglas | IA activa con fallback a reglas |
+| `--no-watchers` | Desactiva auto-clic en diálogos/permisos | Watchers activos |
+| `--no-device-copy` | No sube copia a `/sdcard/Download/` | Sí copia |
+| `--device-copy-path` | Ruta de la copia en el teléfono | `/sdcard/Download/notificaciones_otp.json` |
+| `--logs-dir` | Carpeta local para los registros | `logs` |
+
+---
+
+## 6. Gestión Automática de Ollama (IA Local)
+
+El monitor incorpora `OllamaServiceManager` con el siguiente comportamiento:
+- **Al iniciar:**
+  - Si `use_ai` está activo (por defecto), comprueba `http://127.0.0.1:11434`.
+  - Si Ollama **ya estaba corriendo**, lo usa sin alterar el proceso.
+  - Si Ollama **NO estaba corriendo**, busca el ejecutable local y lo arranca automáticamente en segundo plano (`ollama serve`).
+- **Al salir (Ctrl+C o finalización):**
+  - Si el monitor arrancó Ollama, **lo detiene de forma limpia**.
+  - Si Ollama ya estaba abierto antes de iniciar el monitor, **lo deja corriendo**.
+  - Si Ollama no está instalado o tarda en responder, cae transparentemente al clasificador de reglas clásicas sin interrumpir el monitoreo.
+
+---
+
+## 7. Inicialización Automática de uiautomator2 (`ensure_uiautomator_ready`)
+
+En `ui_automation/device.py`, el método `get_device()` invoca `ensure_uiautomator_ready(serial)`:
+1. Comprueba si el servidor `uiautomator2` ya responde llamadas RPC.
+2. Si es la primera vez que se usa en ese dispositivo o tras un reinicio, transfiere los recursos necesarios (`u2.jar`) a través de la conexión ADB activa (funciona exactamente igual por WiFi que por USB).
+3. Espera la confirmación de disponibilidad antes de entregar el objeto del dispositivo.
+4. **Beneficio:** Cero configuración manual por terminal para el usuario final.
+
+---
+
+## 8. Estructura del Módulo
 
 ```text
 Android/
 ├── ui_automation/
 │   ├── __init__.py
-│   ├── device.py              # Gestión de conexión al dispositivo
-│   ├── watchers.py            # Watchers automáticos de popups
-│   ├── notifications.py       # Extracción + clasificación (reglas + IA)
-│   └── monitor.py             # Motor de monitoreo en tiempo real
-├── monitor_notificaciones.py  # Punto de entrada principal (CLI)
-├── logs/                      # Aquí se guardan los JSON de eventos
-└── UI_AUTOMATION.md           # Esta documentación
+│   ├── device.py                  # DeviceManager + ensure_uiautomator_ready()
+│   ├── ollama.py                  # OllamaServiceManager (arranque y apagado automático)
+│   ├── watchers.py                # UIWatcherManager + setup_auto_popup_watcher()
+│   ├── notifications.py           # Extracción dumpsys/UI + clasificación (IA y reglas)
+│   └── monitor.py                 # NotificationMonitor (orquestador resiliente)
+├── android_notification_monitor.ps1 # Integración nativa con PowerShell y devices.json
+├── monitor_notificaciones.py      # Entrypoint CLI Python
+├── logs/                          # Registros locales JSON
+│   ├── notificaciones_importantes.json
+│   └── notifications_YYYY-MM-DD.json
+└── UI_AUTOMATION.md               # Este documento
 ```
 
 ---
 
-## 5. Cómo ejecutar el monitor
+## 9. Solución de Problemas
 
-### Uso básico
-```powershell
-python monitor_notificaciones.py
-```
-
-### Opciones disponibles
-```powershell
-python monitor_notificaciones.py --help
-```
-
-| Opción | Descripción | Valor por defecto |
-|--------|-------------|-------------------|
-| `--serial` | Serial del dispositivo ADB | Auto-detecta |
-| `--interval` | Segundos entre cada revisión | 4 |
-| `--no-ai` | Desactiva la clasificación con IA | IA activada |
-| `--no-device-copy` | No sube copia al teléfono | Sí sube |
-| `--device-copy-path` | Ruta en el teléfono para la copia | `/sdcard/Download/notificaciones_otp.json` |
-| `--log-dir` | Carpeta de logs en el PC | `./logs` |
-
-### Ejemplos
-```powershell
-# Uso normal (con IA si Ollama está disponible)
-python monitor_notificaciones.py
-
-# Forzar solo reglas (sin IA)
-python monitor_notificaciones.py --no-ai
-
-# Intervalo más rápido + dispositivo específico
-python monitor_notificaciones.py --serial 192.168.1.50:5555 --interval 3
-
-# Sin guardar copia en el teléfono (más privado)
-python monitor_notificaciones.py --no-device-copy
-```
-
----
-
-## 6. Qué hace el monitor
-
-1. Se conecta al teléfono mediante uiautomator2.
-2. Activa un Watcher que acepta automáticamente popups comunes ("Permitir", "Aceptar", etc.).
-3. Cada X segundos:
-   - Lee las notificaciones (prioriza `dumpsys` para no abrir la cortina innecesariamente).
-   - Detecta solo las **nuevas**.
-   - Clasifica cada una (IA local → fallback a reglas).
-   - Si es **OTP** o **ALERTA**:
-     - Extrae el código si existe.
-     - Guarda el evento en `logs/notificaciones_importantes.json`.
-     - Sube una copia al teléfono (opcional).
-     - Muestra un resumen claro en consola.
-4. Se detiene limpiamente con `Ctrl+C`.
-
----
-
-## 7. Archivos generados
-
-| Archivo | Ubicación | Contenido |
-|---------|-----------|-----------|
-| `notificaciones_importantes.json` | `logs/` (PC) | Historial de OTP y alertas detectadas |
-| `notifications_YYYY-MM-DD.json` | `logs/` (PC) | Todas las notificaciones del día (opcional) |
-| `notificaciones_otp.json` | `/sdcard/Download/` (teléfono) | Copia de los eventos importantes |
-
----
-
-## 8. Integración con el sistema PowerShell existente
-
-El monitor es independiente, pero se puede lanzar fácilmente desde tus scripts actuales.
-
-Ejemplo de wrapper simple (`Invoke-NotificationMonitor.ps1`):
-
-```powershell
-param(
-    [string]$Serial,
-    [int]$Interval = 4,
-    [switch]$NoAi,
-    [switch]$NoDeviceCopy
-)
-
-# Verificar que el dispositivo esté listo (usando tu módulo)
-Import-Module .\AndroidAdb.psm1 -Force
-if ($Serial) {
-    Set-CurrentAdbDevice -Serial $Serial
-}
-Test-AdbDeviceReady -ErrorAction Stop
-
-$argsList = @()
-if ($Serial)        { $argsList += "--serial", $Serial }
-if ($Interval)      { $argsList += "--interval", $Interval }
-if ($NoAi)          { $argsList += "--no-ai" }
-if ($NoDeviceCopy)  { $argsList += "--no-device-copy" }
-
-python monitor_notificaciones.py @argsList
-```
-
----
-
-## 9. Solución de problemas comunes
-
-| Problema | Solución |
-|----------|----------|
-| `python` no se reconoce | Añade Python al PATH o usa `py` |
-| `uiautomator2` no conecta | Ejecuta `python -m uiautomator2 init` y acepta permisos en el teléfono |
-| Dispositivo `unauthorized` | Revisa la autorización RSA en el teléfono |
-| Ollama no responde | El sistema usa automáticamente las reglas clásicas (no se rompe) |
-| No detecta OTP | Prueba con `--no-ai` para ver solo reglas, o revisa el texto exacto de la notificación |
-| Error de permisos al escribir en logs | Ejecuta PowerShell como administrador o cambia `--log-dir` |
-
----
-
-## 10. Seguridad
-
-- Los códigos OTP se guardan en **texto plano**.
-- La copia en `/sdcard/Download/` puede ser leída por otras apps.
-- Recomendación: usa `--no-device-copy` si el teléfono es compartido o no confías en todas las apps instaladas.
-- Los logs del PC se recomienda mantenerlos en una carpeta con permisos restringidos.
-
----
-
-## 11. Próximas mejoras posibles
-
-- Wrapper PowerShell completo integrado en el menú principal
-- Soporte de JSON Lines
-- Filtro para guardar solo OTP (no ALERTAS) en el teléfono
-- Notificaciones de Windows cuando llegue un OTP
-- Soporte multi-dispositivo simultáneo
-
----
-
-**Documento creado para permitir la reproducción completa del sistema en cualquier PC.**
+| Problema | Causa | Solución |
+|---|---|---|
+| `Dispositivo desconectado` o `offline` | La conexión inalámbrica caducó o cambió de IP | Ejecuta `android_reconnect.ps1` o la opción 1 del menú para reasociar la IP WiFi. |
+| `No se detectaron dispositivos ADB` | El teléfono no está en la red o perdió depuración | Comprueba que el teléfono esté en la misma WiFi y con **Depuración inalámbrica** activa. |
+| `Ollama no responde` | Modelo no descargado o falta de RAM | El sistema pasa automáticamente a reglas clásicas. Para activar IA: ejecuta `ollama pull llama3.2:1b`. |
+| Diálogos del sistema bloquean la pantalla | Permisos o alertas pendientes | Los watchers de `watchers.py` hacen clic automático en "Permitir", "Aceptar", "Continuar", "OK". |
