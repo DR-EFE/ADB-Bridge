@@ -5,8 +5,17 @@ from __future__ import annotations
 import logging
 import time
 from typing import Optional, Union
+
 import adbutils
 import uiautomator2 as u2
+
+from .adb_manager import (
+    ensure_single_adb_server,
+    get_adb_client,
+    is_network_serial,
+    start_reconnect_watchdog,
+    stop_reconnect_watchdog,
+)
 
 logger = logging.getLogger("ui_automation.device")
 
@@ -32,11 +41,23 @@ def ensure_uiautomator_ready(serial: Optional[str] = None, timeout: float = 20.0
     logger.info("Comprobando disponibilidad de uiautomator2 en %s...", target_str)
 
     try:
-        # Obtener dispositivo con adbutils para comprobar conexión física o de red
+        # Usar el cliente gestionado por adb_manager para evitar clientes sueltos
+        client = get_adb_client()
+
         if serial:
-            adb_dev = adbutils.adb.device(serial=serial)
+            # Si es serial de red y aún no aparece en device_list, intentar conectar antes de verificar
+            if is_network_serial(serial):
+                devices = client.device_list()
+                if not any(d.serial == serial for d in devices):
+                    logger.info("Conectando cliente ADB al dispositivo de red %s...", serial)
+                    try:
+                        client.connect(serial, timeout=10.0)
+                    except Exception as conn_err:
+                        logger.warning("Aviso al intentar conectar ADB a %s: %s", serial, conn_err)
+
+            adb_dev = client.device(serial=serial)
         else:
-            devices = adbutils.adb.device_list()
+            devices = client.device_list()
             if not devices:
                 raise DeviceConnectionError(
                     "No se detectaron dispositivos ADB conectados. "
@@ -101,11 +122,15 @@ class DeviceManager:
         """
         self.serial: Optional[str] = serial
         self._device: Optional[u2.Device] = None
+        self._watchdog_event: Optional[object] = None
 
     def connect(self) -> u2.Device:
         """
-        Establece la conexión con el dispositivo Android vía uiautomator2 asegurando
-        que esté inicializado previamente.
+        Establece la conexión con el dispositivo Android vía uiautomator2 asegurando:
+        1. Un único daemon ADB activo, limpio y controlado.
+        2. Enlace inicial de red si se trata de un serial Wi-Fi.
+        3. Inicialización garantizada de uiautomator2.
+        4. Activación de watchdog de reconexión automática en segundo plano.
         
         :return: Objeto uiautomator2.Device conectado.
         :raises DeviceConnectionError: Si no se puede establecer la conexión.
@@ -113,10 +138,22 @@ class DeviceManager:
         try:
             logger.info("Iniciando conexión con dispositivo (serial=%s)...", self.serial or "auto-detect")
             
-            # 1. Asegurar uiautomator2 listo (USB o inalámbrico)
+            # 1. Asegurar único daemon ADB activo y controlado
+            client = ensure_single_adb_server()
+
+            # Si es conexión TCP/IP (Wi-Fi), asegurar enlace inicial en el daemon limpio
+            if self.serial and is_network_serial(self.serial):
+                logger.info("Estableciendo enlace ADB Wi-Fi con %s...", self.serial)
+                try:
+                    conn_res = client.connect(self.serial, timeout=10.0)
+                    logger.info("Resultado de conexión ADB Wi-Fi inicial: %s", conn_res.strip())
+                except Exception as net_exc:
+                    logger.warning("Aviso en conexión ADB inicial a %s: %s", self.serial, net_exc)
+
+            # 2. Asegurar uiautomator2 listo (USB o inalámbrico)
             ensure_uiautomator_ready(serial=self.serial)
 
-            # 2. Conectar instancia
+            # 3. Conectar instancia uiautomator2
             if self.serial:
                 self._device = u2.connect(self.serial)
             else:
@@ -125,6 +162,10 @@ class DeviceManager:
             actual_serial = self._device.serial
             model = self._device.info.get("productName", "Desconocido")
             logger.info("Dispositivo conectado exitosamente: %s (Modelo: %s)", actual_serial, model)
+
+            # 4. Iniciar watchdog de reconexión automática en segundo plano
+            self._watchdog_event = start_reconnect_watchdog(actual_serial)
+
             return self._device
 
         except DeviceConnectionError:
@@ -161,6 +202,21 @@ class DeviceManager:
             return False
 
     def disconnect(self) -> None:
-        """Cierra la referencia actual al dispositivo."""
+        """Cierra la referencia actual al dispositivo y detiene el watchdog de reconexión."""
+        target_serial = None
+        if self._device is not None:
+            try:
+                target_serial = self._device.serial
+            except Exception:
+                pass
+        target_serial = target_serial or self.serial
+
+        if target_serial:
+            stop_reconnect_watchdog(target_serial)
+        else:
+            stop_reconnect_watchdog()
+
+        self._watchdog_event = None
         self._device = None
-        logger.info("Conexión con el dispositivo liberada.")
+        logger.info("Conexión con el dispositivo liberada y watchdog detenido.")
+
