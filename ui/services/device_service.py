@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import subprocess
 import threading
 import time
 import uuid
@@ -23,6 +24,7 @@ import adbutils
 
 from ui_automation.adb_manager import (
     ensure_single_adb_server,
+    get_adb_executable,
     get_adb_client,
     is_network_serial,
 )
@@ -232,6 +234,21 @@ class DeviceService:
                 return
 
             usb_target = usb_candidates[0].serial
+            # Un dispositivo ya emparejado con Wireless Debugging moderno usa
+            # USB solo como respaldo; no lo conviertas otra vez a tcpip-5555.
+            saved_devices = read_devices_store(DEVICES_JSON).get("Devices") or []
+            modern_saved = next(
+                (
+                    item for item in saved_devices
+                    if item.get("UsbSerial") == usb_target
+                    and item.get("Mode") == "wireless-debugging-tls"
+                ),
+                None,
+            )
+            if modern_saved is not None:
+                self._auto_converted_serials.add(usb_target)
+                logger.info("Wireless Debugging moderno ya configurado para %s; se conserva USB como respaldo.", usb_target)
+                return
             # Verificar si ya existe una conexión Wi-Fi activa para no duplicar
             has_wifi_active = any(d.state == "device" and is_network_serial(d.serial) for d in available)
             if has_wifi_active:
@@ -262,10 +279,147 @@ class DeviceService:
             if not launched_worker:
                 self._converting_lock.release()
 
+    @staticmethod
+    def _run_adb_host(*arguments: str, timeout: float = 15.0) -> str:
+        """Ejecuta un comando ADB del host (pair, mdns o connect)."""
+        command = [get_adb_executable(), *arguments]
+        kwargs: Dict[str, Any] = {"capture_output": True, "text": True, "timeout": timeout, "check": False}
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            result = subprocess.run(command, **kwargs)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"ADB no respondió a tiempo: {' '.join(arguments)}") from exc
+        output = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
+        if result.returncode != 0:
+            raise RuntimeError(output or f"ADB falló: {' '.join(arguments)}")
+        return output
+
+    def find_wireless_devices(self) -> List[Dict[str, str]]:
+        """Descubre endpoints Wireless Debugging publicados por mDNS."""
+        output = self._run_adb_host("mdns", "services")
+        services: List[Dict[str, str]] = []
+        for line in output.splitlines():
+            if "adb-tls-connect" not in line:
+                continue
+            match = re.search(r"(?P<host>\[[^\]]+\]|[A-Za-z0-9._-]+):(?P<port>\d{1,5})", line)
+            if not match:
+                continue
+            host = match.group("host").strip("[]")
+            services.append({
+                "service_name": line.strip().split()[0] if line.strip() else "",
+                "host": host,
+                "port": match.group("port"),
+                "endpoint": f"[{host}]:{match.group('port')}" if ":" in host else f"{host}:{match.group('port')}",
+                "raw": line.strip(),
+            })
+        return services
+
+    def _saved_record(self) -> Optional[Dict[str, Any]]:
+        store = read_devices_store(DEVICES_JSON)
+        devices = store.get("Devices") or []
+        current_id = store.get("CurrentDeviceId")
+        if current_id:
+            found = next((d for d in devices if d.get("Id") == current_id), None)
+            if found:
+                return found
+        if self.serial:
+            return next((d for d in devices if d.get("LastEndpoint") == self.serial), None)
+        return devices[0] if len(devices) == 1 else None
+
+    def _connect_modern_endpoint(self, endpoint: str, record: Optional[Dict[str, Any]] = None) -> str:
+        client = get_adb_client()
+        result = client.connect(endpoint, timeout=12.0).strip()
+        if "failed" in result.lower() or "cannot" in result.lower() or "refused" in result.lower():
+            raise RuntimeError(result)
+        info = next((item for item in client.list() if item.serial == endpoint and item.state == "device"), None)
+        if info is None:
+            raise RuntimeError(f"ADB conectó a {endpoint}, pero el dispositivo no terminó en estado device.")
+        self.serial = endpoint
+        self._save_wireless_device(endpoint, record=record)
+        return f"Conectado por Wireless Debugging a {endpoint}."
+
+    def _save_wireless_device(self, endpoint: str, record: Optional[Dict[str, Any]] = None) -> None:
+        store = read_devices_store(DEVICES_JSON)
+        devices = store.setdefault("Devices", [])
+        current = record or self._saved_record()
+        if current is None:
+            current = {
+                "Id": uuid.uuid4().hex,
+                "FriendlyName": f"Android Wireless ({endpoint})",
+                "UsbSerial": None,
+                "NetworkProfiles": [],
+            }
+            devices.append(current)
+        elif not any(item.get("Id") == current.get("Id") for item in devices):
+            devices.append(current)
+        current["LastEndpoint"] = endpoint
+        current["Mode"] = "wireless-debugging-tls"
+        current["IsPaired"] = True
+        if record and record.get("MdnsServiceName"):
+            current["MdnsServiceName"] = record["MdnsServiceName"]
+        current["LastConnectedUtc"] = datetime.now(timezone.utc).isoformat()
+        store["CurrentDeviceId"] = current["Id"]
+        save_devices_store(store, DEVICES_JSON)
+
+    def pair_wireless(
+        self,
+        pair_host: str,
+        pair_port: int,
+        pairing_code: str,
+        friendly_name: str = "",
+        usb_serial: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Empareja el teléfono por Wireless Debugging y conecta su servicio mDNS."""
+        host = pair_host.strip().strip("[]")
+        try:
+            numeric_port = int(pair_port)
+        except (TypeError, ValueError):
+            numeric_port = 0
+        if not host or not (1 <= numeric_port <= 65535):
+            return False, "El host o puerto de emparejamiento no es válido."
+        if not re.fullmatch(r"\d{6}", pairing_code.strip()):
+            return False, "El código de emparejamiento debe tener 6 dígitos."
+        try:
+            endpoint = f"[{host}]:{numeric_port}" if ":" in host else f"{host}:{numeric_port}"
+            output = self._run_adb_host("pair", endpoint, pairing_code.strip(), timeout=20.0)
+            if re.search(r"failed|error|cannot", output, re.IGNORECASE):
+                return False, f"El emparejamiento falló: {output.strip()}"
+            deadline = time.monotonic() + 15.0
+            services: List[Dict[str, str]] = []
+            while time.monotonic() < deadline and not services:
+                try:
+                    services = self.find_wireless_devices()
+                except Exception:
+                    services = []
+                if not services:
+                    time.sleep(1.0)
+            if not services:
+                return False, "Emparejamiento correcto, pero no se encontró el servicio mDNS."
+            matching = [item for item in services if item["host"].lower() == host.lower()]
+            selected = matching[0] if len(matching) == 1 else services[0] if len(services) == 1 else None
+            if selected is None:
+                return False, "Hay varios teléfonos mDNS; usa Buscar dispositivo WiFi para seleccionar uno."
+            record = {
+                "Id": uuid.uuid4().hex,
+                "FriendlyName": friendly_name.strip() or f"Android Wireless ({selected['host']})",
+                "UsbSerial": usb_serial if usb_serial and not is_network_serial(usb_serial) else None,
+                "MdnsServiceName": selected["service_name"],
+                "NetworkProfiles": [],
+            }
+            msg = self._connect_modern_endpoint(selected["endpoint"], record=record)
+            return True, msg
+        except Exception as exc:
+            logger.warning("No se pudo configurar Wireless Debugging: %s", exc)
+            return False, f"No se pudo configurar Wireless Debugging: {exc}"
+
     def reconnect(self) -> str:
         """Intenta reconectar el dispositivo actual vía TCP/IP."""
         if not self.serial:
             return "No hay ningún dispositivo seleccionado."
+        saved = self._saved_record()
+        if saved and saved.get("Mode") == "wireless-debugging-tls":
+            return self.discover_and_reconnect_wireless()
         if not is_network_serial(self.serial):
             return f"El dispositivo {self.serial} es USB. Si no responde, reconecta el cable."
         try:
@@ -274,6 +428,27 @@ class DeviceService:
             return msg
         except Exception as exc:
             return f"Error al reconectar: {exc}"
+
+    def discover_and_reconnect_wireless(self) -> str:
+        """Busca el nuevo endpoint mDNS tras un cambio de red y lo conecta."""
+        try:
+            record = self._saved_record()
+            services = self.find_wireless_devices()
+            if not services:
+                return "No se encontraron servicios Wireless Debugging por mDNS en esta red."
+            preferred_host = ""
+            if self.serial and ":" in self.serial:
+                preferred_host = self.serial.rsplit(":", 1)[0].strip("[]").lower()
+            preferred_service = str((record or {}).get("MdnsServiceName") or "").lower()
+            matching = [item for item in services if preferred_service and item["service_name"].lower() == preferred_service]
+            if not matching:
+                matching = [item for item in services if preferred_host and item["host"].lower() == preferred_host]
+            selected = matching[0] if len(matching) == 1 else services[0] if len(services) == 1 else None
+            if selected is None:
+                return "Se encontraron varios teléfonos Wireless Debugging; selecciona uno desde Buscar dispositivo WiFi."
+            return self._connect_modern_endpoint(selected["endpoint"], record=record)
+        except Exception as exc:
+            return f"No se pudo buscar Wireless Debugging: {exc}"
 
     def convert_usb_to_wifi(self, usb_serial: Optional[str] = None) -> Tuple[bool, str]:
         """

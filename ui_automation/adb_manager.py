@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -137,6 +138,30 @@ def is_network_serial(serial: str) -> bool:
     return ":" in serial or (serial.count(".") == 3 and not serial.isalpha())
 
 
+def _discover_mdns_endpoints() -> List[str]:
+    """Devuelve endpoints adb-tls-connect anunciados por Wireless Debugging."""
+    adb_bin = get_adb_executable()
+    try:
+        result = subprocess.run(
+            [adb_bin, "mdns", "services"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception:
+        return []
+    endpoints: List[str] = []
+    output = "\n".join(filter(None, (result.stdout or "", result.stderr or "")))
+    for line in output.splitlines():
+        if "adb-tls-connect" not in line:
+            continue
+        match = re.search(r"(\[[^\]]+\]:\d{1,5}|[A-Za-z0-9._-]+:\d{1,5})", line)
+        if match and match.group(1) not in endpoints:
+            endpoints.append(match.group(1))
+    return endpoints
+
+
 def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event) -> None:
     """
     Bucle en segundo plano para verificar periódicamente la salud de la conexión
@@ -169,9 +194,31 @@ def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event) -> N
                     logger.info("Watchdog ADB: Intentando reconexión Wi-Fi a %s (sin reiniciar daemon)...", serial)
                     try:
                         res = client.connect(serial, timeout=10.0)
+                        if re.search(r"failed|cannot|refused|timed out|no route", res or "", re.IGNORECASE):
+                            raise RuntimeError(res.strip() or "adb connect falló")
                         logger.info("Watchdog ADB: Reconexión para %s -> %s", serial, res.strip())
                     except Exception as conn_exc:
-                        logger.warning("Watchdog ADB: Falló el intento de reconexión a %s: %s", serial, conn_exc)
+                        # Wireless Debugging moderno publica un puerto nuevo
+                        # cuando cambia la red. Probar mDNS evita pedir USB otra vez.
+                        reconnected = False
+                        for endpoint in _discover_mdns_endpoints():
+                            if endpoint == serial:
+                                continue
+                            try:
+                                mdns_res = client.connect(endpoint, timeout=8.0)
+                                mdns_info = next(
+                                    (item for item in client.list() if item.serial == endpoint and item.state == "device"),
+                                    None,
+                                )
+                                if mdns_info is not None:
+                                    serial = endpoint
+                                    reconnected = True
+                                    logger.info("Watchdog ADB: ReconexiÃ³n mDNS exitosa a %s -> %s", endpoint, mdns_res.strip())
+                                    break
+                            except Exception as mdns_exc:
+                                logger.debug("Watchdog ADB: endpoint mDNS %s no disponible: %s", endpoint, mdns_exc)
+                        if not reconnected:
+                            logger.warning("Watchdog ADB: Falló el intento de reconexión a %s: %s", serial, conn_exc)
                 else:
                     if current_state == "unauthorized":
                         logger.warning("Watchdog ADB: Dispositivo USB %s requiere autorización en pantalla.", serial)

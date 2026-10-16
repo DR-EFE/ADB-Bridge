@@ -49,6 +49,18 @@ class Sidebar:
             on_click=self._on_reconnect_click,
             expand=True,
         )
+        self._wireless_setup_btn = ft.OutlinedButton(
+            "Configurar Wireless Debugging moderno",
+            icon=ft.Icons.PHONELINK_SETUP,
+            on_click=self._on_wireless_setup_click,
+            expand=True,
+        )
+        self._wifi_search_btn = ft.OutlinedButton(
+            "Buscar dispositivo WiFi",
+            icon=ft.Icons.WIFI_FIND,
+            on_click=self._on_wifi_search_click,
+            expand=True,
+        )
         self._feedback = ft.Text("", size=12, color=theme.TEXT_MUTED)
 
         self.view = ft.Container(
@@ -69,6 +81,8 @@ class Sidebar:
                     self._dev_dropdown,
                     self._card.view,
                     ft.Row([self._reconnect_btn]),
+                    ft.Row([self._wireless_setup_btn]),
+                    ft.Row([self._wifi_search_btn]),
                     self._feedback,
                 ],
             ),
@@ -151,6 +165,110 @@ class Sidebar:
         self._feedback.value = "Consultando ADB / Reconectando..."
         self.view.update()
         threading.Thread(target=self._reconnect_worker, name="sidebar-reconnect", daemon=True).start()
+
+    def _on_wireless_setup_click(self, _e: ft.ControlEvent) -> None:
+        page = getattr(self.view, "page", None)
+        if page is None:
+            self._feedback.value = "La ventana todavía no está lista."
+            return
+
+        host = ft.TextField(label="IP del teléfono", autofocus=True)
+        port = ft.TextField(label="Puerto de emparejamiento", value="", keyboard_type=ft.KeyboardType.NUMBER)
+        code = ft.TextField(label="Código de 6 dígitos", password=True, can_reveal_password=False)
+        name = ft.TextField(label="Nombre (opcional)", value="Android Wireless")
+
+        def close_dialog(_e=None) -> None:
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
+
+        def start_pair(_e) -> None:
+            try:
+                parsed_port = int((port.value or "").strip())
+            except ValueError:
+                port.error_text = "Escribe el puerto mostrado en Wireless Debugging"
+                port.update()
+                return
+            if not host.value or not code.value:
+                self._feedback.value = "Completa IP, puerto y código de emparejamiento."
+                self._feedback.color = theme.WARN
+                self._feedback.update()
+                return
+            close_dialog()
+            self._wireless_setup_btn.disabled = True
+            self._feedback.value = "Emparejando Wireless Debugging..."
+            self._feedback.color = theme.WARN
+            self.view.update()
+
+            def worker() -> None:
+                ok, message = self._device.pair_wireless(
+                    host.value.strip(),
+                    parsed_port,
+                    code.value.strip(),
+                    (name.value or "").strip(),
+                    usb_serial=self._device.serial,
+                )
+                color = theme.OK if ok else theme.ERR
+                self._log_msg(f"[Wireless Debugging] {message}", color)
+                self._feedback.value = message
+                self._feedback.color = color
+                try:
+                    self.refresh_now()
+                except Exception:
+                    pass
+                self._wireless_setup_btn.disabled = False
+                try:
+                    self.view.update()
+                except Exception:
+                    pass
+
+            threading.Thread(target=worker, name="wireless-pair", daemon=True).start()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Configurar Wireless Debugging moderno"),
+            content=ft.Column(
+                [
+                    ft.Text("En el teléfono abre Ajustes → Wireless Debugging → Emparejar con código."),
+                    host,
+                    port,
+                    code,
+                    name,
+                ],
+                tight=True,
+                width=420,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=close_dialog),
+                ft.FilledButton("Emparejar", on_click=start_pair),
+            ],
+        )
+        page.show_dialog(dialog)
+
+    def _on_wifi_search_click(self, _e: ft.ControlEvent) -> None:
+        self._wifi_search_btn.disabled = True
+        self._feedback.value = "Buscando servicios Wireless Debugging por mDNS..."
+        self._feedback.color = theme.WARN
+        self.view.update()
+
+        def worker() -> None:
+            message = self._device.discover_and_reconnect_wireless()
+            ok = message.startswith("Conectado por Wireless Debugging")
+            self._log_msg(f"[Buscar WiFi] {message}", theme.OK if ok else theme.WARN)
+            self._feedback.value = message
+            self._feedback.color = theme.OK if ok else theme.WARN
+            try:
+                self.refresh_now()
+            except Exception:
+                pass
+            self._wifi_search_btn.disabled = False
+            try:
+                self.view.update()
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, name="wireless-discovery", daemon=True).start()
 
     def _reconnect_worker(self) -> None:
         with self._busy:

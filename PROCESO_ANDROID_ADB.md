@@ -107,6 +107,8 @@ El menú permite reconectar, agregar, renombrar, eliminar y consultar endpoints.
 
 ## 5. Reconexión tras cambiar de red
 
+En la GUI también están disponibles **Configurar Wireless Debugging moderno** y **Buscar dispositivo WiFi**. El primer botón ejecuta el emparejamiento con código y guarda el modo `wireless-debugging-tls`; el segundo vuelve a consultar mDNS y actualiza el endpoint cuando cambia la IP o el puerto. Para esos dispositivos el USB queda como respaldo y no se vuelve a convertir automáticamente a `tcpip-5555`.
+
 ```powershell
 Set-Location -LiteralPath 'C:\Users\pipe6\Downloads\Android'
 & .\android_reconnect.ps1
