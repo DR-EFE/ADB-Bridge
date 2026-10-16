@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
 
 import uiautomator2 as u2
 
+from .receiver import ensure_receiver_ready
+
 if TYPE_CHECKING:
     from .client import WhatsAppClient
 
@@ -47,9 +49,14 @@ IGNORED_CHAT_TITLES = {
 @dataclass
 class ChatExportSummary:
     """Resultado individual de la exportación de un chat."""
+
     chat_name: str
     success: bool
     local_path: Optional[str] = None
+    method: str = "none"  # "receiver" | "file_manager" | "none"
+    target_used: Optional[str] = None
+    stage_failed: Optional[str] = None
+    failure_reason: Optional[str] = None
     error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -70,17 +77,12 @@ class WhatsAppChatManager:
         """Extrae los nombres de chats visibles en la pantalla actual ordenados de arriba a abajo."""
         found_names: List[str] = []
 
-        # 1. Selector primario: ID oficial de nombre de contacto en fila de conversación
         elements = self.d(resourceIdMatches=r".*id/conversations_row_contact_name.*")
-
-        # 2. Selector secundario si el primero no arrojó elementos
         if not elements.exists:
             elements = self.d(resourceIdMatches=r".*id/conversation_contact_name.*")
 
         if elements.exists:
-            # Obtener elementos ordenados por posición vertical (y)
             try:
-                # Recopilar textos de los nodos detectados
                 count = elements.count
                 for i in range(count):
                     el = elements[i]
@@ -92,7 +94,6 @@ class WhatsAppChatManager:
             except Exception as exc:
                 logger.debug("Error iterando elementos de chat: %s", exc)
 
-        # 3. Fallback complementario por XPath si los selectores por ID cambiaron
         if not found_names:
             try:
                 xpath_query = (
@@ -114,16 +115,11 @@ class WhatsAppChatManager:
         """
         Extrae los primeros N nombres de chats más recientes de WhatsApp.
         Realiza scroll hacia abajo de forma controlada si se solicitan más de los que caben en pantalla.
-
-        :param limit: Cantidad máxima de chats a obtener.
-        :param max_scrolls: Número máximo de scrolls de seguridad.
-        :return: Lista de nombres de chats únicos ordenados de más recientes a más antiguos.
         """
         logger.info("Obteniendo los primeros %d chats de WhatsApp...", limit)
 
-        # Asegurar estar en la lista principal de chats
         if not self.client.is_on_chat_list():
-            logger.info("No estamos en la lista de chats. Navegando hacia la lista principal...")
+            logger.info("Navegando hacia la lista principal de chats...")
             self.client.go_back_to_chat_list()
             if not self.client.is_on_chat_list():
                 self.client.open_whatsapp()
@@ -145,20 +141,20 @@ class WhatsAppChatManager:
 
             logger.debug(
                 "Scroll %d: %d nuevos chats detectados. Total acumulado: %d/%d",
-                scroll_idx, new_added, len(top_names), limit
+                scroll_idx,
+                new_added,
+                len(top_names),
+                limit,
             )
 
             if len(top_names) >= limit:
                 break
 
-            # Si ya no se descubren nuevos chats tras un scroll, llegamos al final de la lista
             if scroll_idx > 0 and new_added == 0:
                 logger.info("No se encontraron más chats adicionales tras el scroll.")
                 break
 
-            # Realizar scroll suave hacia abajo para revelar más conversaciones
             try:
-                # swipe_ext 'up' desplaza el contenido hacia arriba (scroll down)
                 self.d.swipe_ext("up", scale=0.55)
                 time.sleep(1.0)
             except Exception as scroll_err:
@@ -167,7 +163,6 @@ class WhatsAppChatManager:
                 self.d.swipe(w * 0.5, h * 0.75, w * 0.5, h * 0.30, 0.25)
                 time.sleep(1.0)
 
-        # Regresar al inicio de la lista de chats haciendo scroll hacia arriba
         try:
             for _ in range(min(scroll_idx, 3)):
                 self.d.swipe_ext("down", scale=0.7)
@@ -188,21 +183,29 @@ class WhatsAppChatManager:
         """
         Obtiene los primeros N chats y exporta cada uno de ellos descargándolo al PC
         y limpiando el archivo temporal en el teléfono.
-
-        :param n: Número de chats más recientes a exportar.
-        :param include_media: True para incluir multimedia (.zip), False para solo texto (.txt).
-        :param local_dir: Carpeta local en el PC donde se guardarán las exportaciones.
-        :return: Lista de resúmenes con el resultado de cada chat.
         """
         output_dir = Path(local_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         print("\n============================================================")
-        print(f"   EXPORTACION POR LOTES DE CHATS RECIENTES DE WHATSAPP    ")
+        print("   EXPORTACION POR LOTES DE CHATS RECIENTES DE WHATSAPP    ")
         print("============================================================")
         print(f"Cantidad objetivo : {n} chats")
         print(f"Incluir medios    : {'Sí (.zip)' if include_media else 'No (.txt)'}")
         print(f"Destino local     : {output_dir.resolve()}\n")
+
+        # 0. Comprobar e intentar instalar el receptor auxiliar si falta
+        serial = getattr(self.client, "serial", None)
+        if not serial and hasattr(self.client, "device_mgr") and self.client.device_mgr:
+            serial = self.client.device_mgr.serial
+
+        is_receiver_ready, receiver_status_desc = ensure_receiver_ready(serial=serial)
+        logger.info(
+            "Estado del receptor auxiliar antes del lote: %s (%s)",
+            "Listo" if is_receiver_ready else "No disponible",
+            receiver_status_desc,
+        )
+        print(f"Estado auxiliar   : {receiver_status_desc}")
 
         # 1. Asegurar WhatsApp abierto y obtener nombres
         if not self.client.is_on_chat_list():
@@ -230,46 +233,47 @@ class WhatsAppChatManager:
             summary = ChatExportSummary(chat_name=chat_name, success=False)
 
             try:
-                # Asegurar estar en la lista antes de buscar
                 self.client.go_back_to_chat_list()
 
-                # Ejecutar exportación nativa
-                remote_file = self.client.export_chat(
+                # Ejecutar exportación estructurada
+                remote_file, share_result = self.client.export_chat_structured(
                     chat_name=chat_name,
                     include_media=include_media,
                     timeout=30.0,
                 )
 
-                if not remote_file:
-                    # Búsqueda por mtime reciente si no se capturó la ruta directa
-                    remote_file = self.client.find_exported_chat_file(
-                        chat_name=chat_name,
-                        prefer_zip=include_media,
-                    )
+                summary.method = share_result.method
+                summary.target_used = share_result.target_used
+                summary.stage_failed = share_result.stage_failed
+                summary.failure_reason = share_result.failure_reason
 
                 if not remote_file:
-                    raise RuntimeError("No se pudo detectar el archivo exportado en el dispositivo.")
+                    err_msg = share_result.failure_reason or f"Fallo en etapa '{share_result.stage_failed}'"
+                    raise RuntimeError(err_msg)
 
-                print(f"    Archivo remoto: {remote_file}")
+                print(f"    Archivo remoto: {remote_file} (vía {summary.target_used or summary.method})")
 
                 # Descargar al PC vía ADB
                 local_file = self.client.pull_exported_chat(remote_file, local_dir=output_dir)
                 summary.local_path = str(local_file.resolve())
                 summary.success = True
-                print(f"    Descarga exitosa: {local_file.name} ({local_file.stat().st_size} bytes)")
+                print(f"    [OK] Descarga exitosa: {local_file.name} ({local_file.stat().st_size} bytes)")
 
                 # Limpieza en el teléfono
                 self.client.delete_exported_file(remote_file)
-                print(f"    Limpieza remota completada.")
+                print("    Limpieza remota completada.")
 
             except Exception as exc:
                 error_msg = str(exc)
                 summary.error = error_msg
                 logger.error("Error exportando chat '%s': %s", chat_name, exc)
-                print(f"    [ERROR] Falló exportación de '{chat_name}': {error_msg}")
+                if summary.stage_failed:
+                    print(f"    [CANCELADO] Falló en etapa '{summary.stage_failed}': {error_msg}")
+                else:
+                    print(f"    [ERROR] Falló exportación de '{chat_name}': {error_msg}")
 
             finally:
-                # Regresar a la lista de chats para que el siguiente chat comience limpio
+                # Regresar a la lista de chats para que el siguiente chat inicie limpio
                 self.client.go_back_to_chat_list()
                 results.append(summary)
                 time.sleep(0.8)
@@ -281,7 +285,11 @@ class WhatsAppChatManager:
         print("============================================================")
         for r in results:
             status = "[OK]   " if r.success else "[FALLO]"
-            details = r.local_path if r.success else f"Error: {r.error}"
+            details = (
+                f"{r.local_path} (vía {r.target_used or r.method})"
+                if r.success
+                else f"Etapa: {r.stage_failed or 'desconocida'} | Error: {r.error}"
+            )
             print(f"{status} {r.chat_name} -> {details}")
         print("============================================================\n")
 

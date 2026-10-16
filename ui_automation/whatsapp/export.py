@@ -1,4 +1,4 @@
-"""Módulo para la exportación nativa de chats de WhatsApp."""
+"""Módulo para la exportación nativa de chats de WhatsApp con detección robusta del menú Compartir."""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ import logging
 import os
 import re
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import uiautomator2 as u2
 
@@ -26,10 +27,45 @@ COMMON_WHATSAPP_SEARCH_PATHS = [
     "/sdcard",
 ]
 
+# Nombres accesibles de administradores de archivos conocidos para el fallback
+KNOWN_FILE_MANAGERS = [
+    "Mis archivos",
+    "My Files",
+    "Files by Google",
+    "Archivos",
+    "Files",
+    "Administrador de archivos",
+    "File Manager",
+    "Guardar en archivos",
+    "Save to Files",
+]
+
+# Destinos prohibidos que nunca deben seleccionarse en el menú compartir
+FORBIDDEN_TARGETS_REGEX = (
+    r"(?i)WhatsApp|Telegram|Gmail|Outlook|Mensajes|Messages|Bluetooth|"
+    r"Drive|Google Drive|Quick Share|Compartir con Nearby|Nearby Share|"
+    r"Copiar al portapapeles|Copy to clipboard|Copiar|Copy"
+)
+
 
 class ChatExportError(Exception):
     """Excepción para errores ocurridos durante el proceso de exportación."""
-    pass
+
+
+@dataclass
+class ShareSheetResult:
+    """Resultado estructurado de la interacción con el menú Compartir / ShareSheet."""
+
+    success: bool = False
+    target_used: Optional[str] = None
+    method: str = "none"  # "receiver" | "file_manager" | "none"
+    scrolls_count: int = 0
+    detected_path: Optional[str] = None
+    failure_reason: Optional[str] = None
+    stage_failed: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 class WhatsAppExporter:
@@ -39,6 +75,7 @@ class WhatsAppExporter:
         self,
         device_or_manager: Union[DeviceManager, u2.Device],
         watcher_mgr: Optional[UIWatcherManager] = None,
+        on_stage_callback: Optional[Callable[[str], None]] = None,
     ):
         if isinstance(device_or_manager, DeviceManager):
             self.device_mgr = device_or_manager
@@ -48,6 +85,7 @@ class WhatsAppExporter:
             self._d = device_or_manager
 
         self.watcher_mgr = watcher_mgr
+        self.on_stage_callback = on_stage_callback
 
     @property
     def d(self) -> u2.Device:
@@ -58,17 +96,18 @@ class WhatsAppExporter:
             raise RuntimeError("No se pudo obtener una instancia válida de uiautomator2.Device.")
         return self._d
 
-    def open_chat_by_name(self, chat_name: str, timeout: float = 10.0) -> bool:
-        """
-        Busca un chat por nombre usando la barra de búsqueda de WhatsApp y lo abre.
+    def _notify_stage(self, stage_text: str) -> None:
+        logger.info("[Etapa Exportación] %s", stage_text)
+        if self.on_stage_callback:
+            try:
+                self.on_stage_callback(stage_text)
+            except Exception:
+                pass
 
-        :param chat_name: Nombre exacto o parcial del contacto o grupo.
-        :param timeout: Tiempo máximo de espera.
-        :return: True si logró abrir la conversación, False en caso contrario.
-        """
+    def open_chat_by_name(self, chat_name: str, timeout: float = 10.0) -> bool:
+        """Busca un chat por nombre usando la barra de búsqueda de WhatsApp y lo abre."""
         logger.info("Buscando chat '%s'...", chat_name)
 
-        # 1. Hacer clic en el icono de búsqueda
         search_icon = self.d(descriptionMatches=r"(?i)Buscar|Search")
         if not search_icon.exists:
             search_icon = self.d(resourceIdMatches=r".*id/menuitem_search.*")
@@ -76,10 +115,7 @@ class WhatsAppExporter:
         if search_icon.exists:
             search_icon.click()
             time.sleep(0.8)
-        else:
-            logger.debug("Icono de búsqueda no visible directamente. Intentando búsqueda directa en pantalla...")
 
-        # 2. Localizar campo de entrada de búsqueda y escribir
         search_input = self.d(resourceIdMatches=r".*id/search_src_text.*|.*id/search_input.*")
         if not search_input.exists:
             search_input = self.d(className="android.widget.EditText")
@@ -90,11 +126,9 @@ class WhatsAppExporter:
         else:
             logger.warning("No se encontró el campo de texto de búsqueda.")
 
-        # 3. Hacer clic en el resultado del chat
         deadline = time.monotonic() + timeout
         chat_entry = None
         while time.monotonic() < deadline:
-            # Buscar por texto exacto o que contenga el nombre
             target = self.d(text=chat_name)
             if not target.exists:
                 target = self.d(textContains=chat_name)
@@ -119,87 +153,88 @@ class WhatsAppExporter:
         include_media: bool = False,
         timeout: float = 30.0,
     ) -> Optional[str]:
-        """
-        Ejecuta el flujo nativo de exportación de chat en WhatsApp:
-        Abre el chat -> Menú (3 puntos) -> Más -> Exportar chat ->
-        Selecciona incluir/excluir medios -> Espera generación -> Identifica archivo.
+        """Método de compatibilidad hacia atrás: devuelve solo la ruta remota o None."""
+        remote_file, _ = self.export_chat_structured(chat_name=chat_name, include_media=include_media, timeout=timeout)
+        return remote_file
 
-        :param chat_name: Nombre del chat a exportar.
-        :param include_media: True para incluir archivos multimedia (.zip), False para solo texto (.txt).
-        :param timeout: Tiempo máximo de espera para la generación del archivo.
-        :return: Ruta remota en el dispositivo del archivo generado, o None si no se completó.
+    def export_chat_structured(
+        self,
+        chat_name: str,
+        include_media: bool = False,
+        timeout: float = 30.0,
+    ) -> Tuple[Optional[str], ShareSheetResult]:
         """
-        # Registrar marca de tiempo antes de exportar para identificar el archivo nuevo
+        Ejecuta el flujo completo de exportación estructurado por etapas.
+        Si alguna etapa falla, recupera la pantalla de WhatsApp automáticamente.
+        """
         timestamp_before = int(time.time()) - 2
+        result = ShareSheetResult()
 
-        # 1. Abrir la conversación
+        # 1. Abrir chat
+        self._notify_stage(f"Abriendo conversación: '{chat_name}'")
         if not self.open_chat_by_name(chat_name):
-            raise ChatExportError(f"No fue posible abrir el chat '{chat_name}' para exportar.")
+            result.stage_failed = "open_chat"
+            result.failure_reason = f"No fue posible abrir el chat '{chat_name}'."
+            self.recover_to_whatsapp_chat_list()
+            return None, result
 
-        # 2. Abrir el menú de opciones (3 puntos verticales)
-        logger.info("Abriendo menú de opciones del chat...")
+        # 2. Menú de opciones (3 puntos)
+        self._notify_stage("Abriendo menú de opciones...")
         more_btn = self.d(descriptionMatches=r"(?i)M[áa]s opciones|More options")
         if not more_btn.exists:
             more_btn = self.d(resourceIdMatches=r".*id/more_options.*")
 
         if not more_btn.exists:
-            # Coordenadas aproximadas de la esquina superior derecha si no hay selector accesible
             w, h = self.d.window_size()
             self.d.click(w - 40, int(h * 0.05))
         else:
             more_btn.click()
         time.sleep(0.8)
 
-        # 3. Encontrar y hacer clic en "Más" / "More"
+        # 3. Opción "Más" / "More"
         more_item = self.d(textMatches=r"(?i)M[áa]s|More")
         if more_item.exists:
             more_item.click()
             time.sleep(0.8)
 
-        # 4. Encontrar y hacer clic en "Exportar chat" / "Export chat"
+        # 4. Opción "Exportar chat"
         export_item = self.d(textMatches=r"(?i)Exportar chat|Export chat")
         if not export_item.exists:
-            # Puede aparecer directamente en el primer nivel del menú en algunas versiones
             export_item = self.d(textContains="Exportar")
         if not export_item.exists:
             export_item = self.d(textContains="Export")
 
         if not export_item.exists:
-            raise ChatExportError("No se encontró la opción 'Exportar chat' en el menú de WhatsApp.")
+            result.stage_failed = "menu_export_option"
+            result.failure_reason = "No se encontró la opción 'Exportar chat' en el menú de WhatsApp."
+            self.recover_to_whatsapp_chat_list()
+            return None, result
 
         export_item.click()
         time.sleep(1.0)
 
-        # 5. Manejar diálogo de inclusión de medios ("Sin archivos de medios" / "Incluir archivos de medios")
+        # 5. Diálogo de multimedia
         self._handle_media_selection_dialog(include_media=include_media)
 
-        # 6. Esperar a que se procese la exportación y aparezca el diálogo del sistema
-        logger.info("Esperando a que WhatsApp termine de empaquetar el chat...")
-        self._handle_share_or_save_dialog(timeout=timeout)
-
-        # 7. Localizar el archivo generado en el almacenamiento del dispositivo
-        # El receptor auxiliar puede seguir copiando el content:// mientras
-        # la Activity ya se cerró; esperar un poco antes de declarar fallo.
-        remote_file = None
-        search_deadline = time.monotonic() + min(timeout, 15.0)
-        while time.monotonic() < search_deadline and not remote_file:
-            remote_file = self.find_exported_chat_file(
-                chat_name=chat_name,
-                min_mtime=timestamp_before,
-                prefer_zip=include_media,
-            )
-            if not remote_file:
-                time.sleep(0.8)
-
-        if remote_file:
-            logger.info("Archivo exportado detectado en el dispositivo: %s", remote_file)
-            return remote_file
-
-        logger.warning(
-            "La exportación finalizó pero no se detectó la ruta exacta por escaneo. "
-            "Se devuelve confirmación de flujo completado."
+        # 6. Controlador robusto de etapas del menú Compartir
+        share_res = self.handle_share_sheet_flow(
+            chat_name=chat_name,
+            timestamp_before=timestamp_before,
+            prefer_zip=include_media,
         )
-        return None
+
+        if not share_res.success:
+            logger.warning(
+                "Exportación de chat '%s' cancelada en etapa '%s': %s",
+                chat_name,
+                share_res.stage_failed,
+                share_res.failure_reason,
+            )
+            self.recover_to_whatsapp_chat_list()
+            return None, share_res
+
+        self._notify_stage(f"Archivo exportado y detectado: {share_res.detected_path}")
+        return share_res.detected_path, share_res
 
     def _handle_media_selection_dialog(self, include_media: bool) -> None:
         """Selecciona la opción de multimedia en el diálogo emergente de WhatsApp."""
@@ -210,110 +245,368 @@ class WhatsAppExporter:
             btn = self.d(textMatches=r"(?i)Sin archivos|Sin multimedia|Without media")
 
         if btn.exists:
-            logger.info("Seleccionando opción de medios: %s", "Con multimedia" if include_media else "Sin multimedia")
+            logger.info("Seleccionando medios: %s", "Con multimedia" if include_media else "Sin multimedia")
             btn.click()
-            time.sleep(1.5)
+            time.sleep(1.2)
 
-    def _handle_share_or_save_dialog(self, timeout: float = 20.0) -> None:
+    # -------------------------------------------------------------------------
+    # Controlador de etapas del menú Compartir (ShareSheet)
+    # -------------------------------------------------------------------------
+    def handle_share_sheet_flow(
+        self,
+        chat_name: str,
+        timestamp_before: int,
+        prefer_zip: bool = False,
+    ) -> ShareSheetResult:
         """
-        Gestiona el diálogo del sistema (Android ShareSheet o Selector de Guardado)
-        que aparece inmediatamente después de exportar.
+        Ejecuta el controlador de etapas:
+        1. Esperar menú Compartir (20s).
+        2. Búsqueda inicial de AndroidTools Receiver exacta (8s).
+        3. Abrir 'Más' (1 intento).
+        4. Recorrido horizontal limitado (máximo 6 gestos).
+        5. Fallback a administradores de archivos conocidos (15s).
+        6. Espera de escritura y detección del archivo (15s).
         """
-        deadline = time.monotonic() + timeout
-        save_target_clicked = False
-        chooser_pages = 0
-        chooser_more_opened = False
-        chooser_last_logged = -1
-        while time.monotonic() < deadline:
-            receiver_option = self.d(textMatches=r"(?i)AndroidTools Receiver")
-            if receiver_option.exists:
-                logger.info("Seleccionando receptor local AndroidTools.")
-                receiver_option.click()
-                # El receptor copia el content:// en segundo plano y cierra
-                # su Activity al terminar; darle un margen antes del escaneo.
-                time.sleep(2.0)
-                break
+        result = ShareSheetResult()
 
-            # La exportación nativa no crea necesariamente un archivo en
-            # /sdcard: WhatsApp entrega un content:// a la pantalla ShareSheet.
-            # Hay que elegir un destino de archivos para materializarlo.
-            save_option = self.d(textMatches=r"(?i)AndroidTools Receiver|AndroidTools|Guardar en archivos|Save to Files|Archivos|Files")
-            if save_option.exists:
-                if not save_target_clicked:
-                    logger.info("Seleccionando destino de archivo en Android.")
-                    save_option.click()
-                    save_target_clicked = True
-                    time.sleep(1.5)
-                    continue
+        # Etapa 1: Esperar el menú Compartir (20s)
+        self._notify_stage("Esperando menú Compartir...")
+        if not self.detect_share_sheet(timeout=20.0):
+            result.stage_failed = "wait_share_sheet"
+            result.failure_reason = "No apareció el menú Compartir dentro del límite de 20 segundos."
+            return result
 
-            # En el selector de documentos, confirmar el nombre y la ruta.
-            # Las etiquetas cambian entre AOSP, Samsung y Google Files.
-            confirm = self.d(textMatches=r"(?i)Guardar|Save|Usar esta carpeta|Use this folder")
-            if confirm.exists:
-                logger.info("Confirmando guardado del archivo exportado.")
-                confirm.click()
-                time.sleep(1.5)
-                break
+        # Etapa 2: Búsqueda inicial del receptor exacto (8s)
+        self._notify_stage("Buscando receptor...")
+        target_obj, count = self._wait_for_receiver(timeout=8.0)
+        if count > 1:
+            result.stage_failed = "receiver_conflict"
+            result.failure_reason = "Conflicto: se encontraron múltiples coincidencias exactas de AndroidTools Receiver."
+            return result
 
-            # Si el selector del sistema (ShareSheet) está visible
-            chooser_visible = self.d(resourceIdMatches=r".*id/chooser.*|.*android:id/resolver_list.*").exists
-            chooser_visible = chooser_visible or self.d(textMatches=r"(?i)^Aplicaciones$|^Apps$").exists
-            if chooser_visible:
-                if chooser_last_logged != chooser_pages:
-                    logger.info("MenÃº para compartir de Android detectado (pÃ¡gina %d).", chooser_pages + 1)
-                    chooser_last_logged = chooser_pages
-                more = self.d(textMatches=r"(?i)^M[Ã¡a]s$|^More$")
-                if more.exists and not chooser_more_opened:
-                    more.click()
-                    chooser_more_opened = True
-                    chooser_pages = 0
-                    time.sleep(1.0)
-                    continue
-                if chooser_pages < 8:
-                    w, h = self.d.window_size()
-                    y = int(h * 0.76)
-                    self.d.swipe(int(w * 0.82), y, int(w * 0.18), y, 0.35)
-                    chooser_pages += 1
-                    time.sleep(0.8)
-                    continue
-                raise ChatExportError(
-                    "No se encontrÃ³ 'AndroidTools Receiver' en el selector de compartir "
-                    "despuÃ©s de recorrer sus destinos. Abre 'MÃ¡s' o instala el auxiliar por ADB."
-                )
-                logger.info("Menú para compartir de Android detectado.")
-                # No pulsar Atrás: eso cancela la exportación y deja solo un
-                # content:// temporal que no puede descubrir find_exported_chat_file.
+        if count == 1 and target_obj:
+            logger.info("Seleccionando AndroidTools Receiver directamente.")
+            target_obj.click()
+            result.target_used = "AndroidTools Receiver"
+            result.method = "receiver"
+            return self._wait_and_detect_file(chat_name, timestamp_before, prefer_zip, result)
 
+        # Etapa 3: Abrir 'Más' si existe y no se ha inspeccionado la lista completa
+        self._notify_stage("Abriendo Más...")
+        more_opened = self.open_more_targets()
+        if more_opened:
+            time.sleep(1.0)
+            target_obj, count = self.find_receiver_exact_matches()
+            if count > 1:
+                result.stage_failed = "receiver_conflict"
+                result.failure_reason = "Conflicto: se encontraron múltiples coincidencias exactas de AndroidTools Receiver tras abrir Más."
+                return result
+            if count == 1 and target_obj:
+                logger.info("Seleccionando AndroidTools Receiver tras abrir 'Más'.")
+                target_obj.click()
+                result.target_used = "AndroidTools Receiver"
+                result.method = "receiver"
+                return self._wait_and_detect_file(chat_name, timestamp_before, prefer_zip, result)
+
+        # Etapa 4: Recorrer horizontalmente con límite de 6 gestos
+        self._notify_stage("Recorriendo selector de compartir...")
+        swipes_done = 0
+        max_swipes = 6
+        while swipes_done < max_swipes:
+            swiped = self.swipe_share_sheet()
+            swipes_done += 1
+            result.scrolls_count = swipes_done
             time.sleep(0.8)
 
+            target_obj, count = self.find_receiver_exact_matches()
+            if count > 1:
+                result.stage_failed = "receiver_conflict"
+                result.failure_reason = f"Conflicto: múltiples coincidencias exactas de AndroidTools Receiver tras desplazamiento {swipes_done}."
+                return result
+            if count == 1 and target_obj:
+                logger.info("Seleccionando AndroidTools Receiver tras desplazamiento %d.", swipes_done)
+                target_obj.click()
+                result.target_used = "AndroidTools Receiver"
+                result.method = "receiver"
+                return self._wait_and_detect_file(chat_name, timestamp_before, prefer_zip, result)
+
+            if not swiped:
+                # No se pudo desplazar más
+                break
+
+        # Etapa 5: Fallback con administradores de archivos conocidos
+        self._notify_stage("Probando administrador de archivos...")
+        fm_target, fm_name = self.find_file_manager_target()
+        if fm_target:
+            logger.info("Seleccionando administrador de archivos compatible: '%s'", fm_name)
+            fm_target.click()
+            result.target_used = fm_name
+            result.method = "file_manager"
+
+            # Esperar confirmación de guardado (15s)
+            self._notify_stage(f"Confirmando guardado en {fm_name}...")
+            self.confirm_file_save(timeout=15.0)
+
+            return self._wait_and_detect_file(chat_name, timestamp_before, prefer_zip, result)
+
+        # Si llegamos aquí, no hubo receptor ni administrador de archivos
+        result.stage_failed = "no_compatible_target"
+        result.failure_reason = "No se encontró AndroidTools Receiver ni una aplicación de archivos compatible."
+        return result
+
+    def detect_share_sheet(self, timeout: float = 20.0) -> bool:
+        """Detecta la presencia del menú Compartir mediante identificadores y textos localizados."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            # 1. Identificadores de share sheet de Android
+            if self.d(resourceIdMatches=r".*id/chooser.*|.*id/resolver_list.*|.*id/share_sheet.*|.*id/content_preview.*").exists:
+                return True
+
+            # 2. Textos característicos
+            if self.d(textMatches=r"(?i)^Compartir$|^Share$|^Compartir con$|^Share with$|^Aplicaciones$|^Apps$|^Direct share$|^Frecuentes$").exists:
+                return True
+
+            # 3. Presencia de opciones conocidas
+            if self.d(text="AndroidTools Receiver").exists:
+                return True
+            for fm in KNOWN_FILE_MANAGERS:
+                if self.d(textMatches=r"(?i)^" + re.escape(fm) + r"$").exists:
+                    return True
+
+            time.sleep(0.5)
+
+        return False
+
+    def find_receiver_exact_matches(self) -> Tuple[Optional[u2.UiObject], int]:
+        """
+        Busca AndroidTools Receiver exigiendo coincidencia exacta.
+        Devuelve (target, total_coincidencias).
+        """
+        matches: List[u2.UiObject] = []
+        exact_name = "AndroidTools Receiver"
+
+        # Buscar por texto exacto
+        text_nodes = self.d(text=exact_name)
+        if text_nodes.exists:
+            count = text_nodes.count
+            for i in range(count):
+                matches.append(text_nodes[i])
+
+        # Buscar por contentDescription exacta
+        desc_nodes = self.d(description=exact_name)
+        if desc_nodes.exists:
+            count = desc_nodes.count
+            for i in range(count):
+                node = desc_nodes[i]
+                try:
+                    # Evitar duplicar el mismo nodo por bounds
+                    bounds = node.info.get("bounds")
+                    if not any(m.info.get("bounds") == bounds for m in matches):
+                        matches.append(node)
+                except Exception:
+                    matches.append(node)
+
+        total = len(matches)
+        target = matches[0] if total == 1 else None
+        return target, total
+
+    def _wait_for_receiver(self, timeout: float = 8.0) -> Tuple[Optional[u2.UiObject], int]:
+        """Espera de forma no bloqueante hasta timeout por el receptor exacto."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            target, count = self.find_receiver_exact_matches()
+            if count > 0:
+                return target, count
+            time.sleep(0.5)
+        return None, 0
+
+    def open_more_targets(self) -> bool:
+        """Intenta abrir la opción 'Más' / 'More' en el selector de compartir (1 intento)."""
+        more_btn = self.d(textMatches=r"(?i)^M[áa]s$|^More$")
+        if not more_btn.exists:
+            more_btn = self.d(descriptionMatches=r"(?i)^M[áa]s$|^More$")
+        if not more_btn.exists:
+            more_btn = self.d(resourceIdMatches=r".*id/more.*")
+
+        if more_btn.exists:
+            try:
+                more_btn.click()
+                logger.info("Pulsado botón 'Más' del selector.")
+                return True
+            except Exception as exc:
+                logger.debug("Error pulsando botón Más: %s", exc)
+        return False
+
+    def swipe_share_sheet(self) -> bool:
+        """
+        Realiza un desplazamiento horizontal en el selector.
+        Prioriza selectores accesibles antes de usar coordenadas.
+        """
+        # 1. Intentar scroll accesible sobre contenedor deslizable
+        try:
+            scrollable = self.d(scrollable=True)
+            if scrollable.exists:
+                scrollable.scroll.horiz.forward(steps=40)
+                return True
+        except Exception as exc:
+            logger.debug("Scroll accesible no disponible: %s", exc)
+
+        # 2. Último recurso: gesto swipe horizontal por coordenadas
+        try:
+            w, h = self.d.window_size()
+            y = int(h * 0.76)
+            self.d.swipe(int(w * 0.82), y, int(w * 0.18), y, 0.35)
+            return True
+        except Exception as exc:
+            logger.debug("Gesto swipe por coordenadas falló: %s", exc)
+            return False
+
+    def find_file_manager_target(self) -> Tuple[Optional[u2.UiObject], Optional[str]]:
+        """Busca aplicaciones de administración de archivos reconocidas evitando mensajería/nube."""
+        for name in KNOWN_FILE_MANAGERS:
+            # 1. Por texto exacto o regex
+            node = self.d(textMatches=r"(?i)^" + re.escape(name) + r"$")
+            if not node.exists:
+                node = self.d(descriptionMatches=r"(?i)^" + re.escape(name) + r"$")
+
+            if node.exists:
+                # Verificar que el texto no coincida con destinos prohibidos
+                text_val = node.get_text() or ""
+                desc_val = node.info.get("contentDescription") or ""
+                combined = f"{text_val} {desc_val}".strip()
+                if not re.search(FORBIDDEN_TARGETS_REGEX, combined):
+                    return node, name
+
+        return None, None
+
+    def confirm_file_save(self, timeout: float = 15.0) -> bool:
+        """
+        Confirma únicamente acciones de guardado legítimas en el administrador de archivos
+        ('Guardar', 'Save', 'Listo', 'Done', 'Usar esta carpeta', 'Permitir', 'Seleccionar').
+        """
+        deadline = time.monotonic() + timeout
+        confirm_regex = (
+            r"(?i)^Guardar$|^Save$|^Listo$|^Done$|^Usar esta carpeta$|"
+            r"^Use this folder$|^Permitir$|^Allow$|^Seleccionar$|^Select$"
+        )
+        while time.monotonic() < deadline:
+            btn = self.d(textMatches=confirm_regex)
+            if not btn.exists:
+                btn = self.d(descriptionMatches=confirm_regex)
+
+            if btn.exists:
+                logger.info("Confirmando acción de guardado en diálogo de archivos.")
+                try:
+                    btn.click()
+                    time.sleep(1.0)
+                    return True
+                except Exception as exc:
+                    logger.debug("Error al hacer clic en botón de guardado: %s", exc)
+
+            time.sleep(0.5)
+
+        return False
+
+    def _wait_and_detect_file(
+        self,
+        chat_name: str,
+        timestamp_before: int,
+        prefer_zip: bool,
+        result: ShareSheetResult,
+        timeout: float = 15.0,
+    ) -> ShareSheetResult:
+        """Etapa 6: Espera a que el archivo se escriba y lo localiza en el almacenamiento."""
+        self._notify_stage("Esperando archivo...")
+        deadline = time.monotonic() + timeout
+        remote_file = None
+
+        while time.monotonic() < deadline and not remote_file:
+            remote_file = self.find_exported_chat_file(
+                chat_name=chat_name,
+                min_mtime=timestamp_before,
+                prefer_zip=prefer_zip,
+            )
+            if not remote_file:
+                time.sleep(0.8)
+
+        if remote_file:
+            result.success = True
+            result.detected_path = remote_file
+            return result
+
+        result.success = False
+        result.stage_failed = "wait_file_write"
+        result.failure_reason = (
+            f"El chat fue enviado vía {result.target_used or 'selector'} pero el archivo "
+            "no se materializó en el almacenamiento dentro de los 15 segundos."
+        )
+        return result
+
+    def recover_to_whatsapp_chat_list(self, max_attempts: int = 5) -> bool:
+        """
+        Regresa siempre a la pantalla principal de chats de WhatsApp ante cualquier fallo.
+        Presiona botón Up o Back hasta alcanzar la lista principal.
+        """
+        logger.info("Recuperando estado de WhatsApp para regresar a la lista de chats...")
+        for attempt in range(1, max_attempts + 1):
+            # 1. Comprobar si ya estamos en la lista de chats
+            if self.d(text="Chats").exists or self.d(description="Nuevo chat").exists or self.d(description="New chat").exists:
+                logger.info("Lista de chats alcanzada exitosamente.")
+                return True
+
+            # 2. Intentar botón 'Navegar hacia arriba'
+            up_btn = self.d(descriptionMatches=r"(?i)Navegar hacia arriba|Navigate up")
+            if up_btn.exists:
+                try:
+                    up_btn.click()
+                    time.sleep(0.6)
+                    continue
+                except Exception:
+                    pass
+
+            # 3. Presionar tecla Back física
+            try:
+                self.d.press("back")
+                time.sleep(0.6)
+            except Exception as exc:
+                logger.debug("Error enviando tecla back: %s", exc)
+
+        # Si aún no regresa, forzar apertura de la actividad principal de WhatsApp
+        try:
+            logger.info("Reabriendo WhatsApp para garantizar estado limpio...")
+            self.d.app_start("com.whatsapp")
+            time.sleep(1.0)
+        except Exception:
+            try:
+                self.d.app_start("com.whatsapp.w4b")
+                time.sleep(1.0)
+            except Exception:
+                pass
+
+        return True
+
+    # -------------------------------------------------------------------------
+    # Búsqueda y gestión de archivos remotos
+    # -------------------------------------------------------------------------
     def find_exported_chat_file(
         self,
         chat_name: Optional[str] = None,
         min_mtime: Optional[int] = None,
         prefer_zip: bool = False,
     ) -> Optional[str]:
-        """
-        Busca en las rutas comunes del teléfono el archivo exportado (.txt o .zip) más reciente.
-
-        :param chat_name: Nombre del chat para filtrar el nombre del archivo.
-        :param min_mtime: Epoch timestamp mínimo de modificación.
-        :param prefer_zip: Si es True, prioriza archivos .zip; si es False, .txt.
-        :return: Ruta absoluta del archivo en el dispositivo, o None si no se encontró.
-        """
+        """Busca en las rutas comunes del teléfono el archivo exportado (.txt o .zip) más reciente."""
         logger.info("Buscando archivo de chat exportado en el dispositivo...")
         extension = ".zip" if prefer_zip else ".txt"
 
         clean_name = re.sub(r"[^\w\s-]", "", chat_name).strip() if chat_name else ""
         candidate_files: List[Tuple[str, int]] = []
 
-        # Usar find de shell de Android para buscar archivos recientes
         for folder in COMMON_WHATSAPP_SEARCH_PATHS:
             cmd = f"find {folder} -maxdepth 3 -type f \\( -name '*{extension}' -o -name '*WhatsApp*' \\) 2>/dev/null"
             try:
                 out = self.d.shell(cmd).output or ""
                 lines = [line.strip() for line in out.splitlines() if line.strip()]
                 for fpath in lines:
-                    # Comprobar que sea un archivo de chat de WhatsApp
                     fname = os.path.basename(fpath).lower()
                     if not (fname.endswith(".txt") or fname.endswith(".zip")):
                         continue
@@ -321,7 +614,6 @@ class WhatsAppExporter:
                     if clean_name and clean_name.lower() not in fname and "chat" not in fname and "whatsapp" not in fname:
                         continue
 
-                    # Obtener timestamp de modificación
                     stat_out = self.d.shell(f"stat -c %Y '{fpath}' 2>/dev/null").output or ""
                     try:
                         mtime = int(stat_out.strip())
@@ -338,24 +630,15 @@ class WhatsAppExporter:
         if not candidate_files:
             return None
 
-        # Ordenar por el más reciente
         candidate_files.sort(key=lambda x: x[1], reverse=True)
-        newest_file = candidate_files[0][0]
-        return newest_file
+        return candidate_files[0][0]
 
     def pull_exported_chat(
         self,
         remote_path: str,
         local_dir: Union[str, Path] = "./exports",
     ) -> Path:
-        """
-        Descarga el archivo exportado desde el teléfono a la computadora local vía ADB.
-
-        :param remote_path: Ruta del archivo en el dispositivo (ej: '/sdcard/Download/Chat.txt').
-        :param local_dir: Carpeta local de destino.
-        :return: Path local del archivo descargado.
-        :raises ChatExportError: Si no se pudo transferir el archivo.
-        """
+        """Descarga el archivo exportado desde el teléfono a la computadora local vía ADB."""
         dest_dir = Path(local_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -364,7 +647,6 @@ class WhatsAppExporter:
 
         logger.info("Descargando archivo desde teléfono: %s -> %s", remote_path, local_target)
         try:
-            # uiautomator2 Device.pull transfiere el archivo
             self.d.pull(remote_path, str(local_target))
             if not local_target.exists() or local_target.stat().st_size == 0:
                 raise ChatExportError(f"El archivo descargado está vacío o no se creó: {local_target}")
@@ -377,17 +659,11 @@ class WhatsAppExporter:
             raise ChatExportError(msg) from exc
 
     def delete_exported_file(self, remote_path: str) -> bool:
-        """
-        Elimina el archivo exportado del dispositivo Android para limpieza y privacidad.
-
-        :param remote_path: Ruta remota en el dispositivo a eliminar.
-        :return: True si se eliminó correctamente.
-        """
+        """Elimina el archivo exportado del dispositivo Android para limpieza y privacidad."""
         logger.info("Limpiando archivo del dispositivo: %s", remote_path)
         try:
-            # Sanitizar comillas simples para evitar inyección en shell
             safe_path = remote_path.replace("'", "'\\''")
-            res = self.d.shell(f"rm -f '{safe_path}'")
+            self.d.shell(f"rm -f '{safe_path}'")
             logger.info("Archivo remoto eliminado correctamente.")
             return True
         except Exception as exc:

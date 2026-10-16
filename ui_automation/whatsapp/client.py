@@ -287,6 +287,17 @@ class WhatsAppClient:
         exporter = WhatsAppExporter(self.d, watcher_mgr=self.watcher_mgr)
         return exporter.export_chat(chat_name=chat_name, include_media=include_media, timeout=timeout)
 
+    def export_chat_structured(
+        self,
+        chat_name: str,
+        include_media: bool = False,
+        timeout: float = 30.0,
+    ) -> Tuple[Optional[str], Any]:
+        """Exporta el chat devolviendo la ruta remota y el ShareSheetResult estructurado."""
+        from .export import WhatsAppExporter
+        exporter = WhatsAppExporter(self.d, watcher_mgr=self.watcher_mgr)
+        return exporter.export_chat_structured(chat_name=chat_name, include_media=include_media, timeout=timeout)
+
     def find_exported_chat_file(
         self,
         chat_name: Optional[str] = None,

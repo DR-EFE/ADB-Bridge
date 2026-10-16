@@ -11,6 +11,7 @@ import flet as ft
 from ui_automation.device import DeviceManager
 from ui_automation.whatsapp import (
     WhatsAppClient,
+    ensure_receiver_ready,
     install_receiver,
     uninstall_receiver,
 )
@@ -36,19 +37,24 @@ class WhatsAppPage:
         self._receiver_task: Optional[BackgroundTask] = None
         self._log_handler: Optional[UiLogHandler] = None
         self._results: List[Dict[str, Any]] = []
+        self._current_chat_idx: int = 0
+        self._total_chats: int = 0
 
         self._count = ft.TextField(label="Cantidad de chats", value="10", width=170,
                                    keyboard_type=ft.KeyboardType.NUMBER)
         self._media = ft.Switch(label="Incluir multimedia (.zip)", value=False)
         self._out_dir = ft.TextField(label="Carpeta de destino", value="./exports", width=260)
         self._export_btn = ft.FilledButton("Exportar", icon=ft.Icons.DOWNLOAD, on_click=self._on_export)
+        self._check_receiver_btn = ft.OutlinedButton(
+            "Verificar auxiliar", icon=ft.Icons.FACT_CHECK_OUTLINED, on_click=self._on_check_receiver
+        )
         self._install_receiver_btn = ft.OutlinedButton(
             "Instalar auxiliar", icon=ft.Icons.INSTALL_MOBILE, on_click=self._on_install_receiver
         )
         self._remove_receiver_btn = ft.OutlinedButton(
             "Quitar auxiliar", icon=ft.Icons.DELETE_OUTLINE, on_click=self._on_remove_receiver
         )
-        self._receiver_status = ft.Text("Auxiliar de archivos: estado desconocido", size=11, color=theme.TEXT_MUTED)
+        self._receiver_status = ft.Text("Auxiliar: estado no verificado (clic en Verificar auxiliar)", size=11, color=theme.TEXT_MUTED)
         self._progress = ft.ProgressBar(value=0, bar_height=8, border_radius=4, color=theme.ACCENT, bgcolor=theme.BORDER)
         self._progress_text = ft.Text("Listo.", size=12, color=theme.TEXT_MUTED)
         self._log = LogView()
@@ -63,6 +69,7 @@ class WhatsAppPage:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
                             self._count, self._media, self._out_dir, self._export_btn,
+                            self._check_receiver_btn,
                             self._install_receiver_btn, self._remove_receiver_btn,
                             self._receiver_status,
                         ],
@@ -105,10 +112,10 @@ class WhatsAppPage:
         def done(error: Optional[BaseException]) -> None:
             self._install_receiver_btn.disabled = False
             if error:
-                self._receiver_status.value = f"No se pudo instalar en {serial}: {error}"
-                self._receiver_status.color = theme.ERR
+                self._receiver_status.value = f"No se pudo instalar en {serial}: {error}. Se usará fallback de archivos."
+                self._receiver_status.color = theme.WARN
             else:
-                self._receiver_status.value = f"Auxiliar instalado en {serial}: disponible en Compartir → Más"
+                self._receiver_status.value = f"Auxiliar instalado en {serial}: disponible para selección automática."
                 self._receiver_status.color = theme.OK
             self._receiver_status.update()
             self.view.update()
@@ -144,12 +151,54 @@ class WhatsAppPage:
                 self._receiver_status.value = f"No se pudo quitar de {serial}: {error}"
                 self._receiver_status.color = theme.ERR
             else:
-                self._receiver_status.value = f"Auxiliar quitado del teléfono ({serial})"
+                self._receiver_status.value = f"Auxiliar quitado del teléfono ({serial}). Exportación usará fallback de archivos."
                 self._receiver_status.color = theme.TEXT_MUTED
             self._receiver_status.update()
             self.view.update()
 
         self._receiver_task = BackgroundTask("whatsapp-receiver-remove", target=work, on_done=done)
+        self._receiver_task.start()
+
+    def _on_check_receiver(self, _e: Optional[ft.ControlEvent] = None) -> None:
+        status = self._device.get_status()
+        if status.requires_selection:
+            self._receiver_status.value = "Hay varios dispositivos conectados. Selecciona uno en el panel lateral."
+            self._receiver_status.color = theme.ERR
+            self._receiver_status.update()
+            return
+        serial = self._device.serial
+        if not serial:
+            self._receiver_status.value = "No hay dispositivo seleccionado."
+            self._receiver_status.color = theme.ERR
+            self._receiver_status.update()
+            return
+
+        self._receiver_status.value = f"Comprobando auxiliar en {serial}..."
+        self._receiver_status.color = theme.WARN
+        self._receiver_status.update()
+
+        check_res: List[Any] = [False, ""]
+
+        def work(_stop) -> None:
+            ready, msg = ensure_receiver_ready(serial)
+            check_res[0] = ready
+            check_res[1] = msg
+
+        def done(error: Optional[BaseException]) -> None:
+            if error:
+                self._receiver_status.value = f"Error comprobando auxiliar: {error}"
+                self._receiver_status.color = theme.ERR
+            else:
+                ready, msg = check_res[0], check_res[1]
+                if ready:
+                    self._receiver_status.value = f"Auxiliar: instalado y listo ({serial})"
+                    self._receiver_status.color = theme.OK
+                else:
+                    self._receiver_status.value = f"Auxiliar: no disponible ({msg}). Se usará fallback de archivos (Mis archivos, Files)."
+                    self._receiver_status.color = theme.WARN
+            self._receiver_status.update()
+
+        self._receiver_task = BackgroundTask("whatsapp-receiver-check", target=work, on_done=done)
         self._receiver_task.start()
 
     def _on_export(self, _e: ft.ControlEvent) -> None:
@@ -181,6 +230,8 @@ class WhatsAppPage:
         out_dir = (self._out_dir.value or "./exports").strip()
 
         self._results = []
+        self._current_chat_idx = 0
+        self._total_chats = n
         self._log.clear()
         self._attach_log_handler()
         self._set_busy(True, f"Conectando con el dispositivo seleccionado [{serial}]...", indeterminate=True)
@@ -200,9 +251,47 @@ class WhatsAppPage:
         self._detach_log_handler()
         ok = sum(1 for r in self._results if r.get("success"))
         total = len(self._results)
+
+        # Informar detalladamente por cada chat
+        for r in self._results:
+            chat_name = r.get("chat", "Chat desconocido")
+            if r.get("success"):
+                method = r.get("method") or "receiver"
+                target = r.get("target_used") or "AndroidTools Receiver"
+                path = r.get("local_path") or ""
+                self._log.append(
+                    f"✔ '{chat_name}': descargado con éxito vía {target} ({method}) -> {path}",
+                    theme.OK,
+                )
+            else:
+                stage = r.get("stage_failed") or "desconocida"
+                reason = r.get("failure_reason") or "Fallo no especificado"
+                target = r.get("target_used")
+                if stage == "file_wait" or "no_file_detected" in reason:
+                    msg = f"⚠ '{chat_name}': se seleccionó guardado"
+                    if target:
+                        msg += f" ({target})"
+                    msg += " pero no se localizó el archivo a tiempo."
+                    self._log.append(msg, theme.WARN)
+                elif "timeout" in stage or "timeout" in reason.lower() or "límite" in reason.lower():
+                    self._log.append(
+                        f"✖ '{chat_name}': cancelado por límite de tiempo/desplazamientos en etapa '{stage}': {reason}",
+                        theme.ERR,
+                    )
+                elif stage == "receiver_conflict":
+                    self._log.append(
+                        f"✖ '{chat_name}': cancelado por conflicto (múltiples receptores exactos): {reason}",
+                        theme.ERR,
+                    )
+                else:
+                    self._log.append(
+                        f"✖ '{chat_name}': cancelado en etapa '{stage}': {reason}",
+                        theme.ERR,
+                    )
+
         if error:
-            self._log.append(f"ERROR: {error}", theme.ERR)
-            self._set_busy(False, f"Falló: {error}", progress=0)
+            self._log.append(f"ERROR DEL LOTE: {error}", theme.ERR)
+            self._set_busy(False, f"Falló el lote: {error}", progress=0)
         else:
             self._set_busy(False, f"Completado: {ok}/{total} chats exportados.", progress=1 if total else 0)
         print(f"[UI] Exportación FINALIZADA ({ok}/{total} OK)" + (f" error={error}" if error else ""))
@@ -211,13 +300,48 @@ class WhatsAppPage:
 
     def _on_log(self, level: int, message: str) -> None:
         self._log.append(message, level_color(level))
+
+        # Rastrear inicio de exportación por chat
         match = _PROGRESS_RE.search(message)
         if match:
-            index, total = int(match.group(1)), int(match.group(2))
-            self._progress.value = (index - 1) / total
-            self._progress_text.value = f"Exportando chat {index} de {total}..."
+            self._current_chat_idx, self._total_chats = int(match.group(1)), int(match.group(2))
+            self._progress.value = (self._current_chat_idx - 1) / self._total_chats
+            self._progress_text.value = f"[{self._current_chat_idx}/{self._total_chats}] Exportando chat..."
             try:
                 self._progress.update()
+                self._progress_text.update()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        # Registrar etapas activas en tiempo real
+        chat_prefix = f"[{self._current_chat_idx}/{self._total_chats}] " if self._total_chats > 0 else ""
+        stage_updated = False
+
+        if "Buscando receptor" in message:
+            self._progress_text.value = f"{chat_prefix}Buscando receptor AndroidTools Receiver..."
+            stage_updated = True
+        elif "Abriendo 'Más'" in message or "Abriendo Más" in message:
+            self._progress_text.value = f"{chat_prefix}Abriendo Más en el menú Compartir..."
+            stage_updated = True
+        elif "Desplazando selector" in message:
+            self._progress_text.value = f"{chat_prefix}Desplazando selector horizontal..."
+            stage_updated = True
+        elif "Probando administrador de archivos" in message or "Intentando fallback con administrador" in message:
+            self._progress_text.value = f"{chat_prefix}Probando administrador de archivos..."
+            stage_updated = True
+        elif "Confirmando guardado" in message:
+            self._progress_text.value = f"{chat_prefix}Confirmando acción de guardado..."
+            stage_updated = True
+        elif "Esperando" in message and ("archivo" in message.lower() or "materialización" in message.lower()):
+            self._progress_text.value = f"{chat_prefix}Esperando archivo..."
+            stage_updated = True
+        elif "Estado del auxiliar:" in message:
+            self._receiver_status.value = message.split("Estado del auxiliar:")[-1].strip()
+            self._receiver_status.update()
+
+        if stage_updated:
+            try:
                 self._progress_text.update()
             except Exception:  # noqa: BLE001
                 pass
