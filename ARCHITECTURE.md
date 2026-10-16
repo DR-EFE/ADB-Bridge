@@ -75,3 +75,9 @@ El puerto de conexión TLS no se asume como `5555`.
 - Entradas para shell y nombres de carpeta se validan a través de las funciones del módulo.
 - Las carpetas de backup aplican ACL restringida; se recomienda cifrado de disco o EFS para datos sensibles.
 - Los lanzadores usan `-NoProfile -ExecutionPolicy RemoteSigned`, nunca `Bypass`.
+
+## Reconexión inteligente de la GUI
+
+`DeviceService` mantiene un historial acotado de endpoints en cada dispositivo y expone `discover_and_reconnect_wireless`, `list_known_endpoints`, `save_successful_endpoint` y `run_network_diagnostics`. `start_connection_watchdog` ejecuta reintentos con retroceso (2 s a 30 s) durante un máximo de 120 s; se detiene al cambiar de dispositivo o cerrar la GUI.
+
+Los endpoints mDNS se prefieren cuando están disponibles. Si mDNS no cruza una VPN, se prueban los endpoints históricos. La aplicación detecta interfaces Tailscale/WireGuard para diagnóstico, pero no instala ni configura VPN y no abre ADB a Internet.

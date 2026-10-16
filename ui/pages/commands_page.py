@@ -85,6 +85,7 @@ class CommandsPage:
                                     ft.OutlinedButton("💾 Espacio en Disco", on_click=self._diag_storage),
                                     ft.OutlinedButton("📱 Info Completa", on_click=self._diag_system),
                                     ft.OutlinedButton("🌐 IP e Interfaces", on_click=self._diag_network),
+                                    ft.OutlinedButton("🧭 Diagnóstico de conexión", on_click=self._diag_connection),
                                     ft.OutlinedButton("🔄 Reiniciar Teléfono", on_click=self._reboot_device),
                                 ],
                             ),
@@ -222,6 +223,39 @@ class CommandsPage:
         out = dev.shell("ip -4 addr show")
         self._set_output(out)
         self._log("Interfaces de red consultadas.", theme.OK)
+
+    def _diag_connection(self, _e: ft.ControlEvent) -> None:
+        """Ejecuta diagnóstico completo de ADB, LAN, mDNS, endpoints y VPN."""
+        self._set_output("Ejecutando diagnóstico de conectividad...")
+
+        def work() -> None:
+            try:
+                report = self._device.run_network_diagnostics()
+                payload = report.to_dict()
+                lines = [
+                    f"ADB: {payload['adb_path']}",
+                    f"Version ADB: {payload['adb_version'].splitlines()[0] if payload['adb_version'] else 'desconocida'}",
+                    f"Servidor ADB: {payload['adb_server_status'].splitlines()[0] if payload['adb_server_status'] else 'sin respuesta'}",
+                    f"Estado ADB: {payload['adb_state']}",
+                    f"Serial actual: {payload['current_serial'] or '—'}",
+                    f"Interfaces: {', '.join(payload['active_networks']) or 'ninguna'}",
+                    f"Gateways: {', '.join(payload['gateways']) or 'ninguno'}",
+                    f"VPN: {', '.join(payload['vpn_interfaces']) or 'no detectada'}",
+                    f"mDNS: {len(payload['mdns_services'])} servicio(s)",
+                    "Endpoints conocidos: " + (", ".join(str(item.get("Endpoint")) for item in payload["known_endpoints"]) or "ninguno"),
+                    "Servicios mDNS: " + (", ".join(str(item.get("endpoint")) for item in payload["mdns_services"]) or "ninguno"),
+                    "Endpoints probados:",
+                ]
+                lines.extend(f"  {'OK' if item['reachable'] else 'FALLO'} {item['endpoint']}" + (f" ({item['error']})" if item.get('error') else "") for item in payload["tcp_tests"])
+                lines.append("Recomendaciones:")
+                lines.extend(f"  - {item}" for item in payload["recommendations"])
+                self._set_output("\n".join(lines))
+                self._log("Diagnóstico completo de conectividad ejecutado.", theme.OK)
+            except Exception as exc:
+                self._set_output(f"Error en diagnóstico de conectividad: {exc}")
+                self._log("No se pudo completar el diagnóstico de conectividad.", theme.ERR)
+
+        threading.Thread(target=work, name="network-diagnostics", daemon=True).start()
 
     def _reboot_device(self, _e: ft.ControlEvent) -> None:
         dev = self._get_device_or_alert()

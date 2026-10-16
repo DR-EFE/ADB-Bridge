@@ -162,7 +162,7 @@ def _discover_mdns_endpoints() -> List[str]:
     return endpoints
 
 
-def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event) -> None:
+def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event, max_duration: float = 120.0) -> None:
     """
     Bucle en segundo plano para verificar periódicamente la salud de la conexión
     y reintentar reconexión TCP/IP sin reiniciar el daemon ADB.
@@ -170,10 +170,10 @@ def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event) -> N
     logger.info("Watchdog de conexión ADB activado para %s (chequeo cada %ds).", serial, interval)
     is_network = is_network_serial(serial)
 
+    failure_started_at: Optional[float] = None
     while not stop_event.is_set():
         if stop_event.wait(interval):
             break
-
         try:
             client = get_adb_client()
             all_devices = client.list()
@@ -184,6 +184,11 @@ def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event) -> N
                 current_state = matched_info.state
 
             if current_state != "device":
+                if failure_started_at is None:
+                    failure_started_at = time.monotonic()
+                if max_duration > 0 and time.monotonic() - failure_started_at >= max_duration:
+                    logger.info("Watchdog ADB: limite de reconexion alcanzado para %s (%.0fs).", serial, max_duration)
+                    break
                 logger.warning(
                     "Watchdog ADB: Dispositivo %s en estado anormal '%s'.",
                     serial,
@@ -212,6 +217,7 @@ def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event) -> N
                                 )
                                 if mdns_info is not None:
                                     serial = endpoint
+                                    failure_started_at = None
                                     reconnected = True
                                     logger.info("Watchdog ADB: ReconexiÃ³n mDNS exitosa a %s -> %s", endpoint, mdns_res.strip())
                                     break
@@ -225,13 +231,16 @@ def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event) -> N
                     else:
                         logger.warning("Watchdog ADB: Dispositivo USB %s desconectado o no disponible.", serial)
 
+            else:
+                if failure_started_at is not None:
+                    failure_started_at = None
         except Exception as loop_exc:
             logger.debug("Aviso en ciclo de verificación de watchdog (%s): %s", serial, loop_exc)
 
     logger.info("Watchdog de conexión ADB finalizado para %s.", serial)
 
 
-def start_reconnect_watchdog(serial: str, interval: int = 20) -> threading.Event:
+def start_reconnect_watchdog(serial: str, interval: int = 20, max_duration: float = 120.0) -> threading.Event:
     """
     Inicia un watchdog ligero en un hilo daemon para monitorear el estado de conexión del dispositivo.
     Si el dispositivo pasa a offline o se desconecta, intenta reconectarlo con `adb connect <serial>`
@@ -257,7 +266,7 @@ def start_reconnect_watchdog(serial: str, interval: int = 20) -> threading.Event
 
         thread = threading.Thread(
             target=_watchdog_loop,
-            args=(serial, interval, stop_event),
+            args=(serial, interval, stop_event, max_duration),
             daemon=True,
             name=f"AdbWatchdog-{serial}",
         )

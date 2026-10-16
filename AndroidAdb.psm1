@@ -43,6 +43,9 @@ function Initialize-AdbLog {
     $logDirectory = Split-Path -Parent $logPath
     try {
         New-Item -ItemType Directory -Path $logDirectory -Force -ErrorAction Stop | Out-Null
+        if (-not (Test-Path -LiteralPath $logPath)) {
+            New-Item -ItemType File -Path $logPath -Force -ErrorAction Stop | Out-Null
+        }
         $cutoff = [datetime]::UtcNow.Date.AddDays(-$RetentionDays + 1)
         Get-ChildItem -LiteralPath $logDirectory -Filter 'adb-tools-*.log' -File -ErrorAction SilentlyContinue |
             Where-Object { $_.LastWriteTimeUtc -lt $cutoff } |

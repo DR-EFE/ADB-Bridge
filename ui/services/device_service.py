@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -64,6 +65,86 @@ class DeviceStatus:
             self.available_devices = []
 
 
+@dataclass
+class RetryPolicy:
+    """Límites del supervisor de reconexión inalámbrica."""
+
+    initial_interval: float = 2.0
+    max_interval: float = 30.0
+    timeout: float = 120.0
+
+
+@dataclass
+class ConnectionResult:
+    """Resultado estructurado de una búsqueda o reconexión ADB."""
+
+    success: bool
+    serial: Optional[str] = None
+    endpoint: Optional[str] = None
+    method: str = "none"
+    message: str = ""
+    candidates: List[Dict[str, str]] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.candidates is None:
+            self.candidates = []
+
+    def __str__(self) -> str:
+        return self.message
+
+
+@dataclass
+class NetworkDiagnosticReport:
+    """Información de conectividad de la PC, ADB y el dispositivo."""
+
+    adb_path: str
+    adb_version: str
+    adb_server_status: str
+    adb_state: str
+    current_serial: Optional[str]
+    current_endpoint: Optional[str]
+    known_endpoints: List[Dict[str, Any]]
+    interfaces: List[Dict[str, str]]
+    gateways: List[str]
+    active_networks: List[str]
+    mdns_services: List[Dict[str, str]]
+    tcp_tests: List[Dict[str, Any]]
+    vpn_interfaces: List[str]
+    recommendations: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "adb_path": self.adb_path,
+            "adb_version": self.adb_version,
+            "adb_server_status": self.adb_server_status,
+            "adb_state": self.adb_state,
+            "current_serial": self.current_serial,
+            "current_endpoint": self.current_endpoint,
+            "known_endpoints": self.known_endpoints,
+            "interfaces": self.interfaces,
+            "gateways": self.gateways,
+            "active_networks": self.active_networks,
+            "mdns_services": self.mdns_services,
+            "tcp_tests": self.tcp_tests,
+            "vpn_interfaces": self.vpn_interfaces,
+            "recommendations": self.recommendations,
+        }
+
+
+class WatchHandle:
+    """Control pequeño y seguro para detener un supervisor de reconexión."""
+
+    def __init__(self, stop_event: threading.Event, thread: Optional[threading.Thread] = None) -> None:
+        self.event = stop_event
+        self.thread = thread
+
+    def stop(self) -> None:
+        self.event.set()
+
+    def is_alive(self) -> bool:
+        return bool(self.thread and self.thread.is_alive())
+
+
 def read_devices_store(path: Path = DEVICES_JSON) -> Dict[str, Any]:
     """Lee el archivo devices.json si existe."""
     if not path.is_file():
@@ -107,11 +188,61 @@ class DeviceService:
         self.auto_wifi_enabled: bool = True
         self._auto_converted_serials: Set[str] = set()
         self._converting_lock = threading.Lock()
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: Optional[threading.Thread] = None
+        self._watchdog_device_id: Optional[str] = None
+        self._watchdog_policy = RetryPolicy()
         logger.info("Serial inicial configurado: %s", self.serial or "autodetección")
 
     def init_adb(self) -> None:
         """Arranca o verifica el daemon ADB."""
         ensure_single_adb_server(force=False)
+
+    def list_known_endpoints(self, device_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Devuelve endpoints conocidos ordenados por el último uso."""
+        store = read_devices_store(DEVICES_JSON)
+        target_id = device_id or store.get("CurrentDeviceId")
+        record = next((item for item in store.get("Devices", []) or [] if item.get("Id") == target_id), None)
+        if record is None:
+            record = self._saved_record()
+            if device_id:
+                record = next((item for item in (read_devices_store(DEVICES_JSON).get("Devices") or []) if item.get("Id") == device_id), record)
+        if record is None:
+            return []
+        result: List[Dict[str, Any]] = []
+        for item in record.get("Endpoints", []) or []:
+            if isinstance(item, str):
+                item = {"Endpoint": item}
+            endpoint = str(item.get("Endpoint") or item.get("endpoint") or "").strip()
+            if endpoint and not any(row.get("Endpoint") == endpoint for row in result):
+                result.append({"Endpoint": endpoint, "ServiceName": item.get("ServiceName") or item.get("MdnsServiceName"), "LastUsedUtc": item.get("LastUsedUtc"), "Source": item.get("Source", "history")})
+        last_endpoint = str(record.get("LastEndpoint") or "").strip()
+        last_row = next((row for row in result if row.get("Endpoint") == last_endpoint), None) if last_endpoint else None
+        if last_row is None and last_endpoint:
+            last_row = {"Endpoint": last_endpoint, "ServiceName": record.get("MdnsServiceName"), "LastUsedUtc": record.get("LastConnectedUtc"), "Source": "last"}
+        result = [row for row in result if row.get("Endpoint") != last_endpoint]
+        result.sort(key=lambda row: str(row.get("LastUsedUtc") or ""), reverse=True)
+        return ([last_row] if last_row else []) + result
+
+    def save_successful_endpoint(self, device_id: Optional[str], endpoint: str, service_name: str = "") -> None:
+        """Agrega un endpoint exitoso al historial del dispositivo."""
+        endpoint = endpoint.strip()
+        if not endpoint:
+            return
+        store = read_devices_store(DEVICES_JSON)
+        devices = store.setdefault("Devices", [])
+        record = next((item for item in devices if item.get("Id") == (device_id or store.get("CurrentDeviceId"))), None) or self._saved_record()
+        if record is None:
+            return
+        history = record.setdefault("Endpoints", [])
+        history[:] = [item for item in history if (item.get("Endpoint") if isinstance(item, dict) else item) != endpoint]
+        history.insert(0, {"Endpoint": endpoint, "ServiceName": service_name or record.get("MdnsServiceName"), "LastUsedUtc": datetime.now(timezone.utc).isoformat(), "Source": "successful"})
+        record["Endpoints"] = history[:10]
+        record["LastEndpoint"] = endpoint
+        record["LastIp"] = endpoint.rsplit(":", 1)[0].strip("[]") if ":" in endpoint else endpoint
+        record["LastConnectedUtc"] = datetime.now(timezone.utc).isoformat()
+        store["CurrentDeviceId"] = record.get("Id")
+        save_devices_store(store, DEVICES_JSON)
 
     def get_status(self) -> DeviceStatus:
         """
@@ -306,11 +437,14 @@ class DeviceService:
             if not match:
                 continue
             host = match.group("host").strip("[]")
+            endpoint = f"[{host}]:{match.group('port')}" if ":" in host else f"{host}:{match.group('port')}"
+            if any(item.get("endpoint") == endpoint for item in services):
+                continue
             services.append({
                 "service_name": line.strip().split()[0] if line.strip() else "",
                 "host": host,
                 "port": match.group("port"),
-                "endpoint": f"[{host}]:{match.group('port')}" if ":" in host else f"{host}:{match.group('port')}",
+                "endpoint": endpoint,
                 "raw": line.strip(),
             })
         return services
@@ -359,6 +493,16 @@ class DeviceService:
         if record and record.get("MdnsServiceName"):
             current["MdnsServiceName"] = record["MdnsServiceName"]
         current["LastConnectedUtc"] = datetime.now(timezone.utc).isoformat()
+        current["LastIp"] = endpoint.rsplit(":", 1)[0].strip("[]") if ":" in endpoint else endpoint
+        history = current.setdefault("Endpoints", [])
+        history[:] = [item for item in history if (item.get("Endpoint") if isinstance(item, dict) else item) != endpoint]
+        history.insert(0, {
+            "Endpoint": endpoint,
+            "ServiceName": current.get("MdnsServiceName"),
+            "LastUsedUtc": current["LastConnectedUtc"],
+            "Source": "successful",
+        })
+        current["Endpoints"] = history[:10]
         store["CurrentDeviceId"] = current["Id"]
         save_devices_store(store, DEVICES_JSON)
 
@@ -419,7 +563,7 @@ class DeviceService:
             return "No hay ningún dispositivo seleccionado."
         saved = self._saved_record()
         if saved and saved.get("Mode") == "wireless-debugging-tls":
-            return self.discover_and_reconnect_wireless()
+            return self.discover_and_reconnect_wireless().message
         if not is_network_serial(self.serial):
             return f"El dispositivo {self.serial} es USB. Si no responde, reconecta el cable."
         try:
@@ -429,26 +573,234 @@ class DeviceService:
         except Exception as exc:
             return f"Error al reconectar: {exc}"
 
-    def discover_and_reconnect_wireless(self) -> str:
-        """Busca el nuevo endpoint mDNS tras un cambio de red y lo conecta."""
+    def discover_and_reconnect_wireless(self, device_id: Optional[str] = None, endpoint: Optional[str] = None) -> ConnectionResult:
+        # Busca el endpoint actual, prueba historicos y conecta Wireless Debugging.
         try:
             record = self._saved_record()
-            services = self.find_wireless_devices()
-            if not services:
-                return "No se encontraron servicios Wireless Debugging por mDNS en esta red."
-            preferred_host = ""
-            if self.serial and ":" in self.serial:
-                preferred_host = self.serial.rsplit(":", 1)[0].strip("[]").lower()
+            if device_id:
+                record = next((item for item in (read_devices_store(DEVICES_JSON).get("Devices") or []) if item.get("Id") == device_id), record)
+            try:
+                services = self.find_wireless_devices()
+            except Exception as mdns_exc:
+                logger.debug("mDNS no disponible durante reconexión: %s", mdns_exc)
+                services = []
+            candidates: List[Dict[str, str]] = list(services)
+            for known in self.list_known_endpoints(device_id):
+                value = str(known.get("Endpoint") or "")
+                if value and not any(item.get("endpoint") == value for item in candidates):
+                    candidates.append({"endpoint": value, "host": value.rsplit(":", 1)[0].strip("[]"), "port": value.rsplit(":", 1)[-1], "service_name": str(known.get("ServiceName") or ""), "raw": "historico"})
+            if endpoint and not any(item.get("endpoint") == endpoint for item in candidates):
+                manual_host = endpoint.rsplit(":", 1)[0].strip("[]")
+                candidates.insert(0, {"endpoint": endpoint, "host": manual_host, "port": endpoint.rsplit(":", 1)[-1], "service_name": "", "raw": "manual"})
+            if not candidates:
+                return ConnectionResult(False, self.serial, method="mdns", message="No se encontraron servicios Wireless Debugging ni endpoints historicos accesibles.")
+            preferred_host = self.serial.rsplit(":", 1)[0].strip("[]").lower() if self.serial and ":" in self.serial else ""
             preferred_service = str((record or {}).get("MdnsServiceName") or "").lower()
-            matching = [item for item in services if preferred_service and item["service_name"].lower() == preferred_service]
+            matching = [item for item in candidates if endpoint and item.get("endpoint") == endpoint]
             if not matching:
-                matching = [item for item in services if preferred_host and item["host"].lower() == preferred_host]
-            selected = matching[0] if len(matching) == 1 else services[0] if len(services) == 1 else None
+                matching = [item for item in services if preferred_service and item.get("service_name", "").lower() == preferred_service]
+            if not matching and len(services) == 1:
+                matching = [services[0]]
+            if not matching and not services:
+                matching = [item for item in candidates if preferred_service and item.get("service_name", "").lower() == preferred_service]
+            if not matching:
+                matching = [item for item in services if preferred_host and item.get("host", "").lower() == preferred_host]
+            if not matching and not services:
+                matching = [item for item in candidates if preferred_host and item.get("host", "").lower() == preferred_host]
+            selected = matching[0] if len(matching) == 1 else candidates[0] if len(candidates) == 1 else None
             if selected is None:
-                return "Se encontraron varios teléfonos Wireless Debugging; selecciona uno desde Buscar dispositivo WiFi."
-            return self._connect_modern_endpoint(selected["endpoint"], record=record)
+                return ConnectionResult(False, self.serial, method="mdns", message="Se encontraron varios telefonos Wireless Debugging; selecciona uno.", candidates=candidates)
+            try:
+                message = self._connect_modern_endpoint(selected["endpoint"], record=record)
+                self.save_successful_endpoint((record or {}).get("Id"), selected["endpoint"], selected.get("service_name", ""))
+                return ConnectionResult(True, selected["endpoint"], selected["endpoint"], "mdns" if selected in services else "history", message, candidates)
+            except Exception as first_exc:
+                for alternate in candidates:
+                    if alternate.get("endpoint") == selected.get("endpoint"):
+                        continue
+                    try:
+                        message = self._connect_modern_endpoint(alternate["endpoint"], record=record)
+                        self.save_successful_endpoint((record or {}).get("Id"), alternate["endpoint"], alternate.get("service_name", ""))
+                        return ConnectionResult(True, alternate["endpoint"], alternate["endpoint"], "history", message, candidates)
+                    except Exception:
+                        continue
+                return ConnectionResult(False, self.serial, selected.get("endpoint"), "network", f"No se pudo conectar a los endpoints conocidos: {first_exc}", candidates)
         except Exception as exc:
-            return f"No se pudo buscar Wireless Debugging: {exc}"
+            return ConnectionResult(False, self.serial, method="diagnostic", message=f"No se pudo buscar Wireless Debugging: {exc}")
+
+    @staticmethod
+    def _run_network_command(command: List[str], timeout: float = 8.0) -> str:
+        kwargs: Dict[str, Any] = {"capture_output": True, "text": True, "timeout": timeout, "check": False}
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            result = subprocess.run(command, **kwargs)
+        except Exception as exc:
+            return f"ERROR: {exc}"
+        return "\\n".join(part for part in (result.stdout or "", result.stderr or "") if part).strip()
+
+    def run_network_diagnostics(self, device_id: Optional[str] = None) -> NetworkDiagnosticReport:
+        """Recopila conectividad local, ADB, mDNS, VPN y pruebas TCP accionables."""
+        adb_path = get_adb_executable()
+        adb_version = self._run_network_command([adb_path, "version"])
+        adb_server_status = self._run_network_command([adb_path, "server-status"])
+        try:
+            adb_devices = self._run_network_command([adb_path, "devices"])
+            rows = [line.split() for line in adb_devices.splitlines() if line.strip() and not line.lower().startswith("list of")]
+            current_state = next((row[1] for row in rows if row and row[0] == self.serial), None)
+            if current_state is None and self.serial is None and len(rows) == 1:
+                current_state = rows[0][1]
+            current_state = current_state or "ausente"
+        except Exception:
+            adb_devices = ""
+            current_state = "desconocido"
+
+        ipconfig = self._run_network_command(["ipconfig", "/all"])
+        route = self._run_network_command(["route", "print"])
+        interfaces: List[Dict[str, str]] = []
+        current_adapter = ""
+        for line in ipconfig.splitlines():
+            stripped = line.strip()
+            if stripped and not line.startswith(" ") and not line.startswith("	") and line.endswith(":"):
+                current_adapter = line.rstrip(":").strip()
+            ipv4 = re.search(r"IPv4[^:]*:\s*([0-9a-fA-F:.]+)", line)
+            if ipv4 and not ipv4.group(1).startswith("127."):
+                interfaces.append({"name": current_adapter or "adaptador", "ip": ipv4.group(1), "status": "active"})
+        gateways = sorted(set(re.findall(r"^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+([0-9.]+)", route, re.MULTILINE)))
+        active_networks = [f"{item['name']}: {item['ip']}" for item in interfaces]
+        vpn_interfaces = [item["name"] for item in interfaces if any(token in item["name"].lower() for token in ("tailscale", "wireguard", "vpn", "wintun"))]
+        mdns_error = ""
+        try:
+            services = self.find_wireless_devices()
+        except Exception as exc:
+            services = []
+            mdns_error = str(exc)
+
+        known = self.list_known_endpoints(device_id)
+        endpoints: List[str] = []
+        if self.serial and is_network_serial(self.serial):
+            endpoints.append(self.serial)
+        endpoints.extend(str(item.get("Endpoint")) for item in known if item.get("Endpoint"))
+        endpoints.extend(str(item.get("endpoint")) for item in services if item.get("endpoint"))
+        unique_endpoints = list(dict.fromkeys(endpoints))
+        tcp_tests: List[Dict[str, Any]] = []
+        for value in unique_endpoints:
+            host, port_text = value.rsplit(":", 1) if ":" in value else (value, "")
+            host = host.strip("[]")
+            try:
+                port = int(port_text)
+                with socket.create_connection((host, port), timeout=2.0):
+                    tcp_tests.append({"endpoint": value, "reachable": True, "error": None})
+            except Exception as exc:
+                tcp_tests.append({"endpoint": value, "reachable": False, "error": str(exc)})
+
+        recommendations: List[str] = []
+        if current_state == "unauthorized":
+            recommendations.append("Desbloquea el telefono y acepta la autorizacion ADB.")
+        if not services and unique_endpoints and not any(item["reachable"] for item in tcp_tests):
+            errors = " ".join(str(item.get("error") or "") for item in tcp_tests).lower()
+            if any(token in errors for token in ("refused", "10061")):
+                recommendations.append("El endpoint rechazo la conexion; revisa que Wireless Debugging siga activo y que el puerto sea el actual.")
+            elif any(token in errors for token in ("no route", "unreachable", "10051", "10065")):
+                recommendations.append("No existe una ruta hacia el telefono; conecta ambos equipos a la misma red o usa una VPN con rutas permitidas.")
+            elif any(token in errors for token in ("timed out", "timeout", "10060")):
+                recommendations.append("La conexion agoto el tiempo de espera; revisa aislamiento de clientes WiFi, firewall y VPN.")
+            recommendations.append("mDNS no respondio y ningun endpoint historico es accesible; verifica que exista una ruta de red.")
+        if not interfaces:
+            recommendations.append("No se detecto una interfaz IPv4 activa en la PC.")
+        if vpn_interfaces:
+            recommendations.append("Hay una interfaz VPN activa; mDNS puede no cruzarla, usa el endpoint historico o DNS de la VPN.")
+        if mdns_error:
+            recommendations.append("mDNS no esta disponible en ADB; se utilizaran endpoints historicos o una direccion DNS de la VPN.")
+        if not recommendations and current_state != "device":
+            recommendations.append("El dispositivo no esta en estado device; revisa WiFi, autorizacion y firewall.")
+        if not recommendations:
+            recommendations.append("La conectividad ADB y la red parecen disponibles.")
+
+        return NetworkDiagnosticReport(
+            adb_path=adb_path,
+            adb_version=adb_version,
+            adb_server_status=adb_server_status,
+            adb_state=current_state,
+            current_serial=self.serial,
+            current_endpoint=self.serial if is_network_serial(self.serial or "") else None,
+            known_endpoints=known,
+            interfaces=interfaces,
+            gateways=gateways,
+            active_networks=active_networks,
+            mdns_services=services,
+            tcp_tests=tcp_tests,
+            vpn_interfaces=vpn_interfaces,
+            recommendations=recommendations,
+        )
+
+    def start_connection_watchdog(
+        self,
+        device_id: Optional[str] = None,
+        retry_policy: Optional[RetryPolicy | Dict[str, float]] = None,
+        on_result: Optional[Callable[[ConnectionResult], None]] = None,
+    ) -> WatchHandle:
+        """Supervisa el dispositivo activo y limita los reintentos de red."""
+        self.stop_connection_watchdog()
+        if isinstance(retry_policy, dict):
+            policy = RetryPolicy(**retry_policy)
+        else:
+            policy = retry_policy or RetryPolicy()
+        stop_event = threading.Event()
+        self._watchdog_stop = stop_event
+        self._watchdog_device_id = device_id
+        self._watchdog_policy = policy
+
+        def loop() -> None:
+            interval = max(0.5, policy.initial_interval)
+            deadline: Optional[float] = None
+            while not stop_event.wait(interval):
+                try:
+                    devices = get_adb_client().list()
+                    info = next((item for item in devices if item.serial == self.serial), None)
+                    if info is not None and info.state == "device":
+                        deadline = None
+                        interval = max(0.5, policy.initial_interval)
+                        continue
+                    usb_fallback = next((item for item in devices if item.state == "device" and not is_network_serial(item.serial)), None)
+                    if usb_fallback is not None:
+                        self.serial = usb_fallback.serial
+                        deadline = None
+                        interval = max(0.5, policy.initial_interval)
+                        if on_result:
+                            on_result(ConnectionResult(True, usb_fallback.serial, usb_fallback.serial, "usb", "Conexión USB disponible; se usa como respaldo."))
+                        continue
+                    if deadline is None:
+                        deadline = time.monotonic() + max(1.0, policy.timeout)
+                    if time.monotonic() >= deadline:
+                        logger.warning("Supervisor de reconexion detenido tras alcanzar el limite de %.0fs.", policy.timeout)
+                        break
+                    result = self.discover_and_reconnect_wireless(device_id=device_id)
+                    if on_result:
+                        on_result(result)
+                    if result.success:
+                        deadline = None
+                        interval = max(0.5, policy.initial_interval)
+                    else:
+                        interval = min(max(interval * 2, policy.initial_interval), policy.max_interval)
+                except Exception as exc:
+                    logger.debug("Error en supervisor de reconexion: %s", exc)
+                    interval = min(max(interval * 2, policy.initial_interval), policy.max_interval)
+            stop_event.set()
+
+        thread = threading.Thread(target=loop, name="device-network-watchdog", daemon=True)
+        self._watchdog_thread = thread
+        thread.start()
+        return WatchHandle(stop_event, thread)
+
+    def stop_connection_watchdog(self) -> None:
+        """Detiene el supervisor actual y evita que sobreviva al cambio de dispositivo."""
+        self._watchdog_stop.set()
+        thread = self._watchdog_thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._watchdog_thread = None
+        self._watchdog_device_id = None
 
     def convert_usb_to_wifi(self, usb_serial: Optional[str] = None) -> Tuple[bool, str]:
         """
@@ -546,8 +898,13 @@ class DeviceService:
         now_utc = datetime.now(timezone.utc).isoformat()
         if existing:
             existing["LastEndpoint"] = endpoint
+            existing["LastIp"] = endpoint.rsplit(":", 1)[0].strip("[]")
             existing["LastConnectedUtc"] = now_utc
             existing["Mode"] = "tcpip-5555"
+            history = existing.setdefault("Endpoints", [])
+            history[:] = [item for item in history if (item.get("Endpoint") if isinstance(item, dict) else item) != endpoint]
+            history.insert(0, {"Endpoint": endpoint, "LastUsedUtc": now_utc, "Source": "successful"})
+            existing["Endpoints"] = history[:10]
             device_id = existing["Id"]
         else:
             device_id = uuid.uuid4().hex
@@ -557,6 +914,7 @@ class DeviceService:
                     "FriendlyName": f"{model} ({endpoint})",
                     "UsbSerial": usb_serial,
                     "LastEndpoint": endpoint,
+                    "LastIp": endpoint.rsplit(":", 1)[0].strip("[]"),
                     "Mode": "tcpip-5555",
                     "LastConnectedUtc": now_utc,
                     "IsPaired": True,
@@ -568,6 +926,7 @@ class DeviceService:
                             "ForceUsbOnly": False,
                         }
                     ],
+                    "Endpoints": [{"Endpoint": endpoint, "LastUsedUtc": now_utc, "Source": "successful"}],
                 }
             )
 

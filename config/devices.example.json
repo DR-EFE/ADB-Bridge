@@ -8,6 +8,16 @@
       "FriendlyName": "Pixel personal",
       "UsbSerial": "1A2B3C4D5E6F",
       "LastEndpoint": "192.168.1.42:37123",
+      "LastIp": "192.168.1.42",
+      "MdnsServiceName": "adb-ABC123._adb-tls-connect._tcp.local",
+      "Endpoints": [
+        {
+          "Endpoint": "192.168.1.42:37123",
+          "ServiceName": "adb-ABC123._adb-tls-connect._tcp.local",
+          "LastUsedUtc": "2026-10-06T19:55:20.0000000Z",
+          "Source": "successful"
+        }
+      ],
       "Mode": "wireless-debugging-tls",
       "LastConnectedUtc": "2026-10-06T19:55:20.0000000Z",
       "IsPaired": true,

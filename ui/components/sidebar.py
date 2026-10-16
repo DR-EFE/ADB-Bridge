@@ -9,7 +9,7 @@ from typing import Callable, Optional
 import flet as ft
 
 from .. import theme
-from ..services.device_service import DeviceService, DeviceStatus
+from ..services.device_service import ConnectionResult, DeviceService, DeviceStatus, RetryPolicy
 from .status_card import StatusCard
 
 logger = logging.getLogger("ui.sidebar")
@@ -31,6 +31,7 @@ class Sidebar:
         self._on_log = on_log
         self._stop = threading.Event()
         self._busy = threading.Lock()
+        self._watch_handle = None
 
         self._card = StatusCard(on_convert_wifi=self._on_convert_wifi_click)
 
@@ -61,6 +62,19 @@ class Sidebar:
             on_click=self._on_wifi_search_click,
             expand=True,
         )
+        self._watchdog_label = ft.Text("Pausar reconexión automática")
+        self._watchdog_btn = ft.OutlinedButton(
+            content=self._watchdog_label,
+            icon=ft.Icons.PAUSE_CIRCLE_OUTLINE,
+            on_click=self._on_watchdog_toggle,
+            expand=True,
+        )
+        self._manual_endpoint_btn = ft.OutlinedButton(
+            "Conectar endpoint manual",
+            icon=ft.Icons.LINK,
+            on_click=self._on_manual_endpoint_click,
+            expand=True,
+        )
         self._feedback = ft.Text("", size=12, color=theme.TEXT_MUTED)
 
         self.view = ft.Container(
@@ -83,6 +97,8 @@ class Sidebar:
                     ft.Row([self._reconnect_btn]),
                     ft.Row([self._wireless_setup_btn]),
                     ft.Row([self._wifi_search_btn]),
+                    ft.Row([self._manual_endpoint_btn]),
+                    ft.Row([self._watchdog_btn]),
                     self._feedback,
                 ],
             ),
@@ -93,10 +109,17 @@ class Sidebar:
 
     def start_polling(self) -> None:
         """Lanza el sondeo en segundo plano."""
+        self._watch_handle = self._device.start_connection_watchdog(
+            retry_policy=RetryPolicy(initial_interval=2.0, max_interval=30.0, timeout=120.0),
+            on_result=self._on_watchdog_result,
+        )
+        self._set_watchdog_label("Pausar reconexión automática")
         threading.Thread(target=self._poll_loop, name="sidebar-poll", daemon=True).start()
 
     def stop_polling(self) -> None:
         self._stop.set()
+        self._device.stop_connection_watchdog()
+        self._set_watchdog_label("Activar reconexión automática")
 
     def refresh_now(self) -> DeviceStatus:
         """Consulta y actualiza el estado en pantalla."""
@@ -157,6 +180,9 @@ class Sidebar:
         new_serial = self._dev_dropdown.value
         if new_serial and new_serial != self._device.serial:
             self._device.serial = new_serial
+            self._device.stop_connection_watchdog()
+            self._watch_handle = self._device.start_connection_watchdog(on_result=self._on_watchdog_result)
+            self._set_watchdog_label("Pausar reconexión automática")
             self._log_msg(f"Dispositivo activo cambiado a: {new_serial}", theme.ACCENT)
             threading.Thread(target=self.refresh_now, daemon=True).start()
 
@@ -253,8 +279,20 @@ class Sidebar:
         self.view.update()
 
         def worker() -> None:
-            message = self._device.discover_and_reconnect_wireless()
-            ok = message.startswith("Conectado por Wireless Debugging")
+            result = self._device.discover_and_reconnect_wireless()
+            if len(result.candidates) > 1 and not result.success:
+                self._log_msg(f"[Buscar WiFi] {result.message}", theme.WARN)
+                self._feedback.value = result.message
+                self._feedback.color = theme.WARN
+                self._wifi_search_btn.disabled = False
+                try:
+                    self.view.update()
+                except Exception:
+                    pass
+                self._show_wireless_candidates(result)
+                return
+            ok = result.success
+            message = result.message
             self._log_msg(f"[Buscar WiFi] {message}", theme.OK if ok else theme.WARN)
             self._feedback.value = message
             self._feedback.color = theme.OK if ok else theme.WARN
@@ -269,6 +307,126 @@ class Sidebar:
                 pass
 
         threading.Thread(target=worker, name="wireless-discovery", daemon=True).start()
+
+    def _on_manual_endpoint_click(self, _e: ft.ControlEvent) -> None:
+        page = getattr(self.view, "page", None)
+        if page is None:
+            return
+        endpoint = ft.TextField(label="IP, DNS o endpoint Tailscale (host:puerto)", autofocus=True)
+
+        def close(_e=None) -> None:
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
+
+        def connect(_e) -> None:
+            value = (endpoint.value or "").strip()
+            if not value or ":" not in value:
+                endpoint.error_text = "Escribe un host y puerto, por ejemplo 100.64.0.5:37123"
+                endpoint.update()
+                return
+            close()
+            self._manual_endpoint_btn.disabled = True
+            self._feedback.value = f"Conectando a {value}..."
+            self.view.update()
+
+            def worker() -> None:
+                result = self._device.discover_and_reconnect_wireless(endpoint=value)
+                self._feedback.value = result.message
+                self._feedback.color = theme.OK if result.success else theme.ERR
+                self._log_msg(f"[Endpoint manual] {result.message}", self._feedback.color)
+                self._manual_endpoint_btn.disabled = False
+                try:
+                    self.refresh_now()
+                    self.view.update()
+                except Exception:
+                    pass
+
+            threading.Thread(target=worker, name="manual-endpoint", daemon=True).start()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Conectar endpoint privado o VPN"),
+            content=ft.Column([ft.Text("Usa la IP/DNS y puerto de Wireless Debugging. No abre puertos ni configura la VPN."), endpoint], tight=True, width=460),
+            actions=[ft.TextButton("Cancelar", on_click=close), ft.FilledButton("Conectar", on_click=connect)],
+        )
+        page.show_dialog(dialog)
+
+    def _show_wireless_candidates(self, result: ConnectionResult) -> None:
+        page = getattr(self.view, "page", None)
+        if page is None:
+            return
+        options = [ft.dropdown.Option(key=item.get("endpoint", ""), text=f"{item.get('endpoint', '')}  {item.get('service_name', '')}") for item in result.candidates if item.get("endpoint")]
+        selector = ft.Dropdown(label="Dispositivo / endpoint", options=options, value=options[0].key if options else None)
+
+        def close(_e=None) -> None:
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
+
+        def connect(_e) -> None:
+            chosen = selector.value
+            if not chosen:
+                return
+            close()
+            self._wifi_search_btn.disabled = True
+            self._feedback.value = f"Conectando a {chosen}..."
+            self.view.update()
+
+            def worker() -> None:
+                selected = self._device.discover_and_reconnect_wireless(endpoint=chosen)
+                self._feedback.value = selected.message
+                self._feedback.color = theme.OK if selected.success else theme.ERR
+                self._log_msg(f"[Buscar WiFi] {selected.message}", self._feedback.color)
+                self._wifi_search_btn.disabled = False
+                try:
+                    self.refresh_now()
+                    self.view.update()
+                except Exception:
+                    pass
+
+            threading.Thread(target=worker, name="wireless-candidate", daemon=True).start()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Dispositivos Wireless Debugging encontrados"),
+            content=ft.Column([ft.Text("Selecciona el teléfono que quieres conectar."), selector], tight=True, width=460),
+            actions=[ft.TextButton("Cancelar", on_click=close), ft.FilledButton("Conectar", on_click=connect)],
+        )
+        page.show_dialog(dialog)
+
+    def _on_watchdog_result(self, result: ConnectionResult) -> None:
+        if result.success:
+            self._log_msg(f"[Reconexión automática] {result.message}", theme.OK)
+            self._feedback.value = result.message
+            self._feedback.color = theme.OK
+            try:
+                self._feedback.update()
+            except Exception:
+                pass
+        elif result.message:
+            logger.debug("Reconexión automática: %s", result.message)
+
+    def _on_watchdog_toggle(self, _e: ft.ControlEvent) -> None:
+        if self._watch_handle and self._watch_handle.is_alive():
+            self._device.stop_connection_watchdog()
+            self._set_watchdog_label("Activar reconexión automática")
+            self._feedback.value = "Reconexión automática pausada."
+            self._feedback.color = theme.WARN
+        else:
+            self._watch_handle = self._device.start_connection_watchdog(on_result=self._on_watchdog_result)
+            self._set_watchdog_label("Pausar reconexión automática")
+            self._feedback.value = "Reconexión automática activada."
+            self._feedback.color = theme.OK
+        try:
+            self.view.update()
+        except Exception:
+            pass
+
+    def _set_watchdog_label(self, text: str) -> None:
+        self._watchdog_label.value = text
 
     def _reconnect_worker(self) -> None:
         with self._busy:
