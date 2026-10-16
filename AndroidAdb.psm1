@@ -6,6 +6,10 @@ if (-not (Get-Variable -Name AndroidAdbCurrentDevice -Scope Global -ErrorAction 
     $global:AndroidAdbCurrentDevice = $null
 }
 
+if (-not (Get-Variable -Name AndroidAdbSelectionCleared -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:AndroidAdbSelectionCleared = $false
+}
+
 if (-not (Get-Variable -Name AndroidAdbDebugLogging -Scope Global -ErrorAction SilentlyContinue)) {
     $global:AndroidAdbDebugLogging = $false
 }
@@ -152,7 +156,7 @@ function Get-CurrentAdbDevice {
     [CmdletBinding()]
     param()
 
-    if ($null -eq $global:AndroidAdbCurrentDevice) {
+    if ($null -eq $global:AndroidAdbCurrentDevice -and -not $global:AndroidAdbSelectionCleared) {
         try {
             $store = Read-AdbDeviceStore
             if ($store.CurrentDeviceId) {
@@ -160,17 +164,34 @@ function Get-CurrentAdbDevice {
                 if ($null -ne $saved) {
                     $ready = @(Get-AdbDevices | Where-Object {
                         $_.Serial -ieq $saved.LastEndpoint -or
-                        ($saved.UsbSerial -and $_.Serial -ceq $saved.UsbSerial)
+                        (-not $saved.LastEndpoint -and $saved.UsbSerial -and $_.Serial -ceq $saved.UsbSerial)
                     })[0]
-                    if ($null -ne $ready -and $ready.Status -ceq 'device') {
+                    if ($null -ne $ready -or $saved.LastEndpoint) {
                         $global:AndroidAdbCurrentDevice = [pscustomobject][ordered]@{
-                            Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$ready.Serial; LastEndpoint=$saved.LastEndpoint; UsbSerial=$saved.UsbSerial
-                            Status=$ready.Status; Mode=$saved.Mode; NetworkProfiles=@($saved.NetworkProfiles); Raw=$ready.Raw
+                            Id=$saved.Id; FriendlyName=$saved.FriendlyName; Serial=$(if ($ready) { $ready.Serial } else { $saved.LastEndpoint }); LastEndpoint=$saved.LastEndpoint; UsbSerial=$saved.UsbSerial; WifiMacAddress=$saved.WifiMacAddress
+                            Status=$(if ($ready) { $ready.Status } else { 'offline' }); Mode=$saved.Mode; NetworkProfiles=@($saved.NetworkProfiles); Raw=$ready.Raw
                         }
                     }
                 }
             }
         } catch { }
+    }
+    # La seleccion persistida puede apuntar a una IP antigua. Si ADB solo
+    # muestra un dispositivo autorizado, usarlo como seleccion provisional;
+    # la GUI podra asociarlo y guardar su identidad sin bloquear los botones.
+    if ($null -eq $global:AndroidAdbCurrentDevice -and -not $global:AndroidAdbSelectionCleared) {
+        $readyDevices = @(Get-AdbDevices | Where-Object { $_.Status -ceq 'device' })
+        if ($readyDevices.Count -eq 1) {
+            $record = $readyDevices[0]
+            $global:AndroidAdbCurrentDevice = [pscustomobject][ordered]@{
+                Id=$null; FriendlyName=$record.Serial; Serial=$record.Serial
+                LastEndpoint=if ($record.Serial -match ':\d+$') { $record.Serial } else { $null }
+                UsbSerial=if ($record.Serial -notmatch ':\d+$') { $record.Serial } else { $null }
+                WifiMacAddress=$null; Status=$record.Status
+                Mode=if ($record.Serial -match ':\d+$') { 'tcpip-5555' } else { 'usb' }
+                NetworkProfiles=@(); Raw=$record.Raw
+            }
+        }
     }
     if ($null -eq $global:AndroidAdbCurrentDevice) { return $null }
     $serial = [string]$global:AndroidAdbCurrentDevice.Serial
@@ -178,6 +199,8 @@ function Get-CurrentAdbDevice {
     if ($null -ne $record) {
         $global:AndroidAdbCurrentDevice.Status = $record.Status
         $global:AndroidAdbCurrentDevice.Raw = $record.Raw
+    } else {
+        $global:AndroidAdbCurrentDevice.Status = 'offline'
     }
     return $global:AndroidAdbCurrentDevice
 }
@@ -210,11 +233,13 @@ function Set-CurrentAdbDevice {
         Serial       = $serial
         LastEndpoint = $lastEndpoint
         UsbSerial    = $usbSerial
+        WifiMacAddress = if ($Device.PSObject.Properties['WifiMacAddress']) { [string]$Device.WifiMacAddress } else { $null }
         Status       = $record.Status
         Mode         = $mode
         NetworkProfiles = $networkProfiles
         Raw          = $record.Raw
     }
+    $global:AndroidAdbSelectionCleared = $false
 
     if ($Persist -and $id) {
         $store = Read-AdbDeviceStore
@@ -232,6 +257,7 @@ function Clear-CurrentAdbDevice {
     param([switch]$Persist)
 
     $global:AndroidAdbCurrentDevice = $null
+    $global:AndroidAdbSelectionCleared = $true
     if ($Persist) {
         $store = Read-AdbDeviceStore
         $store | Add-Member -NotePropertyName CurrentDeviceId -NotePropertyValue $null -Force
@@ -1038,10 +1064,12 @@ function Read-AdbDeviceStore {
         }
         $networkProfiles=@()
         if($null -ne $device.PSObject.Properties['NetworkProfiles']){foreach($networkProfile in @($device.NetworkProfiles)){$networkProfiles+=ConvertTo-AdbNetworkProfile $networkProfile}}
+        $wifiMacAddress = if ($null -ne $device.PSObject.Properties['WifiMacAddress'] -and -not [string]::IsNullOrWhiteSpace([string]$device.WifiMacAddress)) { ([string]$device.WifiMacAddress).Trim().ToLowerInvariant() } else { $null }
         $normalized += [pscustomobject][ordered]@{
             Id               = $id
             FriendlyName     = Assert-AdbFriendlyName ([string]$device.FriendlyName)
             UsbSerial        = if ([string]::IsNullOrWhiteSpace([string]$device.UsbSerial)) { $null } else { [string]$device.UsbSerial }
+            WifiMacAddress   = $wifiMacAddress
             LastEndpoint     = $endpoint
             Mode             = $mode
             LastConnectedUtc = ConvertTo-AdbUtcTimestamp ([string]$device.LastConnectedUtc)
@@ -1065,6 +1093,7 @@ function Add-SavedAdbDevice {
         [string]$FriendlyName,
         [Parameter(Mandatory = $true)][string]$Mode,
         [string]$UsbSerial,
+        [string]$WifiMacAddress,
         [string]$LastEndpoint,
         [bool]$IsPaired = $false,
         [string]$LastConnectedUtc,
@@ -1087,6 +1116,7 @@ function Add-SavedAdbDevice {
         Id               = [guid]::NewGuid().ToString('N')
         FriendlyName     = $name
         UsbSerial        = $usb
+        WifiMacAddress   = if ([string]::IsNullOrWhiteSpace($WifiMacAddress)) { $null } else { $WifiMacAddress.Trim().ToLowerInvariant() }
         LastEndpoint     = $endpoint
         Mode             = $storedMode
         LastConnectedUtc = ConvertTo-AdbUtcTimestamp $LastConnectedUtc
@@ -1104,6 +1134,7 @@ function Update-SavedAdbDevice {
         [Parameter(Mandatory = $true)][string]$Id,
         [string]$FriendlyName,
         [string]$UsbSerial,
+        [string]$WifiMacAddress,
         [string]$LastEndpoint,
         [string]$Mode,
         [Nullable[bool]]$IsPaired,
@@ -1115,6 +1146,7 @@ function Update-SavedAdbDevice {
     if ($null -eq $device) { throw "No existe un dispositivo con Id '$Id'." }
     if ($PSBoundParameters.ContainsKey('FriendlyName')) { $device.FriendlyName = Assert-AdbFriendlyName $FriendlyName }
     if ($PSBoundParameters.ContainsKey('UsbSerial')) { $device.UsbSerial = if ([string]::IsNullOrWhiteSpace($UsbSerial)) { $null } else { $UsbSerial.Trim() } }
+    if ($PSBoundParameters.ContainsKey('WifiMacAddress')) { $device.WifiMacAddress = if ([string]::IsNullOrWhiteSpace($WifiMacAddress)) { $null } else { $WifiMacAddress.Trim().ToLowerInvariant() } }
     if ($PSBoundParameters.ContainsKey('LastEndpoint')) { $device.LastEndpoint = if ([string]::IsNullOrWhiteSpace($LastEndpoint)) { $null } else { (ConvertTo-AdbEndpoint $LastEndpoint).Endpoint } }
     if ($PSBoundParameters.ContainsKey('Mode')) { $device.Mode = ConvertTo-AdbStoredMode $Mode }
     if ($PSBoundParameters.ContainsKey('IsPaired')) { $device.IsPaired = [bool]$IsPaired }
@@ -1263,11 +1295,11 @@ function Invoke-AdbDiagnostics {
     $adb=Get-Command adb -ErrorAction SilentlyContinue
     if($null -eq $adb){Write-Host 'ERROR: adb no esta disponible en PATH.' -ForegroundColor Red;$result.Recommendations+='Instala Android Platform-Tools y agrega adb al PATH.'}else{$result.AdbPath=$adb.Source;try{$result.AdbVersion=@(Invoke-AdbHost -Arguments @('version'));Write-Host ($result.AdbVersion -join ' ') -ForegroundColor Green;Write-Host ("Ruta: {0}"-f $adb.Source);$versionText=$result.AdbVersion -join ' ';if($versionText -match 'Android Debug Bridge version 1\.0\.(\d+)' -and [int]$Matches[1] -lt 41){$result.Recommendations+='Actualiza Android SDK Platform-Tools: la version de ADB parece antigua.'}}catch{Write-Host $_ -ForegroundColor Red;$result.Recommendations+='No se pudo ejecutar adb version.'}}
     Write-Host "`n[2] Dispositivos adb devices -l" -ForegroundColor Cyan
-    try{$result.Devices=@(Get-AdbDevices);if($result.Devices.Count){$result.Devices|Format-Table Serial,Status,TransportId -AutoSize}else{Write-Host 'No hay dispositivos detectados.' -ForegroundColor Yellow;$result.Recommendations+='Conecta o reconecta un dispositivo y verifica la autorizacion ADB.'}}catch{Write-Host ("ERROR: {0}"-f $_.Exception.Message)-ForegroundColor Red;$result.Recommendations+='No se pudo consultar adb devices.'}
+    try{$result.Devices=@(Get-AdbDevices);if($result.Devices.Count){$result.Devices|Format-Table Serial,Status,TransportId -AutoSize|Out-Host}else{Write-Host 'No hay dispositivos detectados.' -ForegroundColor Yellow;$result.Recommendations+='Conecta o reconecta un dispositivo y verifica la autorizacion ADB.'}}catch{Write-Host ("ERROR: {0}"-f $_.Exception.Message)-ForegroundColor Red;$result.Recommendations+='No se pudo consultar adb devices.'}
     Write-Host "`n[3] mDNS" -ForegroundColor Cyan
-    try{$result.Mdns=@(Get-AdbMdnsServices);if($result.Mdns.Count){$result.Mdns|Format-Table ServiceName,Endpoint -AutoSize}else{Write-Host 'No se encontraron servicios mDNS.' -ForegroundColor Yellow}}catch{Write-Host ("ERROR: {0}"-f $_.Exception.Message)-ForegroundColor Red}
+    try{$result.Mdns=@(Get-AdbMdnsServices);if($result.Mdns.Count){$result.Mdns|Format-Table ServiceName,Endpoint -AutoSize|Out-Host}else{Write-Host 'No se encontraron servicios mDNS.' -ForegroundColor Yellow}}catch{Write-Host ("ERROR: {0}"-f $_.Exception.Message)-ForegroundColor Red}
     Write-Host "`n[4] devices.json" -ForegroundColor Cyan
-    try{$saved=@(Get-SavedAdbDevices);$result.SavedCount=$saved.Count;Write-Host ("Dispositivos guardados: {0}"-f $saved.Count);$saved|Sort-Object LastConnectedUtc -Descending|Select-Object -First 5 FriendlyName,Mode,LastEndpoint,LastConnectedUtc|Format-Table -AutoSize}catch{Write-Host ("ERROR: {0}"-f $_.Exception.Message)-ForegroundColor Red;$result.Recommendations+='Revisa la integridad de devices.json.'}
+    try{$saved=@(Get-SavedAdbDevices);$result.SavedCount=$saved.Count;Write-Host ("Dispositivos guardados: {0}"-f $saved.Count);$saved|Sort-Object LastConnectedUtc -Descending|Select-Object -First 5 FriendlyName,Mode,LastEndpoint,LastConnectedUtc|Format-Table -AutoSize|Out-Host}catch{Write-Host ("ERROR: {0}"-f $_.Exception.Message)-ForegroundColor Red;$result.Recommendations+='Revisa la integridad de devices.json.'}
     Write-Host "`n[5] Seleccion actual" -ForegroundColor Cyan
     try{$selected=Get-CurrentAdbDevice;if($null -eq $selected){Write-Host 'No hay dispositivo seleccionado.' -ForegroundColor Yellow;$result.Recommendations+='Ejecuta reconexion y selecciona un dispositivo.'}else{$serial=Resolve-AdbSerial (Get-CurrentAdbDevice);$record=@($result.Devices|Where-Object Serial -ceq $serial)[0];$state=if($record){$record.Status}else{'no encontrado'};$result.Selected=[pscustomobject]@{Name=$selected.FriendlyName;Serial=$serial;Endpoint=$selected.LastEndpoint;State=$state};Write-Host ("{0} | {1} | Estado: {2}"-f $selected.FriendlyName,$serial,$state) -ForegroundColor ($(if($state -ceq 'device'){'Green'}else{'Red'}));if($state -cne 'device'){$result.Recommendations+='El dispositivo seleccionado no esta en estado device; reconectalo antes de operar.'}}}catch{Write-Host $_ -ForegroundColor Red}
     Write-Host "`n[6] Ultimos 10 errores del log" -ForegroundColor Cyan
