@@ -13,6 +13,7 @@ from ui_automation.adb_manager import stop_reconnect_watchdog
 from . import theme
 from .components.sidebar import Sidebar
 from .pages.commands_page import CommandsPage
+from .pages.devices_page import DevicesPage
 from .pages.explorer_page import ExplorerPage
 from .pages.logs_page import LogsPage
 from .pages.notifications_page import NotificationsPage
@@ -48,6 +49,11 @@ class AndroidToolsApp:
         theme.apply_theme(page, title="Android ADB Tools - Control Center")
 
         # Pestañas principales
+        self.devices = DevicesPage(
+            self.device,
+            on_log=self._on_custom_log,
+            on_device_changed=lambda _: self.sidebar.refresh_now(),
+        )
         self.logs = LogsPage(page)
         self.notifications = NotificationsPage(self.device)
         self.whatsapp = WhatsAppPage(self.device)
@@ -62,7 +68,7 @@ class AndroidToolsApp:
 
         # Sistema de pestañas con iconos modernos
         tabs = ft.Tabs(
-            length=5,
+            length=6,
             selected_index=0,
             expand=True,
             content=ft.Column(
@@ -71,6 +77,7 @@ class AndroidToolsApp:
                 controls=[
                     ft.TabBar(
                         tabs=[
+                            ft.Tab(label="Dispositivos", icon=ft.Icons.PHONELINK_SETUP_OUTLINED),
                             ft.Tab(label="Explorador & Transferencias", icon=ft.Icons.FOLDER_SPECIAL_OUTLINED),
                             ft.Tab(label="WhatsApp Extractor", icon=ft.Icons.CHAT_OUTLINED),
                             ft.Tab(label="Monitor de Notificaciones", icon=ft.Icons.NOTIFICATIONS_ACTIVE_OUTLINED),
@@ -81,6 +88,7 @@ class AndroidToolsApp:
                     ft.TabBarView(
                         expand=True,
                         controls=[
+                            ft.Container(self.devices.view, padding=16),
                             ft.Container(self.explorer.view, padding=16),
                             ft.Container(self.whatsapp.view, padding=16),
                             ft.Container(self.notifications.view, padding=16),
@@ -127,7 +135,7 @@ class AndroidToolsApp:
         """Cierra la aplicación y libera recursos."""
         logger.info("Cerrando Android Tools...")
         self.sidebar.stop_polling()
-        for page in (self.explorer, self.whatsapp, self.notifications, self.commands, self.logs):
+        for page in (self.devices, self.explorer, self.whatsapp, self.notifications, self.commands, self.logs):
             page.shutdown()
         if self._log_handler:
             logging.getLogger().removeHandler(self._log_handler)
