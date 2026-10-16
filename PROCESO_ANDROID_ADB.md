@@ -128,6 +128,13 @@ Set-Location -LiteralPath 'C:\Users\pipe6\Downloads\Android'
 & .\RECONNECT.bat
 ```
 
+
+### Supervisor y diagnostico de red en la GUI
+
+Al iniciar la GUI se activa un supervisor limitado para el dispositivo activo. Comprueba el estado cada 2 segundos y, cuando se pierde una conexion inalambrica, prueba mDNS y los ultimos diez endpoints conocidos con retroceso hasta 30 segundos. Los intentos se detienen tras dos minutos, al cambiar de dispositivo o al cerrar la aplicacion.
+
+En **Comandos & Diagnostico** usa **Diagnostico de conexion** para consultar la ruta de ADB, interfaces IPv4, gateways, VPN (Tailscale/WireGuard si estan instaladas), servicios mDNS, pruebas TCP y recomendaciones. Una VPN puede transportar ADB entre redes distintas, pero debe existir una ruta entre la PC y el telefono; mDNS puede no atravesarla y en ese caso se prueban los endpoints historicos.
+
 ## 6. Validación manual
 
 Primero define el serial en la sesión actual de PowerShell. La variable no se conserva automáticamente entre ventanas o sesiones:
@@ -288,3 +295,5 @@ No lo uses durante el flujo normal: desconecta todos los dispositivos y otros pr
 - `devices.json` se actualizó después de conectar.
 - Las transferencias validan `$LASTEXITCODE`.
 - El directorio de backups está protegido.
+
+La GUI también ofrece **Conectar endpoint manual** para una IP o DNS privado, incluyendo una dirección de Tailscale/WireGuard y su puerto TLS. El endpoint se guarda en el historial después de una conexión exitosa; esta opción no instala VPN ni expone puertos.

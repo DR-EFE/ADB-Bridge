@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 import flet as ft
 
 from .. import theme
-from ..services.device_service import DeviceRecord, DeviceService, DeviceStatus
+from ..services.device_service import ConnectionResult, DeviceRecord, DeviceService, DeviceStatus
 
 logger = logging.getLogger("ui.sidebar")
 
@@ -82,6 +82,12 @@ class Sidebar:
             on_click=self._on_wifi_search_click,
             expand=True,
         )
+        self._manual_endpoint_btn = ft.OutlinedButton(
+            "Conectar endpoint manual / VPN",
+            icon=ft.Icons.LINK,
+            on_click=self._on_manual_endpoint_click,
+            expand=True,
+        )
         self._feedback = ft.Text("", size=11, color=theme.TEXT_MUTED)
 
         self.view = ft.Container(
@@ -117,6 +123,7 @@ class Sidebar:
                     ft.Row([self._reconnect_btn]),
                     ft.Row([self._wireless_setup_btn]),
                     ft.Row([self._wifi_search_btn]),
+                    ft.Row([self._manual_endpoint_btn]),
                     self._feedback,
                 ],
             ),
@@ -202,7 +209,6 @@ class Sidebar:
         is_primary = card.get("is_primary", False)
         state_str = card.get("state", "no detectado")
 
-        # Color del estado
         if state_str == "conectado":
             state_color = theme.OK
             state_icon = ft.Icons.CHECK_CIRCLE
@@ -216,15 +222,10 @@ class Sidebar:
             state_color = theme.TEXT_MUTED
             state_icon = ft.Icons.CANCEL_OUTLINED
 
-        # Badge de Batería
         bat_val = card.get("battery")
         bat_text = f"{bat_val}%" if bat_val is not None else "—"
-        if bat_val is not None and bat_val <= 20:
-            bat_color = theme.WARN
-        else:
-            bat_color = theme.TEXT_MUTED
+        bat_color = theme.WARN if (bat_val is not None and bat_val <= 20) else theme.TEXT_MUTED
 
-        # Badges superiores
         top_badges = []
         if is_primary:
             top_badges.append(
@@ -253,7 +254,6 @@ class Sidebar:
                 )
             )
 
-        # Menú o botones de acción según el estado
         action_buttons: List[ft.Control] = []
         dev_id = card.get("id")
 
@@ -326,11 +326,9 @@ class Sidebar:
                 )
             )
 
-        # Indicador de endpoints asociados (deduplicación)
         associated = card.get("associated_endpoints", [])
         endpoints_str = " | ".join(associated) if associated else card.get("current_endpoint", "—")
 
-        # Tarjeta contenedor
         border_color = theme.OK if is_active else (theme.ACCENT if is_primary else theme.BORDER)
         border_width = 1.5 if (is_active or is_primary) else 1.0
 
@@ -552,7 +550,7 @@ class Sidebar:
         page.show_dialog(dialog)
 
     # -------------------------------------------------------------------------
-    # Conexión mDNS / Wireless Debugging
+    # Conexión mDNS / Wireless Debugging / Endpoint Manual
     # -------------------------------------------------------------------------
     def _on_wireless_setup_click(self, _e: ft.ControlEvent) -> None:
         page = getattr(self.view, "page", None)
@@ -638,10 +636,11 @@ class Sidebar:
         self.view.update()
 
         def worker() -> None:
-            message = self._device.discover_and_reconnect_wireless()
-            ok = message.startswith("Conectado por Wireless Debugging")
-            self._log_msg(f"[Buscar WiFi] {message}", theme.OK if ok else theme.WARN)
-            self._feedback.value = message
+            result = self._device.discover_and_reconnect_wireless()
+            msg = result.message if isinstance(result, ConnectionResult) else str(result)
+            ok = result.success if isinstance(result, ConnectionResult) else msg.startswith("Conectado por Wireless Debugging")
+            self._log_msg(f"[Buscar WiFi] {msg}", theme.OK if ok else theme.WARN)
+            self._feedback.value = msg
             self._feedback.color = theme.OK if ok else theme.WARN
             self.refresh_now()
             self._wifi_search_btn.disabled = False
@@ -651,6 +650,65 @@ class Sidebar:
                 pass
 
         threading.Thread(target=worker, name="wireless-discovery", daemon=True).start()
+
+    def _on_manual_endpoint_click(self, _e: ft.ControlEvent) -> None:
+        page = getattr(self.view, "page", None)
+        if page is None:
+            return
+        endpoint_field = ft.TextField(label="IP o IP:Puerto (ej. 192.168.1.185:5555)", autofocus=True)
+        name_field = ft.TextField(label="Nombre personalizado (opcional)", value="")
+
+        def close_dialog(_e=None) -> None:
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
+
+        def start_connect(_e) -> None:
+            val = (endpoint_field.value or "").strip()
+            if not val:
+                endpoint_field.error_text = "Escribe una dirección válida"
+                endpoint_field.update()
+                return
+            close_dialog()
+            self._manual_endpoint_btn.disabled = True
+            self._feedback.value = f"Conectando a {val}..."
+            self._feedback.color = theme.WARN
+            self.view.update()
+
+            def worker() -> None:
+                ok, msg = self._device.connect_endpoint(val, friendly_name=(name_field.value or "").strip())
+                color = theme.OK if ok else theme.ERR
+                self._log_msg(f"[Endpoint Manual] {msg}", color)
+                self._feedback.value = msg
+                self._feedback.color = color
+                self.refresh_now()
+                self._manual_endpoint_btn.disabled = False
+                try:
+                    self.view.update()
+                except Exception:
+                    pass
+
+            threading.Thread(target=worker, name="manual-endpoint", daemon=True).start()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Conectar endpoint manual / privado"),
+            content=ft.Column(
+                [
+                    ft.Text("Conecta directamente por IP o túnel VPN/Tailscale.", size=12, color=theme.TEXT_MUTED),
+                    endpoint_field,
+                    name_field,
+                ],
+                tight=True,
+                width=380,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=close_dialog),
+                ft.FilledButton("Conectar", on_click=start_connect),
+            ],
+        )
+        page.show_dialog(dialog)
 
     def _reconnect_click_worker(self) -> None:
         with self._busy:

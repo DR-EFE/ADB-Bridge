@@ -4,11 +4,11 @@ Registro canónico: %USERPROFILE%\\AndroidTools\\devices.json
 Migración automática desde config/devices.json (solo una vez si no existe el canónico).
 
 Funcionalidades:
-1. Modelo ampliado con campos opcionales (Endpoints hasta 10, metadatos, etc.).
+1. Modelo ampliado con campos opcionales (Endpoints hasta 10, metadatos, perfiles de red, etc.).
 2. Deduplicación por UsbSerial -> MdnsServiceName -> LastEndpoint -> Advertencia manual.
 3. Selección segura: 1 dispositivo => auto-selección; múltiples dispositivos => selección obligatoria.
 4. Acciones completas: connect, disconnect, set_primary, rename, remove, refresh_metadata.
-5. Supervisión y no eliminación de APKs ni datos del teléfono.
+5. Supervisión, reconexión inteligente y compatibilidad con endpoints privados / VPN.
 """
 
 from __future__ import annotations
@@ -62,6 +62,27 @@ def ensure_devices_store_migrated(
             logger.info("Migrado automáticamente config/devices.json a %s", canonical_path)
         except Exception as exc:
             logger.warning("No se pudo migrar config/devices.json: %s", exc)
+
+
+@dataclass
+class RetryPolicy:
+    """Configuración de reintentos exponenciales para la reconexión."""
+
+    initial_interval: float = 2.0
+    max_interval: float = 30.0
+    backoff_factor: float = 2.0
+    timeout: float = 120.0
+
+
+@dataclass
+class WatchHandle:
+    """Control para detener un hilo de supervisión en segundo plano."""
+
+    stop_event: threading.Event
+    thread: threading.Thread
+
+    def stop(self) -> None:
+        self.stop_event.set()
 
 
 @dataclass
@@ -173,6 +194,8 @@ class ConnectionResult:
     endpoint: Optional[str] = None
     message: str = ""
     error: Optional[str] = None
+    method: Optional[str] = None
+    candidates: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -262,6 +285,10 @@ class DeviceService:
         self._converting_lock = threading.Lock()
         self._supervisor_stop_callbacks: Dict[str, Callable[[], None]] = {}
         self._supervisor_restart_callbacks: Dict[str, Callable[[], None]] = {}
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: Optional[threading.Thread] = None
+        self._watchdog_device_id: Optional[str] = None
+        self._watchdog_policy = RetryPolicy()
         logger.info("Serial inicial configurado: %s", self.serial or "autodetección")
 
     # -------------------------------------------------------------------------
@@ -368,6 +395,7 @@ class DeviceService:
                         success=True,
                         device_id=device_id,
                         endpoint=ep,
+                        method="mdns",
                         message=f"Conectado exitosamente vía mDNS a {ep}.",
                     )
         except Exception as exc:
@@ -389,6 +417,7 @@ class DeviceService:
                         success=True,
                         device_id=device_id,
                         endpoint=saved_ep,
+                        method="saved",
                         message=f"Conectado a endpoint guardado {saved_ep}.",
                     )
             except Exception as exc:
@@ -412,6 +441,7 @@ class DeviceService:
                             success=True,
                             device_id=device_id,
                             endpoint=ep,
+                            method="history",
                             message=f"Conectado mediante historial de endpoints a {ep}.",
                         )
                 except Exception as exc:
@@ -435,6 +465,7 @@ class DeviceService:
                             success=True,
                             device_id=device_id,
                             endpoint=pep,
+                            method="profile",
                             message=f"Conectado mediante perfil de red a {pep}.",
                         )
                 except Exception as exc:
@@ -456,6 +487,7 @@ class DeviceService:
                     success=True,
                     device_id=device_id,
                     endpoint=usb_serial,
+                    method="usb",
                     message=f"Conectado por respaldo USB ({usb_serial}).",
                 )
 
@@ -480,10 +512,8 @@ class DeviceService:
         if not target:
             return OperationResult(success=False, device_id=device_id, error="Dispositivo no encontrado.")
 
-        # Detener supervisor
         self.stop_supervisor(device_id)
 
-        # Desconectar endpoints de red asociados
         client = get_adb_client()
         endpoints_to_disconnect = set()
         if target.get("LastEndpoint") and is_network_serial(target["LastEndpoint"]):
@@ -527,7 +557,6 @@ class DeviceService:
         store["CurrentDeviceId"] = device_id
         save_devices_store(store, self.devices_json)
 
-        # Conectar inmediatamente mediante reconexión inteligente
         conn_res = self.connect_device(device_id)
         if conn_res.success:
             self.serial = conn_res.endpoint
@@ -539,7 +568,6 @@ class DeviceService:
                 message=f"Dispositivo '{target.get('FriendlyName')}' establecido como principal y conectado.",
             )
         else:
-            # Fallback a serial guardado
             self.serial = target.get("LastEndpoint") or target.get("UsbSerial")
             self._explicitly_selected = True
             return OperationResult(
@@ -593,7 +621,6 @@ class DeviceService:
         if not target:
             return OperationResult(success=False, device_id=device_id, error="Dispositivo no encontrado.")
 
-        # Desconectar si tiene endpoint de red
         ep = target.get("LastEndpoint")
         if ep and is_network_serial(ep):
             try:
@@ -601,20 +628,16 @@ class DeviceService:
             except Exception:
                 pass
 
-        # Detener supervisor
         self.stop_supervisor(device_id)
 
-        # Eliminar registro
         store["Devices"] = [d for d in devices if d.get("Id") != device_id]
 
-        # Si era el principal / activo:
         if store.get("CurrentDeviceId") == device_id:
             store["CurrentDeviceId"] = None
             if self.serial in (target.get("LastEndpoint"), target.get("UsbSerial")):
                 self.serial = None
                 self._explicitly_selected = False
 
-        # Si queda exactamente UN dispositivo listo, seleccionarlo
         remaining = store.get("Devices") or []
         if len(remaining) == 1:
             store["CurrentDeviceId"] = remaining[0].get("Id")
@@ -646,7 +669,6 @@ class DeviceService:
 
         if serial_to_query:
             try:
-                # Comprobar si está en lista en estado 'device'
                 online_info = next((item for item in client.list() if item.serial == serial_to_query), None)
                 if online_info and online_info.state == "device":
                     dev = client.device(serial_to_query)
@@ -685,7 +707,6 @@ class DeviceService:
             status.error = f"Error al comunicar con ADB: {exc}"
             return status
 
-        # Descubrir servicios mDNS para deduplicación
         mdns_map: Dict[str, str] = {}
         try:
             for s in self.find_wireless_devices():
@@ -693,7 +714,6 @@ class DeviceService:
         except Exception:
             pass
 
-        # Mapear dispositivos detectados por ADB
         available_infos: List[DeviceInfo] = []
         for info in raw_list:
             is_net = is_network_serial(info.serial)
@@ -711,7 +731,6 @@ class DeviceService:
             last_seen = matched_saved.get("LastSeenUtc") if matched_saved else None
             is_prim = bool(dev_id and dev_id == current_id)
 
-            # Query rápido si está en estado 'device'
             if info.state == "device":
                 try:
                     dev = client.device(info.serial)
@@ -751,16 +770,11 @@ class DeviceService:
             status.error = "No hay ningún teléfono detectado por USB ni por Wi-Fi."
             return status
 
-        # Limpiar registros de auto-conversión para dispositivos desconectados
         current_connected_serials = {d.serial for d in available_infos}
         self._auto_converted_serials.intersection_update(current_connected_serials)
 
-        # ---------------------------------------------------------------------
-        # Detección de duplicados y conteo de dispositivos físicos en estado 'device'
-        # ---------------------------------------------------------------------
         devices_in_device_state = [d for d in available_infos if d.state == "device"]
 
-        # Agrupar por identidad física
         physical_groups: Dict[str, List[DeviceInfo]] = {}
         for d in devices_in_device_state:
             key = d.device_id or d.serial
@@ -768,10 +782,6 @@ class DeviceService:
 
         num_ready_physical_devices = len(physical_groups)
 
-        # Reglas de Selección Segura:
-        # - Si hay 0 listos: sin dispositivo listo
-        # - Si hay 1 dispositivo listo: selección automática segura
-        # - Si hay más de 1 listos: selección OBLIGATORIA (no seleccionar silenciosamente)
         if num_ready_physical_devices == 0:
             target_info = available_infos[0]
             status.connected = False
@@ -788,21 +798,17 @@ class DeviceService:
 
         elif num_ready_physical_devices == 1:
             group = list(physical_groups.values())[0]
-            # Si el grupo tiene tanto Wi-Fi como USB, preferir Wi-Fi
             chosen_info = next((d for d in group if d.is_network), group[0])
             self.serial = chosen_info.serial
             status.requires_selection = False
             target_info = chosen_info
 
         else:
-            # Hay varios dispositivos físicos en estado 'device'
-            # Verificar si el usuario ya ha seleccionado uno explícitamente
             matching_active = next((d for d in devices_in_device_state if d.serial == self.serial), None)
             if matching_active and self._explicitly_selected:
                 target_info = matching_active
                 status.requires_selection = False
             else:
-                # No se selecciona silenciosamente: se requiere selección obligatoria
                 status.requires_selection = True
                 status.connected = False
                 status.adb_state = "múltiples dispositivos"
@@ -812,7 +818,6 @@ class DeviceService:
                 )
                 return status
 
-        # Actualizar propiedades del dispositivo activo
         status.serial = self.serial
         status.adb_state = target_info.state
         status.connected = True
@@ -885,7 +890,6 @@ class DeviceService:
             record["MdnsServiceName"] = mdns_service_name
 
         endpoints_list = record.setdefault("Endpoints", [])
-        # Eliminar si ya estaba presente para ponerlo en primer lugar
         endpoints_list[:] = [e for e in endpoints_list if (isinstance(e, dict) and e.get("Endpoint") != endpoint)]
         endpoints_list.insert(
             0,
@@ -932,7 +936,6 @@ class DeviceService:
             mode = s.get("Mode") or "tcpip-5555"
             last_conn = s.get("LastConnectedUtc") or "—"
 
-            # Identificar si está conectado por Wi-Fi o USB
             ep_online = online_map.get(last_ep) if last_ep else None
             usb_online = online_map.get(usb) if usb else None
 
@@ -943,7 +946,6 @@ class DeviceService:
                 if usb_online:
                     matched_online_serials.add(usb)
 
-            # Determinar estado actual
             if active_info:
                 if active_info.state == "device":
                     current_state = "conectado"
@@ -956,7 +958,6 @@ class DeviceService:
                 current_state = "no detectado"
                 current_endpoint = last_ep or usb or "—"
 
-            # Agrupación de duplicados (muestra endpoints asociados)
             associated_endpoints = []
             if last_ep:
                 associated_endpoints.append(f"Wi-Fi: {last_ep}")
@@ -984,7 +985,6 @@ class DeviceService:
                 "endpoints_history": s.get("Endpoints") or [],
             })
 
-        # Dispositivos detectados en línea no guardados
         for serial, info in online_map.items():
             if serial not in matched_online_serials:
                 is_net = is_network_serial(serial)
@@ -1159,7 +1159,6 @@ class DeviceService:
                 time.sleep(1.0)
                 conn_res = client.connect(endpoint, timeout=12.0)
 
-            # Persistir
             self._save_wifi_device_to_store(model=model, usb_serial=serial, endpoint=endpoint)
             self.serial = endpoint
             self._explicitly_selected = True
@@ -1233,11 +1232,14 @@ class DeviceService:
             if not match:
                 continue
             host = match.group("host").strip("[]")
+            endpoint = f"[{host}]:{match.group('port')}" if ":" in host else f"{host}:{match.group('port')}"
+            if any(item.get("endpoint") == endpoint for item in services):
+                continue
             services.append({
                 "service_name": line.strip().split()[0] if line.strip() else "",
                 "host": host,
                 "port": match.group("port"),
-                "endpoint": f"[{host}]:{match.group('port')}" if ":" in host else f"{host}:{match.group('port')}",
+                "endpoint": endpoint,
                 "raw": line.strip(),
             })
         return services
@@ -1307,6 +1309,37 @@ class DeviceService:
             logger.warning("No se pudo configurar Wireless Debugging: %s", exc)
             return False, f"No se pudo configurar Wireless Debugging: {exc}"
 
+    def connect_endpoint(self, endpoint: str, friendly_name: str = "") -> Tuple[bool, str]:
+        """Conecta manualmente a una IP:Puerto y lo guarda."""
+        ep = endpoint.strip()
+        if not ep:
+            return False, "Debes especificar una dirección IP o IP:Puerto."
+        if ":" not in ep:
+            ep = f"{ep}:5555"
+
+        try:
+            client = get_adb_client()
+            logger.info("Conectando a %s...", ep)
+            res = client.connect(ep, timeout=10.0).strip()
+            if "failed" in res.lower() or "cannot" in res.lower() or "refused" in res.lower():
+                return False, f"Error al conectar: {res}"
+
+            time.sleep(1.0)
+            model = "Android Phone"
+            try:
+                dev = client.device(ep)
+                model = dev.getprop("ro.product.model") or model
+            except Exception:
+                pass
+
+            name = friendly_name.strip() or f"{model} ({ep})"
+            self._save_wifi_device_to_store(model=name, usb_serial="", endpoint=ep)
+            self.serial = ep
+            self._explicitly_selected = True
+            return True, f"¡Conectado exitosamente a {ep}! Guardado como '{name}'."
+        except Exception as exc:
+            return False, f"Fallo al conectar con {ep}: {exc}"
+
     def reconnect(self) -> str:
         """Intenta reconectar el dispositivo actual vía reconexión inteligente."""
         store = read_devices_store(self.devices_json)
@@ -1328,12 +1361,20 @@ class DeviceService:
         except Exception as exc:
             return f"Error al reconectar: {exc}"
 
-    def discover_and_reconnect_wireless(self) -> str:
-        """Busca el nuevo endpoint mDNS tras un cambio de red y lo conecta."""
+    def discover_and_reconnect_wireless(self, endpoint: Optional[str] = None) -> ConnectionResult:
+        """Busca el nuevo endpoint mDNS o manual y lo conecta."""
         try:
+            client = get_adb_client()
+            if endpoint:
+                target_ep = endpoint.strip()
+                res = client.connect(target_ep, timeout=10.0)
+                self.serial = target_ep
+                self._explicitly_selected = True
+                return ConnectionResult(True, endpoint=target_ep, message=f"Conectado a {target_ep}.")
+
             services = self.find_wireless_devices()
             if not services:
-                return "No se encontraron servicios Wireless Debugging por mDNS en esta red."
+                return ConnectionResult(False, message="No se encontraron servicios Wireless Debugging por mDNS en esta red.")
             store = read_devices_store(self.devices_json)
             current_id = store.get("CurrentDeviceId")
             record = next((d for d in store.get("Devices", []) if d.get("Id") == current_id), None)
@@ -1342,16 +1383,15 @@ class DeviceService:
             matching = [item for item in services if preferred_service and item["service_name"].lower() == preferred_service]
             selected = matching[0] if matching else services[0]
 
-            client = get_adb_client()
             client.connect(selected["endpoint"], timeout=10.0)
             self.serial = selected["endpoint"]
             self._explicitly_selected = True
             if record:
                 self._record_successful_endpoint(record, selected["endpoint"], source="mdns", mdns_service_name=selected["service_name"])
                 save_devices_store(store, self.devices_json)
-            return f"Conectado por Wireless Debugging a {selected['endpoint']}."
+            return ConnectionResult(True, endpoint=selected["endpoint"], method="mdns", message=f"Conectado por Wireless Debugging a {selected['endpoint']}.")
         except Exception as exc:
-            return f"No se pudo buscar Wireless Debugging: {exc}"
+            return ConnectionResult(False, message=f"No se pudo buscar Wireless Debugging: {exc}", error=str(exc))
 
     def ping_device(self, endpoint_or_ip: str) -> Tuple[bool, str]:
         """Realiza un ping ICMP a la dirección IP del dispositivo."""
