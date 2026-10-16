@@ -932,3 +932,260 @@ class DeviceService:
 
         store["CurrentDeviceId"] = device_id
         save_devices_store(store, DEVICES_JSON)
+
+    def get_management_data(self) -> Dict[str, Any]:
+        """Recupera la lista consolidada de dispositivos en línea y guardados en devices.json."""
+        store = read_devices_store(DEVICES_JSON)
+        saved_list = list(store.get("Devices") or [])
+        current_id = store.get("CurrentDeviceId")
+
+        online_devices = []
+        try:
+            client = get_adb_client()
+            raw_list = client.list()
+            for info in raw_list:
+                serial = info.serial
+                is_net = is_network_serial(serial)
+                model = "—"
+                battery = None
+                if info.state == "device":
+                    if serial in self._model_cache:
+                        model = self._model_cache[serial]
+                    else:
+                        try:
+                            dev = client.device(serial)
+                            model = dev.getprop("ro.product.model") or ("Wi-Fi Phone" if is_net else "USB Phone")
+                            self._model_cache[serial] = model
+                        except Exception:
+                            model = "Android"
+                    try:
+                        dev = client.device(serial)
+                        battery = self._get_battery_level(dev)
+                    except Exception:
+                        pass
+
+                # Match with saved
+                matching_saved = next(
+                    (s for s in saved_list if s.get("UsbSerial") == serial or s.get("LastEndpoint") == serial),
+                    None
+                )
+                friendly = matching_saved.get("FriendlyName") if matching_saved else model
+
+                online_devices.append({
+                    "serial": serial,
+                    "state": info.state,
+                    "is_network": is_net,
+                    "is_active": (self.serial == serial),
+                    "model": model,
+                    "friendly_name": friendly,
+                    "battery": battery,
+                    "saved_id": matching_saved.get("Id") if matching_saved else None,
+                })
+        except Exception as exc:
+            logger.error("Error al listar dispositivos en línea: %s", exc)
+
+        # Enriquecer lista guardada con estado online actual
+        online_serials = {d["serial"] for d in online_devices}
+        enriched_saved = []
+        for s in saved_list:
+            ep = s.get("LastEndpoint") or ""
+            usb = s.get("UsbSerial") or ""
+            is_online = (ep in online_serials) or (usb in online_serials)
+            is_active = (s.get("Id") == current_id) or (self.serial in (ep, usb) and bool(self.serial))
+            enriched_saved.append({
+                "id": s.get("Id"),
+                "friendly_name": s.get("FriendlyName") or "Android",
+                "usb_serial": usb,
+                "last_endpoint": ep,
+                "mode": s.get("Mode") or "tcpip-5555",
+                "last_connected_utc": s.get("LastConnectedUtc") or "—",
+                "is_paired": s.get("IsPaired", False),
+                "is_online": is_online,
+                "is_active": is_active,
+            })
+
+        return {
+            "online_devices": online_devices,
+            "saved_devices": enriched_saved,
+            "current_device_id": current_id,
+            "active_serial": self.serial,
+        }
+
+    def set_active_by_serial(self, serial: str) -> Tuple[bool, str]:
+        """Establece un serial como dispositivo activo y actualiza devices.json."""
+        self.serial = serial
+        store = read_devices_store(DEVICES_JSON)
+        devices = store.get("Devices") or []
+        match = next((d for d in devices if d.get("LastEndpoint") == serial or d.get("UsbSerial") == serial), None)
+        if match:
+            store["CurrentDeviceId"] = match.get("Id")
+            save_devices_store(store, DEVICES_JSON)
+            return True, f"Dispositivo activo cambiado a '{match.get('FriendlyName')}' ({serial})."
+        return True, f"Dispositivo activo cambiado a: {serial}."
+
+    def set_active_by_saved_id(self, device_id: str) -> Tuple[bool, str]:
+        """Activa un dispositivo guardado, reconectándolo si estuviera offline."""
+        store = read_devices_store(DEVICES_JSON)
+        devices = store.get("Devices") or []
+        dev = next((d for d in devices if d.get("Id") == device_id), None)
+        if not dev:
+            return False, "Dispositivo no encontrado en la lista guardada."
+
+        store["CurrentDeviceId"] = device_id
+        save_devices_store(store, DEVICES_JSON)
+
+        endpoint = dev.get("LastEndpoint") or dev.get("UsbSerial")
+        if not endpoint:
+            return False, "El dispositivo guardado no tiene ningún endpoint registrado."
+
+        # Probar si ya está conectado
+        client = get_adb_client()
+        raw_list = client.list()
+        connected_dev = next((d for d in raw_list if d.serial == endpoint and d.state == "device"), None)
+        if connected_dev:
+            self.serial = endpoint
+            return True, f"Dispositivo '{dev.get('FriendlyName')}' activado en {endpoint}."
+
+        # Si es de red y no está conectado, intentar conectar
+        if is_network_serial(endpoint):
+            try:
+                res = client.connect(endpoint, timeout=8.0).strip()
+                if "connected to" in res.lower() or "already connected" in res.lower():
+                    self.serial = endpoint
+                    return True, f"Reconectado y activado: '{dev.get('FriendlyName')}' en {endpoint}."
+                return False, f"No se pudo conectar a {endpoint}: {res}"
+            except Exception as exc:
+                return False, f"Fallo al reconectar con {endpoint}: {exc}"
+
+        self.serial = endpoint
+        return True, f"Dispositivo USB '{dev.get('FriendlyName')}' seleccionado como objetivo."
+
+    def connect_endpoint(self, endpoint: str, friendly_name: str = "") -> Tuple[bool, str]:
+        """Conecta manualmente a una IP:Puerto y lo guarda."""
+        ep = endpoint.strip()
+        if not ep:
+            return False, "Debes especificar una dirección IP o IP:Puerto."
+        if ":" not in ep:
+            ep = f"{ep}:5555"
+
+        try:
+            client = get_adb_client()
+            logger.info("Conectando a %s...", ep)
+            res = client.connect(ep, timeout=10.0).strip()
+            if "failed" in res.lower() or "cannot" in res.lower() or "refused" in res.lower():
+                return False, f"Error al conectar: {res}"
+
+            time.sleep(1.0)
+            model = "Android Phone"
+            try:
+                dev = client.device(ep)
+                model = dev.getprop("ro.product.model") or model
+            except Exception:
+                pass
+
+            name = friendly_name.strip() or f"{model} ({ep})"
+            self._save_wifi_device_to_store(model=name, usb_serial="", endpoint=ep)
+            self.serial = ep
+            return True, f"¡Conectado exitosamente a {ep}! Guardado como '{name}'."
+        except Exception as exc:
+            return False, f"Fallo al conectar con {ep}: {exc}"
+
+    def rename_device(self, device_id: str, new_name: str) -> Tuple[bool, str]:
+        """Renombra un dispositivo guardado en devices.json."""
+        name = new_name.strip()
+        if not name:
+            return False, "El nombre no puede estar vacío."
+        store = read_devices_store(DEVICES_JSON)
+        devices = store.get("Devices") or []
+        dev = next((d for d in devices if d.get("Id") == device_id), None)
+        if not dev:
+            return False, "No se encontró el dispositivo en devices.json."
+        dev["FriendlyName"] = name
+        save_devices_store(store, DEVICES_JSON)
+        return True, f"Dispositivo renombrado a '{name}'."
+
+    def delete_saved_device(self, device_id: str) -> Tuple[bool, str]:
+        """Elimina un dispositivo guardado de devices.json."""
+        store = read_devices_store(DEVICES_JSON)
+        devices = store.get("Devices") or []
+        initial_len = len(devices)
+        store["Devices"] = [d for d in devices if d.get("Id") != device_id]
+        if len(store["Devices"]) == initial_len:
+            return False, "No se encontró el dispositivo a eliminar."
+        if store.get("CurrentDeviceId") == device_id:
+            store["CurrentDeviceId"] = store["Devices"][0].get("Id") if store["Devices"] else None
+        save_devices_store(store, DEVICES_JSON)
+        return True, "Dispositivo eliminado de devices.json."
+
+    def ping_device(self, endpoint_or_ip: str) -> Tuple[bool, str]:
+        """Realiza un ping ICMP a la dirección IP del dispositivo."""
+        host = endpoint_or_ip.strip()
+        if ":" in host:
+            host = host.split(":")[0].strip("[]")
+        if not host:
+            return False, "Dirección IP vacía o inválida."
+        try:
+            cmd = ["ping", "-n", "2", "-w", "1500", host]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5.0)
+            out = res.stdout or ""
+            if "Respuesta desde" in out or "bytes=" in out or "Reply from" in out:
+                m = re.search(r"(?:Media|Average)\s*=\s*(\d+ms)", out)
+                avg = f" ({m.group(1)})" if m else ""
+                return True, f"Ping exitoso a {host}{avg}. El dispositivo responde en la red local."
+            return False, f"Sin respuesta de ping desde {host}. Comprueba que esté en la misma red Wi-Fi."
+        except Exception as exc:
+            return False, f"Error al ejecutar ping: {exc}"
+
+    def restart_adb(self) -> Tuple[bool, str]:
+        """Reinicia el servidor ADB de forma limpia."""
+        try:
+            ensure_single_adb_server(force=True)
+            self._model_cache.clear()
+            return True, "Servidor ADB reiniciado correctamente en el puerto 5037."
+        except Exception as exc:
+            return False, f"Fallo al reiniciar servidor ADB: {exc}"
+
+    def get_device_full_specs(self, serial: Optional[str] = None) -> Dict[str, str]:
+        """Obtiene las especificaciones detalladas de hardware y software del dispositivo."""
+        target_serial = serial or self.serial
+        specs = {
+            "Serial / Endpoint": target_serial or "—",
+            "Modelo": "—",
+            "Fabricante": "—",
+            "Versión Android": "—",
+            "Nivel API (SDK)": "—",
+            "Arquitectura CPU": "—",
+            "Serial de Fábrica": "—",
+            "Dirección IP Wi-Fi": "—",
+            "Batería": "—",
+        }
+        if not target_serial:
+            return specs
+        try:
+            client = get_adb_client()
+            dev = client.device(target_serial)
+            if dev.get_state() != "device":
+                specs["Estado"] = f"No disponible ({dev.get_state()})"
+                return specs
+
+            specs["Modelo"] = dev.getprop("ro.product.model") or "—"
+            specs["Fabricante"] = (dev.getprop("ro.product.manufacturer") or dev.getprop("ro.product.brand") or "—").capitalize()
+            specs["Versión Android"] = dev.getprop("ro.build.version.release") or "—"
+            specs["Nivel API (SDK)"] = dev.getprop("ro.build.version.sdk") or "—"
+            specs["Arquitectura CPU"] = dev.getprop("ro.product.cpu.abi") or "—"
+            specs["Serial de Fábrica"] = dev.getprop("ro.serialno") or "—"
+
+            try:
+                ip = dev.wlan_ip()
+                if ip:
+                    specs["Dirección IP Wi-Fi"] = ip
+            except Exception:
+                pass
+
+            bat = self._get_battery_level(dev)
+            if bat is not None:
+                specs["Batería"] = f"{bat}%"
+        except Exception as exc:
+            logger.debug("Error obteniendo specs de %s: %s", target_serial, exc)
+
+        return specs
