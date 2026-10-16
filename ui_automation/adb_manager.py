@@ -45,10 +45,13 @@ def get_adb_executable() -> str:
     return "adb"
 
 
-def ensure_single_adb_server(host: str = "127.0.0.1", port: int = 5037) -> adbutils.AdbClient:
+def ensure_single_adb_server(host: str = "127.0.0.1", port: int = 5037, force: bool = False) -> adbutils.AdbClient:
     """
     Garantiza que exista un único servidor/daemon ADB limpio y controlado.
     
+    Si `force` es False y el daemon actual ya responde correctamente, se reutiliza
+    para no interrumpir conexiones USB o Wi-Fi activas.
+    Si `force` es True o el daemon no responde:
     1. Ejecuta `adb kill-server` para terminar daemons previos o huérfanos.
     2. Espera la liberación del puerto.
     3. Ejecuta `adb start-server` para arrancar un daemon limpio.
@@ -56,9 +59,20 @@ def ensure_single_adb_server(host: str = "127.0.0.1", port: int = 5037) -> adbut
 
     :param host: Dirección del host del servidor ADB (default: 127.0.0.1).
     :param port: Puerto TCP del servidor ADB (default: 5037).
+    :param force: Si es True, fuerza reinicio del servidor matando cualquier proceso previo.
     :return: Cliente adbutils.AdbClient listo para operar.
     """
     global _adb_client
+
+    if not force:
+        client = get_adb_client(host=host, port=port)
+        try:
+            client.server_version()
+            logger.debug("Daemon ADB activo y respondiendo (puerto %d). No requiere reinicio.", port)
+            return client
+        except Exception:
+            logger.info("Daemon ADB no responde o no está iniciado. Se procederá a arrancarlo...")
+
     adb_bin = get_adb_executable()
     logger.info("Deteniendo daemons ADB previos (kill-server) usando %s...", adb_bin)
 
@@ -137,15 +151,12 @@ def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event) -> N
 
         try:
             client = get_adb_client()
-            devices = client.device_list()
-            matched_dev = next((d for d in devices if d.serial == serial), None)
+            all_devices = client.list()
+            matched_info = next((d for d in all_devices if d.serial == serial), None)
 
             current_state = "disconnected"
-            if matched_dev is not None:
-                try:
-                    current_state = matched_dev.get_state()
-                except Exception:
-                    current_state = "unknown"
+            if matched_info is not None:
+                current_state = matched_info.state
 
             if current_state != "device":
                 logger.warning(
@@ -162,7 +173,10 @@ def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event) -> N
                     except Exception as conn_exc:
                         logger.warning("Watchdog ADB: Falló el intento de reconexión a %s: %s", serial, conn_exc)
                 else:
-                    logger.warning("Watchdog ADB: Dispositivo USB %s desconectado o no autorizado.", serial)
+                    if current_state == "unauthorized":
+                        logger.warning("Watchdog ADB: Dispositivo USB %s requiere autorización en pantalla.", serial)
+                    else:
+                        logger.warning("Watchdog ADB: Dispositivo USB %s desconectado o no disponible.", serial)
 
         except Exception as loop_exc:
             logger.debug("Aviso en ciclo de verificación de watchdog (%s): %s", serial, loop_exc)

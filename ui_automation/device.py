@@ -43,12 +43,19 @@ def ensure_uiautomator_ready(serial: Optional[str] = None, timeout: float = 20.0
     try:
         # Usar el cliente gestionado por adb_manager para evitar clientes sueltos
         client = get_adb_client()
+        all_info = client.list()
 
         if serial:
+            dev_info = next((d for d in all_info if d.serial == serial), None)
+            if dev_info and dev_info.state == "unauthorized":
+                raise DeviceConnectionError(
+                    f"El dispositivo {serial} está conectado pero en estado NO AUTORIZADO (UNAUTHORIZED).\n"
+                    "Desbloquea la pantalla de tu celular y pulsa 'Permitir siempre la depuración USB'."
+                )
+
             # Si es serial de red y aún no aparece en device_list, intentar conectar antes de verificar
             if is_network_serial(serial):
-                devices = client.device_list()
-                if not any(d.serial == serial for d in devices):
+                if not dev_info or dev_info.state != "device":
                     logger.info("Conectando cliente ADB al dispositivo de red %s...", serial)
                     try:
                         client.connect(serial, timeout=10.0)
@@ -57,13 +64,25 @@ def ensure_uiautomator_ready(serial: Optional[str] = None, timeout: float = 20.0
 
             adb_dev = client.device(serial=serial)
         else:
-            devices = client.device_list()
-            if not devices:
+            if not all_info:
                 raise DeviceConnectionError(
                     "No se detectaron dispositivos ADB conectados. "
                     "Conecta primero el dispositivo por Wireless Debugging o USB."
                 )
-            adb_dev = devices[0]
+
+            unauth = next((d for d in all_info if d.state == "unauthorized"), None)
+            ready_devices = client.device_list()
+            if not ready_devices:
+                if unauth:
+                    raise DeviceConnectionError(
+                        f"Dispositivo detectado ({unauth.serial}) pero en estado NO AUTORIZADO (UNAUTHORIZED).\n"
+                        "Desbloquea la pantalla de tu celular y pulsa 'Permitir siempre la depuración USB'."
+                    )
+                raise DeviceConnectionError(
+                    f"Dispositivo detectado ({all_info[0].serial}) en estado '{all_info[0].state}'. "
+                    "Verifica que la pantalla esté encendida y desbloqueada."
+                )
+            adb_dev = ready_devices[0]
 
         actual_serial = adb_dev.serial
 
