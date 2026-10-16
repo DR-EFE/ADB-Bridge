@@ -12,6 +12,7 @@ from ui_automation.adb_manager import stop_reconnect_watchdog
 
 from . import theme
 from .components.sidebar import Sidebar
+from .pages.backup_page import BackupPage
 from .pages.commands_page import CommandsPage
 from .pages.devices_page import DevicesPage
 from .pages.explorer_page import ExplorerPage
@@ -57,7 +58,8 @@ class AndroidToolsApp:
         self.logs = LogsPage(page)
         self.notifications = NotificationsPage(self.device)
         self.whatsapp = WhatsAppPage(self.device)
-        self.explorer = ExplorerPage(self.device, on_log=self._on_custom_log)
+        self.explorer = ExplorerPage(self.device, page=page, on_log=self._on_custom_log)
+        self.backup = BackupPage(self.device, page=page, on_log=self._on_custom_log)
         self.commands = CommandsPage(self.device, on_log=self._on_custom_log)
 
         # Conectar logging global de Python al visor de logs
@@ -68,7 +70,7 @@ class AndroidToolsApp:
 
         # Sistema de pestañas con iconos modernos
         tabs = ft.Tabs(
-            length=6,
+            length=7,
             selected_index=0,
             expand=True,
             content=ft.Column(
@@ -79,6 +81,7 @@ class AndroidToolsApp:
                         tabs=[
                             ft.Tab(label="Dispositivos", icon=ft.Icons.PHONELINK_SETUP_OUTLINED),
                             ft.Tab(label="Explorador & Transferencias", icon=ft.Icons.FOLDER_SPECIAL_OUTLINED),
+                            ft.Tab(label="Backup avanzado", icon=ft.Icons.BACKUP_OUTLINED),
                             ft.Tab(label="WhatsApp Extractor", icon=ft.Icons.CHAT_OUTLINED),
                             ft.Tab(label="Monitor de Notificaciones", icon=ft.Icons.NOTIFICATIONS_ACTIVE_OUTLINED),
                             ft.Tab(label="Comandos & Diagnóstico", icon=ft.Icons.BOLT_OUTLINED),
@@ -90,6 +93,7 @@ class AndroidToolsApp:
                         controls=[
                             ft.Container(self.devices.view, padding=16),
                             ft.Container(self.explorer.view, padding=16),
+                            ft.Container(self.backup.view, padding=16),
                             ft.Container(self.whatsapp.view, padding=16),
                             ft.Container(self.notifications.view, padding=16),
                             ft.Container(self.commands.view, padding=16),
@@ -135,7 +139,7 @@ class AndroidToolsApp:
         """Cierra la aplicación y libera recursos."""
         logger.info("Cerrando Android Tools...")
         self.sidebar.stop_polling()
-        for page in (self.devices, self.explorer, self.whatsapp, self.notifications, self.commands, self.logs):
+        for page in (self.devices, self.explorer, self.backup, self.whatsapp, self.notifications, self.commands, self.logs):
             page.shutdown()
         if self._log_handler:
             logging.getLogger().removeHandler(self._log_handler)

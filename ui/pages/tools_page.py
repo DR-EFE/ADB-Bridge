@@ -1,43 +1,36 @@
-"""Pestaña «Herramientas» (placeholder: la lógica de PowerShell se migrará después)."""
+"""Pestaña «Herramientas» (Obsoleta: Funcionalidad migrada a ExplorerPage y BackupPage)."""
 
 from __future__ import annotations
 
 import flet as ft
 
 from .. import theme
+from .backup_page import BackupPage
+from .explorer_page import ExplorerPage
 
-_PLANNED = [
-    (ft.Icons.SWAP_HORIZ, "Transferencia de archivos", "Pendiente de migrar desde android_transfer.ps1"),
-    (ft.Icons.BACKUP, "Backup avanzado", "Pendiente de migrar desde android_advanced_backup.ps1"),
-    (ft.Icons.FOLDER_OPEN, "Explorador de archivos", "Pendiente de migrar desde android_file_explorer.ps1"),
-]
+__all__ = ["ToolsPage"]
 
 
 class ToolsPage:
-    """Contenido de la pestaña. El control a insertar es ``.view``."""
+    """Stub de compatibilidad: redirige hacia las vistas completas de Explorador y Backup."""
 
     def __init__(self) -> None:
-        tiles = [
-            theme.card(
-                ft.Row(
-                    spacing=14,
-                    controls=[
-                        ft.Icon(icon, size=28, color=theme.TEXT_MUTED),
-                        ft.Column(
-                            spacing=2,
-                            expand=True,
-                            controls=[
-                                ft.Text(title, weight=ft.FontWeight.W_600),
-                                ft.Text(subtitle, size=12, color=theme.TEXT_MUTED),
-                            ],
-                        ),
-                        ft.Text("Próximamente", size=12, color=theme.WARN),
-                    ],
-                )
-            )
-            for icon, title, subtitle in _PLANNED
-        ]
-        self.view = ft.Column(expand=True, spacing=12, controls=tiles)
+        self.view = ft.Container(
+            content=ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Text("Módulo migrado", weight=ft.FontWeight.BOLD, size=16),
+                    ft.Text(
+                        "Las herramientas han sido migradas a pestañas independientes:\n"
+                        "- 'Explorador & Transferencias': Archivos, carpetas y cola de transferencias.\n"
+                        "- 'Backup avanzado': Respaldo multimedia y avanzado sin root con manifiestos.",
+                        size=12,
+                        color=theme.TEXT_MUTED,
+                    ),
+                ],
+            ),
+            padding=16,
+        )
 
     def shutdown(self) -> None:
-        """Sin recursos que liberar."""
+        pass
