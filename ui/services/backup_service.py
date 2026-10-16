@@ -325,6 +325,7 @@ class BackupService:
         device_label: str,
         destination_dir: Path,
         categories: List[CategoryDef],
+        reset_cancel: bool = True,
     ) -> Dict[str, Any]:
         """
         Ejecuta el plan de respaldo secuencialmente.
@@ -332,7 +333,8 @@ class BackupService:
         Devuelve el diccionario con el resumen.
         """
         self._is_running = True
-        self._cancel_event.clear()
+        if reset_cancel:
+            self._cancel_event.clear()
 
         enabled_categories = [c for c in categories if c.enabled]
         total_cats = len(enabled_categories)

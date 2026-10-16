@@ -5,7 +5,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -45,7 +44,8 @@ class TestRemotePath(unittest.TestCase):
 class TestTransferService(unittest.TestCase):
     def setUp(self):
         self.test_dir = Path(tempfile.mkdtemp())
-        self.service = TransferService()
+        # auto_start=False permite pruebas síncronas rápidas y deterministas
+        self.service = TransferService(auto_start=False)
 
     def tearDown(self):
         self.service.shutdown()
@@ -81,10 +81,9 @@ class TestTransferService(unittest.TestCase):
 
         with patch.object(self.service, "_run_adb_cmd", side_effect=fake_run_adb_cmd):
             jids = self.service.enqueue_push("SERIAL_1", [str(folder)], "/sdcard/Download")
-            # Esperar a que el worker procese
-            time.sleep(0.5)
-
             job = self.service.get_job(jids[0])
+            self.service._process_job_with_retries(job)
+
             self.assertEqual(job.status, TransferStatus.COMPLETED)
             self.assertEqual(job.total_files, 2)
             self.assertEqual(job.files_transferred, 2)
@@ -105,14 +104,11 @@ class TestTransferService(unittest.TestCase):
                 return 1, "", "error: device offline"
             return 0, "OK", ""
 
-        with patch.object(self.service, "_run_adb_cmd", side_effect=flaky_adb_cmd):
+        with patch.object(self.service, "_run_adb_cmd", side_effect=flaky_adb_cmd), \
+             patch("ui.services.transfer_service.time.sleep", return_value=None):
             jid = self.service.enqueue_mkdir("SERIAL_1", "/sdcard/NewFolder")
-            # Esperar a que se ejecuten los reintentos
-            for _ in range(30):
-                job = self.service.get_job(jid)
-                if job.status in (TransferStatus.COMPLETED, TransferStatus.FAILED):
-                    break
-                time.sleep(0.2)
+            job = self.service.get_job(jid)
+            self.service._process_job_with_retries(job)
 
             self.assertEqual(job.status, TransferStatus.COMPLETED)
             self.assertEqual(job.attempts, 2)
@@ -128,9 +124,9 @@ class TestTransferService(unittest.TestCase):
 
         with patch.object(self.service, "_run_adb_cmd", side_effect=fail_perm):
             jid = self.service.enqueue_delete("SERIAL_1", "/sdcard/sys")
-            time.sleep(0.4)
-
             job = self.service.get_job(jid)
+            self.service._process_job_with_retries(job)
+
             self.assertEqual(job.status, TransferStatus.FAILED)
             self.assertEqual(job.attempts, 0)
             self.assertIn("Permission denied", job.error)
@@ -138,7 +134,7 @@ class TestTransferService(unittest.TestCase):
             # Reintento manual
             ok = self.service.retry_job(jid)
             self.assertTrue(ok)
-            time.sleep(0.4)
+            self.service._process_job_with_retries(job)
             self.assertGreater(call_count, 1)
 
     def test_cancellation_preserves_partial_state(self):

@@ -108,7 +108,7 @@ class BackupPage:
                                 content=ft.Text("MULTIMEDIA" if cat.is_multimedia else "AVANZADO", size=10, weight=ft.FontWeight.BOLD),
                                 padding=ft.Padding.symmetric(horizontal=8, vertical=4),
                                 border_radius=4,
-                                bgcolor=theme.PRIMARY_LIGHT if cat.is_multimedia else theme.SURFACE_ALT,
+                                bgcolor=theme.ACCENT if cat.is_multimedia else theme.SURFACE_ALT,
                             ),
                         ],
                     ),
@@ -197,10 +197,8 @@ class BackupPage:
                     ),
                     padding=10,
                 ),
-                # Contenido principal: categorías a la izquierda y resumen de ejecución
-                ft.Expanded(
-                    child=self._categories_column,
-                ),
+                # Contenido principal: categorías con scroll
+                self._categories_column,
             ],
         )
 

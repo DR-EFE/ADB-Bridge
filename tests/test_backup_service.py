@@ -67,7 +67,7 @@ class TestBackupService(unittest.TestCase):
                 return 0, "Row 0: name=John Doe, phone=+123456\n", ""
             if "sms" in cmd_str:
                 return 0, "", ""  # vacío => EMPTY
-            if "calendar" in cmd_str:
+            if "cal" in cmd_str:
                 return 1, "", "java.lang.SecurityException: Permission Denial"  # DENIED
             return 0, "dummy data", ""
 
@@ -147,6 +147,7 @@ class TestBackupService(unittest.TestCase):
             device_label="SM-A556E",
             destination_dir=self.test_dir,
             categories=custom_cats,
+            reset_cancel=False,
         )
         self.assertEqual(summary["OverallStatus"], "CANCELLED")
 

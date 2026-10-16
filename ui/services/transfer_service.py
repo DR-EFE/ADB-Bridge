@@ -176,20 +176,23 @@ class TransferService:
         self,
         reconnect_callback: Optional[Callable[[str], bool]] = None,
         on_job_updated: Optional[Callable[[TransferJob], None]] = None,
+        auto_start: bool = True,
     ) -> None:
         self._reconnect_callback = reconnect_callback
         self._on_job_updated = on_job_updated
         self._queue: queue.Queue[TransferJob] = queue.Queue()
         self._jobs: Dict[str, TransferJob] = {}
-        self._jobs_lock = threading.Lock()
+        self._jobs_lock = threading.RLock()
         self._stop_event = threading.Event()
 
-        self._worker_thread = threading.Thread(
-            target=self._worker_loop,
-            name="transfer-service-worker",
-            daemon=True,
-        )
-        self._worker_thread.start()
+        self._worker_thread: Optional[threading.Thread] = None
+        if auto_start:
+            self._worker_thread = threading.Thread(
+                target=self._worker_loop,
+                name="transfer-service-worker",
+                daemon=True,
+            )
+            self._worker_thread.start()
 
     def _notify(self, job: TransferJob) -> None:
         job.mark_updated()

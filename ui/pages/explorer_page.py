@@ -123,85 +123,80 @@ class ExplorerPage:
             spacing=10,
             controls=[
                 # Columna Izquierda: Explorador de Archivos
-                ft.Expanded(
-                    flex=3,
-                    child=ft.Column(
+                ft.Column(
+                    expand=3,
+                    spacing=8,
+                    controls=[
+                        theme.card(
+                            ft.Column(
+                                spacing=6,
+                                controls=[
+                                    ft.Row(
+                                        spacing=6,
+                                        controls=[
+                                            self._path_field,
+                                            ft.FilledButton("Ir", icon=ft.Icons.ARROW_FORWARD, on_click=self._on_navigate_submit),
+                                            ft.OutlinedButton("⬆ Arriba", icon=ft.Icons.ARROW_UPWARD, on_click=self._navigate_up),
+                                            ft.OutlinedButton("🔄", icon=ft.Icons.REFRESH, tooltip="Refrescar", on_click=lambda _: self._refresh()),
+                                            ft.FilledButton(
+                                                "➕ Carpeta",
+                                                icon=ft.Icons.CREATE_NEW_FOLDER,
+                                                on_click=lambda _: self._show_create_folder_dialog(),
+                                            ),
+                                        ],
+                                    ),
+                                    ft.Row(wrap=True, spacing=4, controls=quick_buttons),
+                                ],
+                            ),
+                            padding=8,
+                        ),
+                        self._drop_zone,
+                        theme.card(
+                            ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                controls=[
+                                    self._status_text,
+                                    ft.OutlinedButton(
+                                        "📁 Abrir Descargas Locales",
+                                        icon=ft.Icons.FOLDER_OPEN,
+                                        on_click=self._open_downloads_folder,
+                                    ),
+                                ],
+                            ),
+                            padding=6,
+                        ),
+                        theme.card(self._files_list, expand=True),
+                    ],
+                ),
+                # Columna Derecha: Panel de Transferencias
+                theme.card(
+                    ft.Column(
                         expand=True,
                         spacing=8,
                         controls=[
-                            theme.card(
-                                ft.Column(
-                                    spacing=6,
-                                    controls=[
-                                        ft.Row(
-                                            spacing=6,
-                                            controls=[
-                                                self._path_field,
-                                                ft.FilledButton("Ir", icon=ft.Icons.ARROW_FORWARD, on_click=self._on_navigate_submit),
-                                                ft.OutlinedButton("⬆ Arriba", icon=ft.Icons.ARROW_UPWARD, on_click=self._navigate_up),
-                                                ft.OutlinedButton("🔄", icon=ft.Icons.REFRESH, tooltip="Refrescar", on_click=lambda _: self._refresh()),
-                                                ft.FilledButton(
-                                                    "➕ Carpeta",
-                                                    icon=ft.Icons.CREATE_NEW_FOLDER,
-                                                    on_click=lambda _: self._show_create_folder_dialog(),
-                                                ),
-                                            ],
-                                        ),
-                                        ft.Row(wrap=True, spacing=4, controls=quick_buttons),
-                                    ],
-                                ),
-                                padding=8,
+                            ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                controls=[
+                                    ft.Row(
+                                        spacing=6,
+                                        controls=[
+                                            ft.Icon(ft.Icons.SWAP_VERT_ROUNDED, color=theme.ACCENT, size=20),
+                                            ft.Text("Transferencias", weight=ft.FontWeight.BOLD, size=14),
+                                        ],
+                                    ),
+                                    ft.TextButton(
+                                        "Limpiar terminadas",
+                                        on_click=lambda _: self._clear_completed_transfers(),
+                                    ),
+                                ],
                             ),
-                            self._drop_zone,
-                            theme.card(
-                                ft.Row(
-                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                    controls=[
-                                        self._status_text,
-                                        ft.OutlinedButton(
-                                            "📁 Abrir Descargas Locales",
-                                            icon=ft.Icons.FOLDER_OPEN,
-                                            on_click=self._open_downloads_folder,
-                                        ),
-                                    ],
-                                ),
-                                padding=6,
-                            ),
-                            theme.card(self._files_list, expand=True),
+                            self._transfers_summary,
+                            ft.Divider(height=1, color=theme.BORDER),
+                            self._transfers_column,
                         ],
                     ),
-                ),
-                # Columna Derecha: Panel de Transferencias
-                ft.Expanded(
-                    flex=2,
-                    child=theme.card(
-                        ft.Column(
-                            expand=True,
-                            spacing=8,
-                            controls=[
-                                ft.Row(
-                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                    controls=[
-                                        ft.Row(
-                                            spacing=6,
-                                            controls=[
-                                                ft.Icon(ft.Icons.SWAP_VERT_ROUNDED, color=theme.ACCENT, size=20),
-                                                ft.Text("Transferencias", weight=ft.FontWeight.BOLD, size=14),
-                                            ],
-                                        ),
-                                        ft.TextButton(
-                                            "Limpiar terminadas",
-                                            on_click=lambda _: self._clear_completed_transfers(),
-                                        ),
-                                    ],
-                                ),
-                                self._transfers_summary,
-                                ft.Divider(height=1, color=theme.BORDER),
-                                ft.Expanded(child=self._transfers_column),
-                            ],
-                        ),
-                        padding=10,
-                    ),
+                    padding=10,
+                    expand=2,
                 ),
             ],
         )
