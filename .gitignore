@@ -1,0 +1,37 @@
+# Python: bytecode, caches and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Local configuration and device identities
+config/devices.json
+config/android_config.json
+
+# Runtime output and potentially sensitive phone data
+exports/
+logs/*
+!logs/.gitkeep
+*.log
+
+# Temporary test stores
+.device-store-test/
+
+# Android helper build products and signing material
+androidtools_receiver/build/
+
+# Editors and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary archives and generated reports
+*.tmp
+*.temp
+*.bak

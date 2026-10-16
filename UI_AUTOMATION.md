@@ -221,3 +221,13 @@ python export_chat_example.py --chat "NombreContacto"
 | `No se detectaron dispositivos ADB` | El teléfono no está en la red o perdió depuración | Comprueba que el teléfono esté en la misma WiFi y con **Depuración inalámbrica** activa. |
 | `Ollama no responde` | Modelo no descargado o falta de RAM | El sistema pasa automáticamente a reglas clásicas. Para activar IA: ejecuta `ollama pull llama3.2:1b`. |
 | Diálogos del sistema bloquean la pantalla | Permisos o alertas pendientes | Los watchers de `watchers.py` hacen clic automático en "Permitir", "Aceptar", "Continuar", "OK". |
+### 9.5 Receptor local para teléfonos sin aplicación de archivos
+
+Algunas versiones de Android no incluyen `Files` o `Mis archivos` en el menú de compartir. El proyecto incluye una APK auxiliar sin actividad `MAIN/LAUNCHER`: solo aparece como destino en `Compartir → Más` y copia el archivo a `Download/AndroidTools`.
+
+```powershell
+# Construir la APK firmada localmente (requiere Android SDK y JDK)
+powershell -ExecutionPolicy Bypass -File .\androidtools_receiver\build_receiver.ps1
+```
+
+Desde la pestaña de WhatsApp se puede pulsar **Instalar auxiliar** y, cuando termine todo el lote, **Quitar auxiliar**. El receptor no usa Internet ni envía el archivo a ningún servicio.

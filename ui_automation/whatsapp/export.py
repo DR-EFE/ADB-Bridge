@@ -178,11 +178,18 @@ class WhatsAppExporter:
         self._handle_share_or_save_dialog(timeout=timeout)
 
         # 7. Localizar el archivo generado en el almacenamiento del dispositivo
-        remote_file = self.find_exported_chat_file(
-            chat_name=chat_name,
-            min_mtime=timestamp_before,
-            prefer_zip=include_media,
-        )
+        # El receptor auxiliar puede seguir copiando el content:// mientras
+        # la Activity ya se cerró; esperar un poco antes de declarar fallo.
+        remote_file = None
+        search_deadline = time.monotonic() + min(timeout, 15.0)
+        while time.monotonic() < search_deadline and not remote_file:
+            remote_file = self.find_exported_chat_file(
+                chat_name=chat_name,
+                min_mtime=timestamp_before,
+                prefer_zip=include_media,
+            )
+            if not remote_file:
+                time.sleep(0.8)
 
         if remote_file:
             logger.info("Archivo exportado detectado en el dispositivo: %s", remote_file)
@@ -213,19 +220,69 @@ class WhatsAppExporter:
         que aparece inmediatamente después de exportar.
         """
         deadline = time.monotonic() + timeout
+        save_target_clicked = False
+        chooser_pages = 0
+        chooser_more_opened = False
+        chooser_last_logged = -1
         while time.monotonic() < deadline:
-            # Si aparece un diálogo de 'Guardar en archivos' o similar, intentar guardar
-            save_option = self.d(textMatches=r"(?i)Guardar en archivos|Save to Files|Total Commander|Drive")
+            receiver_option = self.d(textMatches=r"(?i)AndroidTools Receiver")
+            if receiver_option.exists:
+                logger.info("Seleccionando receptor local AndroidTools.")
+                receiver_option.click()
+                # El receptor copia el content:// en segundo plano y cierra
+                # su Activity al terminar; darle un margen antes del escaneo.
+                time.sleep(2.0)
+                break
+
+            # La exportación nativa no crea necesariamente un archivo en
+            # /sdcard: WhatsApp entrega un content:// a la pantalla ShareSheet.
+            # Hay que elegir un destino de archivos para materializarlo.
+            save_option = self.d(textMatches=r"(?i)AndroidTools Receiver|AndroidTools|Guardar en archivos|Save to Files|Archivos|Files")
             if save_option.exists:
-                logger.info("Selector de destino detectado en pantalla.")
+                if not save_target_clicked:
+                    logger.info("Seleccionando destino de archivo en Android.")
+                    save_option.click()
+                    save_target_clicked = True
+                    time.sleep(1.5)
+                    continue
+
+            # En el selector de documentos, confirmar el nombre y la ruta.
+            # Las etiquetas cambian entre AOSP, Samsung y Google Files.
+            confirm = self.d(textMatches=r"(?i)Guardar|Save|Usar esta carpeta|Use this folder")
+            if confirm.exists:
+                logger.info("Confirmando guardado del archivo exportado.")
+                confirm.click()
+                time.sleep(1.5)
                 break
 
             # Si el selector del sistema (ShareSheet) está visible
-            if self.d(resourceIdMatches=r".*id/chooser.*|.*android:id/resolver_list.*").exists:
+            chooser_visible = self.d(resourceIdMatches=r".*id/chooser.*|.*android:id/resolver_list.*").exists
+            chooser_visible = chooser_visible or self.d(textMatches=r"(?i)^Aplicaciones$|^Apps$").exists
+            if chooser_visible:
+                if chooser_last_logged != chooser_pages:
+                    logger.info("MenÃº para compartir de Android detectado (pÃ¡gina %d).", chooser_pages + 1)
+                    chooser_last_logged = chooser_pages
+                more = self.d(textMatches=r"(?i)^M[Ã¡a]s$|^More$")
+                if more.exists and not chooser_more_opened:
+                    more.click()
+                    chooser_more_opened = True
+                    chooser_pages = 0
+                    time.sleep(1.0)
+                    continue
+                if chooser_pages < 8:
+                    w, h = self.d.window_size()
+                    y = int(h * 0.76)
+                    self.d.swipe(int(w * 0.82), y, int(w * 0.18), y, 0.35)
+                    chooser_pages += 1
+                    time.sleep(0.8)
+                    continue
+                raise ChatExportError(
+                    "No se encontrÃ³ 'AndroidTools Receiver' en el selector de compartir "
+                    "despuÃ©s de recorrer sus destinos. Abre 'MÃ¡s' o instala el auxiliar por ADB."
+                )
                 logger.info("Menú para compartir de Android detectado.")
-                # Presionar atrás para cerrar la cortina de compartir si el archivo ya fue escrito a caché
-                self.d.press("back")
-                break
+                # No pulsar Atrás: eso cancela la exportación y deja solo un
+                # content:// temporal que no puede descubrir find_exported_chat_file.
 
             time.sleep(0.8)
 
