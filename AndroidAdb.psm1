@@ -43,6 +43,9 @@ function Initialize-AdbLog {
     $logDirectory = Split-Path -Parent $logPath
     try {
         New-Item -ItemType Directory -Path $logDirectory -Force -ErrorAction Stop | Out-Null
+        if (-not (Test-Path -LiteralPath $logPath)) {
+            New-Item -ItemType File -Path $logPath -Force -ErrorAction SilentlyContinue | Out-Null
+        }
         $cutoff = [datetime]::UtcNow.Date.AddDays(-$RetentionDays + 1)
         Get-ChildItem -LiteralPath $logDirectory -Filter 'adb-tools-*.log' -File -ErrorAction SilentlyContinue |
             Where-Object { $_.LastWriteTimeUtc -lt $cutoff } |
@@ -1027,6 +1030,25 @@ function Read-AdbDeviceStore {
 
     $path = Get-AdbDeviceStorePath
     if (-not (Test-Path -LiteralPath $path)) {
+        # Migración automática desde config/devices.json si existe
+        $legacyRepoStore = Join-Path $PSScriptRoot 'config\devices.json'
+        if (-not (Test-Path -LiteralPath $legacyRepoStore)) {
+            $legacyRepoStore = Join-Path (Split-Path -Parent $PSScriptRoot) 'config\devices.json'
+        }
+        if (Test-Path -LiteralPath $legacyRepoStore) {
+            try {
+                $dir = Split-Path -Parent $path
+                if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+                Copy-Item -LiteralPath $legacyRepoStore -Destination $path -Force
+                if (Test-Path -LiteralPath $path) {
+                    Write-AdbLog -Level INFO -Source 'Read-AdbDeviceStore' -Message "Migrado config/devices.json a '$path'."
+                }
+            } catch {
+                Write-Warning "No se pudo migrar config/devices.json: $($_.Exception.Message)"
+            }
+        }
+    }
+    if (-not (Test-Path -LiteralPath $path)) {
         $store = New-AdbDeviceStore
         $legacyDevice = Import-LegacyAdbDeviceConfig
         if ($null -ne $legacyDevice) {
@@ -1040,7 +1062,7 @@ function Read-AdbDeviceStore {
     if ($null -eq $store -or $null -eq $store.PSObject.Properties['SchemaVersion']) {
         throw 'devices.json no contiene SchemaVersion.'
     }
-    if ([int]$store.SchemaVersion -ne 1) { throw "Version de devices.json no admitida: $($store.SchemaVersion)" }
+    if ([int]$store.SchemaVersion -lt 1) { throw "Version de devices.json no admitida: $($store.SchemaVersion)" }
     if ($null -eq $store.PSObject.Properties['Devices']) { throw 'devices.json no contiene Devices.' }
     $updatedUtc = if ($null -eq $store.PSObject.Properties['UpdatedUtc']) { $null } else { ConvertTo-AdbUtcTimestamp ([string]$store.UpdatedUtc) }
     $normalized = @()
@@ -1065,7 +1087,7 @@ function Read-AdbDeviceStore {
         $networkProfiles=@()
         if($null -ne $device.PSObject.Properties['NetworkProfiles']){foreach($networkProfile in @($device.NetworkProfiles)){$networkProfiles+=ConvertTo-AdbNetworkProfile $networkProfile}}
         $wifiMacAddress = if ($null -ne $device.PSObject.Properties['WifiMacAddress'] -and -not [string]::IsNullOrWhiteSpace([string]$device.WifiMacAddress)) { ([string]$device.WifiMacAddress).Trim().ToLowerInvariant() } else { $null }
-        $normalized += [pscustomobject][ordered]@{
+        $entry = [ordered]@{
             Id               = $id
             FriendlyName     = Assert-AdbFriendlyName ([string]$device.FriendlyName)
             UsbSerial        = if ([string]::IsNullOrWhiteSpace([string]$device.UsbSerial)) { $null } else { [string]$device.UsbSerial }
@@ -1076,9 +1098,16 @@ function Read-AdbDeviceStore {
             IsPaired         = ConvertTo-AdbBoolean $device.IsPaired 'IsPaired'
             NetworkProfiles  = @($networkProfiles)
         }
+        # Preservar campos extendidos y metadatos compartidos con la GUI
+        foreach ($prop in $device.PSObject.Properties) {
+            if (-not $entry.Contains($prop.Name)) {
+                $entry[$prop.Name] = $prop.Value
+            }
+        }
+        $normalized += [pscustomobject]$entry
     }
     $currentDeviceId = if ($null -eq $store.PSObject.Properties['CurrentDeviceId']) { $null } else { [string]$store.CurrentDeviceId }
-    return [pscustomobject][ordered]@{ SchemaVersion=1; UpdatedUtc=$updatedUtc; CurrentDeviceId=$currentDeviceId; Devices=@($normalized) }
+    return [pscustomobject][ordered]@{ SchemaVersion=$store.SchemaVersion; UpdatedUtc=$updatedUtc; CurrentDeviceId=$currentDeviceId; Devices=@($normalized) }
 }
 
 function Get-SavedAdbDevices {

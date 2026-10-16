@@ -118,12 +118,18 @@ class CommandsPage:
 
     def _get_device_or_alert(self):
         status = self._device.get_status()
+        if status.requires_selection:
+            msg = "Hay varios dispositivos conectados. Selecciona uno obligatoriamente en el panel lateral antes de ejecutar comandos."
+            self._set_output(f"[ERROR] {msg}")
+            self._log(msg, theme.ERR)
+            return None
         if not status.connected or not self._device.serial:
             msg = status.error or "No hay dispositivo conectado o listo para ejecutar comandos."
             self._set_output(f"[ERROR] {msg}")
             self._log(msg, theme.ERR)
             return None
         from ui_automation.adb_manager import get_adb_client
+        logger.info("Comandos ADB ejecutándose en dispositivo seleccionado: %s", self._device.serial)
         return get_adb_client().device(self._device.serial)
 
     def _set_output(self, text: str) -> None:

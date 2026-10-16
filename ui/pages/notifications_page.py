@@ -89,7 +89,16 @@ class NotificationsPage:
     # ------------------------------------------------------- ciclo de vida
 
     def _start_monitor(self) -> None:
+        status = self._device.get_status()
+        if status.requires_selection:
+            self._log.append("⚠️ Hay varios dispositivos conectados. Selecciona uno obligatoriamente en el panel lateral antes de encender el monitor.", theme.ERR)
+            return
+
         serial = self._device.serial
+        if not serial or not status.connected:
+            self._log.append(f"⚠️ No hay dispositivo conectado o listo: {status.error or 'Selecciona uno en el panel lateral'}", theme.ERR)
+            return
+
         interval = float(self._interval.value)
         use_ai = bool(self._ai_switch.value)
 
@@ -107,11 +116,18 @@ class NotificationsPage:
             on_stop=self._monitor.stop,
         )
 
+        # Registrar supervisor con el servicio de dispositivos
+        self._device.register_supervisor(
+            serial,
+            on_stop=self._stop_monitor,
+            on_restart=self._start_monitor,
+        )
+
         self._attach_log_handler()
         self._new_count = self._important_count = 0
         self._update_stats()
         self._set_running(True)
-        print(f"[UI] Monitor ENCENDIDO (serial={serial or 'auto'}, intervalo={interval:.0f}s, IA={use_ai})")
+        print(f"[UI] Monitor ENCENDIDO (serial={serial}, intervalo={interval:.0f}s, IA={use_ai})")
         self._task.start()
 
     def _stop_monitor(self) -> None:

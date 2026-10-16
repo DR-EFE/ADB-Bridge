@@ -528,9 +528,14 @@ class DevicesPage:
 
         actions = [
             ft.FilledButton(
-                "🚀 Conectar / Activar",
+                "🚀 Conectar",
                 height=30,
                 on_click=lambda _, i=dev_id: self._action_activate_saved(i),
+            ),
+            ft.OutlinedButton(
+                "⭐ Principal",
+                height=30,
+                on_click=lambda _, i=dev_id: self._action_set_primary(i),
             ),
             ft.OutlinedButton(
                 "✏️ Renombrar",
@@ -538,6 +543,15 @@ class DevicesPage:
                 on_click=lambda _, i=dev_id, n=friendly: self._open_rename_panel(i, n),
             ),
         ]
+
+        if is_online:
+            actions.append(
+                ft.OutlinedButton(
+                    "Desconectar",
+                    height=30,
+                    on_click=lambda _, i=dev_id: self._action_disconnect(i),
+                )
+            )
 
         if ep and ":" in ep:
             actions.append(
@@ -552,7 +566,7 @@ class DevicesPage:
             ft.OutlinedButton(
                 "🗑️ Eliminar",
                 height=30,
-                on_click=lambda _, i=dev_id: self._action_delete_saved(i),
+                on_click=lambda _, i=dev_id, n=friendly, s=(ep or usb or "—"): self._action_delete_saved(i, n, s),
             )
         )
 
@@ -667,11 +681,87 @@ class DevicesPage:
 
         threading.Thread(target=worker, name="dev-ping", daemon=True).start()
 
-    def _action_delete_saved(self, device_id: str) -> None:
-        ok, msg = self._device.delete_saved_device(device_id)
-        self._log(msg, theme.OK if ok else theme.WARN)
-        self._set_busy(False, msg, is_error=not ok)
-        self.refresh_devices()
+    def _action_set_primary(self, device_id: str) -> None:
+        self._set_busy(True, "Estableciendo dispositivo como principal...")
+
+        def worker():
+            res = self._device.set_primary_device(device_id)
+            self._log(res.message, theme.OK if res.success else theme.WARN)
+            self._set_busy(False, res.message, is_error=not res.success)
+            if res.success and self._on_device_changed:
+                try:
+                    self._on_device_changed(self._device.serial or "")
+                except Exception:
+                    pass
+            self.refresh_devices()
+
+        threading.Thread(target=worker, name="dev-set-primary", daemon=True).start()
+
+    def _action_disconnect(self, device_id: str) -> None:
+        self._set_busy(True, "Desconectando dispositivo...")
+
+        def worker():
+            res = self._device.disconnect_device(device_id)
+            self._log(res.message, theme.OK if res.success else theme.ERR)
+            self._set_busy(False, res.message, is_error=not res.success)
+            self.refresh_devices()
+
+        threading.Thread(target=worker, name="dev-disconnect", daemon=True).start()
+
+    def _action_delete_saved(self, device_id: str, friendly_name: str, serial: str) -> None:
+        page = getattr(self.view, "page", None)
+        if not page:
+            res = self._device.remove_device(device_id)
+            self._log(res.message, theme.OK if res.success else theme.WARN)
+            self._set_busy(False, res.message, is_error=not res.success)
+            self.refresh_devices()
+            return
+
+        def close_dialog(_e=None):
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
+
+        def confirm_remove(_e):
+            close_dialog()
+            self._set_busy(True, f"Eliminando {friendly_name}...")
+
+            def worker():
+                res = self._device.remove_device(device_id)
+                self._log(res.message, theme.OK if res.success else theme.ERR)
+                self._set_busy(False, res.message, is_error=not res.success)
+                self.refresh_devices()
+
+            threading.Thread(target=worker, name="dev-remove", daemon=True).start()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Confirmar eliminación"),
+            content=ft.Column(
+                [
+                    ft.Text(f"¿Estás seguro de eliminar '{friendly_name}'?", weight=ft.FontWeight.BOLD),
+                    ft.Text(f"Serial / Endpoint: {serial}", size=12, color=theme.TEXT_MUTED),
+                    ft.Container(height=6),
+                    ft.Text(
+                        "Nota: Se desconectará el endpoint y se detendrá el supervisor. No se desinstalará la APK auxiliar ni se borrarán datos del teléfono.",
+                        size=11,
+                        color=theme.TEXT_MUTED,
+                    ),
+                ],
+                tight=True,
+                width=380,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=close_dialog),
+                ft.FilledButton(
+                    "Eliminar definitivamente",
+                    style=ft.ButtonStyle(bgcolor=theme.ERR),
+                    on_click=confirm_remove,
+                ),
+            ],
+        )
+        page.show_dialog(dialog)
 
     def _load_specs(self, serial: Optional[str]) -> None:
         if not serial:

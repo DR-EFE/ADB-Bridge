@@ -90,6 +90,13 @@ class ExplorerPage:
 
     def _get_device_or_alert(self):
         status = self._device.get_status()
+        if status.requires_selection:
+            msg = "Hay varios dispositivos conectados. Selecciona uno obligatoriamente en el panel lateral."
+            self._status_text.value = f"[ERROR] {msg}"
+            self._status_text.color = theme.ERR
+            self._status_text.update()
+            self._log(msg, theme.ERR)
+            return None
         if not status.connected or not self._device.serial:
             msg = status.error or "No hay dispositivo conectado para explorar archivos."
             self._status_text.value = f"[ERROR] {msg}"
@@ -98,6 +105,7 @@ class ExplorerPage:
             self._log(msg, theme.ERR)
             return None
         from ui_automation.adb_manager import get_adb_client
+        logger.info("Explorador usando dispositivo seleccionado: %s", self._device.serial)
         return get_adb_client().device(self._device.serial)
 
     def _on_navigate_submit(self, _e: ft.ControlEvent) -> None:

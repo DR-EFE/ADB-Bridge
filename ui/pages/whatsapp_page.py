@@ -81,9 +81,22 @@ class WhatsAppPage:
         self._detach_log_handler()
 
     def _on_install_receiver(self, _e: ft.ControlEvent) -> None:
+        status = self._device.get_status()
+        if status.requires_selection:
+            self._receiver_status.value = "Hay varios dispositivos conectados. Selecciona uno obligatoriamente en el panel lateral."
+            self._receiver_status.color = theme.ERR
+            self._receiver_status.update()
+            return
         serial = self._device.serial
+        if not serial:
+            self._receiver_status.value = "No hay dispositivo seleccionado."
+            self._receiver_status.color = theme.ERR
+            self._receiver_status.update()
+            return
+
         self._install_receiver_btn.disabled = True
-        self._receiver_status.value = "Instalando auxiliar en el teléfono..."
+        self._receiver_status.value = f"Instalando auxiliar en {serial}..."
+        self._receiver_status.color = theme.WARN
         self._receiver_status.update()
 
         def work(_stop) -> None:
@@ -92,10 +105,10 @@ class WhatsAppPage:
         def done(error: Optional[BaseException]) -> None:
             self._install_receiver_btn.disabled = False
             if error:
-                self._receiver_status.value = f"No se pudo instalar: {error}"
+                self._receiver_status.value = f"No se pudo instalar en {serial}: {error}"
                 self._receiver_status.color = theme.ERR
             else:
-                self._receiver_status.value = "Auxiliar instalado: disponible en Compartir → Más"
+                self._receiver_status.value = f"Auxiliar instalado en {serial}: disponible en Compartir → Más"
                 self._receiver_status.color = theme.OK
             self._receiver_status.update()
             self.view.update()
@@ -104,9 +117,22 @@ class WhatsAppPage:
         self._receiver_task.start()
 
     def _on_remove_receiver(self, _e: ft.ControlEvent) -> None:
+        status = self._device.get_status()
+        if status.requires_selection:
+            self._receiver_status.value = "Hay varios dispositivos conectados. Selecciona uno obligatoriamente en el panel lateral."
+            self._receiver_status.color = theme.ERR
+            self._receiver_status.update()
+            return
         serial = self._device.serial
+        if not serial:
+            self._receiver_status.value = "No hay dispositivo seleccionado."
+            self._receiver_status.color = theme.ERR
+            self._receiver_status.update()
+            return
+
         self._remove_receiver_btn.disabled = True
-        self._receiver_status.value = "Quitando auxiliar..."
+        self._receiver_status.value = f"Quitando auxiliar de {serial}..."
+        self._receiver_status.color = theme.WARN
         self._receiver_status.update()
 
         def work(_stop) -> None:
@@ -115,10 +141,10 @@ class WhatsAppPage:
         def done(error: Optional[BaseException]) -> None:
             self._remove_receiver_btn.disabled = False
             if error:
-                self._receiver_status.value = f"No se pudo quitar: {error}"
+                self._receiver_status.value = f"No se pudo quitar de {serial}: {error}"
                 self._receiver_status.color = theme.ERR
             else:
-                self._receiver_status.value = "Auxiliar quitado del teléfono"
+                self._receiver_status.value = f"Auxiliar quitado del teléfono ({serial})"
                 self._receiver_status.color = theme.TEXT_MUTED
             self._receiver_status.update()
             self.view.update()
@@ -127,6 +153,20 @@ class WhatsAppPage:
         self._receiver_task.start()
 
     def _on_export(self, _e: ft.ControlEvent) -> None:
+        status = self._device.get_status()
+        if status.requires_selection:
+            self._progress_text.value = "Hay varios dispositivos conectados. Selecciona uno obligatoriamente en el panel lateral antes de exportar."
+            self._progress_text.color = theme.ERR
+            self._progress_text.update()
+            return
+
+        serial = self._device.serial
+        if not serial or not status.connected:
+            self._progress_text.value = f"No hay dispositivo conectado o listo: {status.error or 'Selecciona uno en el panel lateral'}"
+            self._progress_text.color = theme.ERR
+            self._progress_text.update()
+            return
+
         try:
             n = int(self._count.value)
             if not 1 <= n <= 500:
@@ -139,13 +179,12 @@ class WhatsAppPage:
 
         include_media = bool(self._media.value)
         out_dir = (self._out_dir.value or "./exports").strip()
-        serial = self._device.serial
 
         self._results = []
         self._log.clear()
         self._attach_log_handler()
-        self._set_busy(True, "Conectando con el dispositivo...", indeterminate=True)
-        print(f"[UI] Exportación INICIADA (n={n}, media={include_media}, serial={serial or 'auto'}, destino={out_dir})")
+        self._set_busy(True, f"Conectando con el dispositivo seleccionado [{serial}]...", indeterminate=True)
+        print(f"[UI] Exportación INICIADA (n={n}, media={include_media}, serial={serial}, destino={out_dir})")
 
         def work(_stop) -> None:
             client = WhatsAppClient(DeviceManager(serial=serial), auto_watchers=True)
