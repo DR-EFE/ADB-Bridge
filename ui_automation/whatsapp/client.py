@@ -313,11 +313,24 @@ class WhatsAppClient:
         self,
         remote_path: str,
         local_dir: Union[str, Path] = "./exports",
+        expected_size_bytes: Optional[int] = None,
+        expected_sha256: Optional[str] = None,
     ) -> Path:
         """Descarga el archivo exportado desde el teléfono a la computadora local vía ADB."""
         from .export import WhatsAppExporter
         exporter = WhatsAppExporter(self.d, watcher_mgr=self.watcher_mgr)
-        return exporter.pull_exported_chat(remote_path=remote_path, local_dir=local_dir)
+        return exporter.pull_exported_chat(
+            remote_path=remote_path,
+            local_dir=local_dir,
+            expected_size_bytes=expected_size_bytes,
+            expected_sha256=expected_sha256,
+        )
+
+    def delete_exported_artifacts(self, remote_path: str, receipt_path: Optional[str] = None) -> bool:
+        """Elimina el archivo y su comprobante tras una descarga validada."""
+        from .export import WhatsAppExporter
+        exporter = WhatsAppExporter(self.d, watcher_mgr=self.watcher_mgr)
+        return exporter.delete_exported_artifacts(remote_path, receipt_path)
 
     def delete_exported_file(self, remote_path: str) -> bool:
         """Elimina el archivo temporal generado en el teléfono."""

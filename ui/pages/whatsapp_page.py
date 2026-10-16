@@ -39,12 +39,17 @@ class WhatsAppPage:
         self._results: List[Dict[str, Any]] = []
         self._current_chat_idx: int = 0
         self._total_chats: int = 0
+        self._last_serial: Optional[str] = None
+        self._last_out_dir: str = "./exports"
 
         self._count = ft.TextField(label="Cantidad de chats", value="10", width=170,
                                    keyboard_type=ft.KeyboardType.NUMBER)
         self._media = ft.Switch(label="Incluir multimedia (.zip)", value=False)
         self._out_dir = ft.TextField(label="Carpeta de destino", value="./exports", width=260)
         self._export_btn = ft.FilledButton("Exportar", icon=ft.Icons.DOWNLOAD, on_click=self._on_export)
+        self._retry_downloads_btn = ft.OutlinedButton(
+            "Reintentar descargas", icon=ft.Icons.REPLAY, disabled=True, on_click=self._on_retry_downloads
+        )
         self._check_receiver_btn = ft.OutlinedButton(
             "Verificar auxiliar", icon=ft.Icons.FACT_CHECK_OUTLINED, on_click=self._on_check_receiver
         )
@@ -69,6 +74,7 @@ class WhatsAppPage:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
                             self._count, self._media, self._out_dir, self._export_btn,
+                            self._retry_downloads_btn,
                             self._check_receiver_btn,
                             self._install_receiver_btn, self._remove_receiver_btn,
                             self._receiver_status,
@@ -228,6 +234,7 @@ class WhatsAppPage:
 
         include_media = bool(self._media.value)
         out_dir = (self._out_dir.value or "./exports").strip()
+        self._last_serial, self._last_out_dir = serial, out_dir
 
         self._results = []
         self._current_chat_idx = 0
@@ -247,6 +254,48 @@ class WhatsAppPage:
         self._task = BackgroundTask("whatsapp-export", target=work, on_done=self._on_done)
         self._task.start()
 
+    def _on_retry_downloads(self, _e: ft.ControlEvent) -> None:
+        pending = [
+            item for item in self._results
+            if not item.get("success") and item.get("remote_path") and item.get("receipt_state") == "READY"
+        ]
+        if not pending or not self._last_serial:
+            self._retry_downloads_btn.disabled = True
+            self._retry_downloads_btn.update()
+            return
+
+        self._retry_downloads_btn.disabled = True
+        self._set_busy(True, f"Reintentando {len(pending)} descarga(s) confirmada(s)...", indeterminate=True)
+
+        def work(_stop) -> None:
+            client = WhatsAppClient(DeviceManager(serial=self._last_serial))
+            try:
+                for item in pending:
+                    local_file = client.pull_exported_chat(
+                        item["remote_path"], self._last_out_dir,
+                        expected_size_bytes=item.get("expected_size_bytes"),
+                        expected_sha256=item.get("expected_sha256"),
+                    )
+                    client.delete_exported_artifacts(item["remote_path"], item.get("receipt_path"))
+                    item.update(success=True, verified=True, local_path=str(local_file.resolve()), error=None)
+            finally:
+                client.close()
+
+        def done(error: Optional[BaseException]) -> None:
+            self._retry_downloads_btn.disabled = not any(
+                not item.get("success") and item.get("remote_path") and item.get("receipt_state") == "READY"
+                for item in self._results
+            )
+            if error:
+                self._log.append(f"ERROR reintentando descarga: {error}", theme.ERR)
+                self._set_busy(False, "Falló el reintento de descarga.", progress=0)
+            else:
+                self._log.append("Descargas pendientes completadas y validadas.", theme.OK)
+                self._set_busy(False, "Reintento de descargas completado.", progress=1)
+
+        self._task = BackgroundTask("whatsapp-retry-downloads", target=work, on_done=done)
+        self._task.start()
+
     def _on_done(self, error: Optional[BaseException]) -> None:
         self._detach_log_handler()
         ok = sum(1 for r in self._results if r.get("success"))
@@ -254,7 +303,7 @@ class WhatsAppPage:
 
         # Informar detalladamente por cada chat
         for r in self._results:
-            chat_name = r.get("chat", "Chat desconocido")
+            chat_name = r.get("chat_name", "Chat desconocido")
             if r.get("success"):
                 method = r.get("method") or "receiver"
                 target = r.get("target_used") or "AndroidTools Receiver"
@@ -263,6 +312,8 @@ class WhatsAppPage:
                     f"✔ '{chat_name}': descargado con éxito vía {target} ({method}) -> {path}",
                     theme.OK,
                 )
+                if r.get("receipt_id"):
+                    self._log.append(f"  Comprobante verificado: {r['receipt_id']}", theme.TEXT_MUTED)
             else:
                 stage = r.get("stage_failed") or "desconocida"
                 reason = r.get("failure_reason") or "Fallo no especificado"
@@ -294,6 +345,11 @@ class WhatsAppPage:
             self._set_busy(False, f"Falló el lote: {error}", progress=0)
         else:
             self._set_busy(False, f"Completado: {ok}/{total} chats exportados.", progress=1 if total else 0)
+            self._retry_downloads_btn.disabled = not any(
+                not item.get("success") and item.get("remote_path") and item.get("receipt_state") == "READY"
+                for item in self._results
+            )
+            self._retry_downloads_btn.update()
         print(f"[UI] Exportación FINALIZADA ({ok}/{total} OK)" + (f" error={error}" if error else ""))
 
     # ----------------------------------------------------------- progreso
@@ -335,6 +391,18 @@ class WhatsAppPage:
             stage_updated = True
         elif "Esperando" in message and ("archivo" in message.lower() or "materialización" in message.lower()):
             self._progress_text.value = f"{chat_prefix}Esperando archivo..."
+            stage_updated = True
+        elif "confirmación del auxiliar" in message:
+            self._progress_text.value = f"{chat_prefix}Esperando confirmación del auxiliar..."
+            stage_updated = True
+        elif "Archivo confirmado por AndroidTools Receiver" in message:
+            self._progress_text.value = f"{chat_prefix}Archivo confirmado; preparando descarga..."
+            stage_updated = True
+        elif "Verificando descarga" in message:
+            self._progress_text.value = f"{chat_prefix}Verificando descarga..."
+            stage_updated = True
+        elif "Limpieza remota" in message:
+            self._progress_text.value = f"{chat_prefix}Limpiando archivos temporales..."
             stage_updated = True
         elif "Estado del auxiliar:" in message:
             self._receiver_status.value = message.split("Estado del auxiliar:")[-1].strip()

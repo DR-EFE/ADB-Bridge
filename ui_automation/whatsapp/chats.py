@@ -57,6 +57,13 @@ class ChatExportSummary:
     target_used: Optional[str] = None
     stage_failed: Optional[str] = None
     failure_reason: Optional[str] = None
+    receipt_id: Optional[str] = None
+    receipt_state: Optional[str] = None
+    receipt_path: Optional[str] = None
+    remote_path: Optional[str] = None
+    expected_size_bytes: Optional[int] = None
+    expected_sha256: Optional[str] = None
+    verified: bool = False
     error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -246,6 +253,12 @@ class WhatsAppChatManager:
                 summary.target_used = share_result.target_used
                 summary.stage_failed = share_result.stage_failed
                 summary.failure_reason = share_result.failure_reason
+                summary.receipt_id = share_result.receipt_id
+                summary.receipt_state = share_result.receipt_state
+                summary.receipt_path = share_result.receipt_path
+                summary.remote_path = remote_file
+                summary.expected_size_bytes = share_result.expected_size_bytes
+                summary.expected_sha256 = share_result.expected_sha256
 
                 if not remote_file:
                     err_msg = share_result.failure_reason or f"Fallo en etapa '{share_result.stage_failed}'"
@@ -254,13 +267,22 @@ class WhatsAppChatManager:
                 print(f"    Archivo remoto: {remote_file} (vía {summary.target_used or summary.method})")
 
                 # Descargar al PC vía ADB
-                local_file = self.client.pull_exported_chat(remote_file, local_dir=output_dir)
+                local_file = self.client.pull_exported_chat(
+                    remote_file,
+                    local_dir=output_dir,
+                    expected_size_bytes=share_result.expected_size_bytes,
+                    expected_sha256=share_result.expected_sha256,
+                )
                 summary.local_path = str(local_file.resolve())
+                summary.verified = bool(share_result.receipt_id)
                 summary.success = True
                 print(f"    [OK] Descarga exitosa: {local_file.name} ({local_file.stat().st_size} bytes)")
 
                 # Limpieza en el teléfono
-                self.client.delete_exported_file(remote_file)
+                if share_result.receipt_id:
+                    self.client.delete_exported_artifacts(remote_file, share_result.receipt_path)
+                else:
+                    self.client.delete_exported_file(remote_file)
                 print("    Limpieza remota completada.")
 
             except Exception as exc:

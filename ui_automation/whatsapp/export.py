@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
+import shlex
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -16,6 +19,9 @@ from ..device import DeviceManager
 from ..watchers import UIWatcherManager
 
 logger = logging.getLogger("ui_automation.whatsapp.export")
+
+RECEIPT_DIRECTORY = "/sdcard/Download/AndroidTools"
+RECEIPT_PREFIX = "AndroidToolsReceipt_"
 
 # Rutas habituales de almacenamiento donde WhatsApp o el selector del sistema guardan/comparten archivos
 COMMON_WHATSAPP_SEARCH_PATHS = [
@@ -63,6 +69,11 @@ class ShareSheetResult:
     detected_path: Optional[str] = None
     failure_reason: Optional[str] = None
     stage_failed: Optional[str] = None
+    receipt_id: Optional[str] = None
+    receipt_path: Optional[str] = None
+    receipt_state: Optional[str] = None
+    expected_size_bytes: Optional[int] = None
+    expected_sha256: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -168,6 +179,8 @@ class WhatsAppExporter:
         Si alguna etapa falla, recupera la pantalla de WhatsApp automáticamente.
         """
         timestamp_before = int(time.time()) - 2
+        receipt_started_at_ms = int(time.time() * 1000)
+        receipt_snapshot = self.list_receipt_paths()
         result = ShareSheetResult()
 
         # 1. Abrir chat
@@ -220,6 +233,8 @@ class WhatsAppExporter:
         share_res = self.handle_share_sheet_flow(
             chat_name=chat_name,
             timestamp_before=timestamp_before,
+            receipt_started_at_ms=receipt_started_at_ms,
+            receipt_snapshot=receipt_snapshot,
             prefer_zip=include_media,
         )
 
@@ -256,6 +271,8 @@ class WhatsAppExporter:
         self,
         chat_name: str,
         timestamp_before: int,
+        receipt_started_at_ms: Optional[int] = None,
+        receipt_snapshot: Optional[set[str]] = None,
         prefer_zip: bool = False,
     ) -> ShareSheetResult:
         """
@@ -289,7 +306,10 @@ class WhatsAppExporter:
             target_obj.click()
             result.target_used = "AndroidTools Receiver"
             result.method = "receiver"
-            return self._wait_and_detect_file(chat_name, timestamp_before, prefer_zip, result)
+            return self._wait_for_receiver_receipt(
+                receipt_snapshot or set(), receipt_started_at_ms or int(time.time() * 1000),
+                prefer_zip, result
+            )
 
         # Etapa 3: Abrir 'Más' si existe y no se ha inspeccionado la lista completa
         self._notify_stage("Abriendo Más...")
@@ -306,7 +326,10 @@ class WhatsAppExporter:
                 target_obj.click()
                 result.target_used = "AndroidTools Receiver"
                 result.method = "receiver"
-                return self._wait_and_detect_file(chat_name, timestamp_before, prefer_zip, result)
+                return self._wait_for_receiver_receipt(
+                    receipt_snapshot or set(), receipt_started_at_ms or int(time.time() * 1000),
+                    prefer_zip, result
+                )
 
         # Etapa 4: Recorrer horizontalmente con límite de 6 gestos
         self._notify_stage("Recorriendo selector de compartir...")
@@ -588,6 +611,74 @@ class WhatsAppExporter:
     # -------------------------------------------------------------------------
     # Búsqueda y gestión de archivos remotos
     # -------------------------------------------------------------------------
+    def list_receipt_paths(self) -> set[str]:
+        """Lista comprobantes del auxiliar sin escanear todo el teléfono."""
+        command = f"find {shlex.quote(RECEIPT_DIRECTORY)} -maxdepth 1 -type f -name '{RECEIPT_PREFIX}*.json' 2>/dev/null"
+        try:
+            output = self.d.shell(command).output or ""
+            return {line.strip() for line in output.splitlines() if line.strip().startswith(RECEIPT_DIRECTORY + "/")}
+        except Exception as exc:
+            logger.debug("No se pudieron listar comprobantes: %s", exc)
+            return set()
+
+    def _read_receipt(self, receipt_path: str) -> Optional[Dict[str, Any]]:
+        try:
+            payload = json.loads(self.d.shell(f"cat {shlex.quote(receipt_path)}").output or "")
+        except Exception as exc:
+            logger.debug("Comprobante aún no legible %s: %s", receipt_path, exc)
+            return None
+        required = ("id", "state", "fileName", "remotePath", "sizeBytes", "sha256", "createdAtEpochMs")
+        if not isinstance(payload, dict) or any(key not in payload for key in required):
+            return None
+        remote_path, file_name = str(payload["remotePath"]), str(payload["fileName"])
+        if not remote_path.startswith(RECEIPT_DIRECTORY + "/") or Path(remote_path).name != file_name:
+            logger.warning("Comprobante con ruta inválida ignorado: %s", receipt_path)
+            return None
+        return payload
+
+    def _wait_for_receiver_receipt(
+        self, known_receipts: set[str], started_at_ms: int, prefer_zip: bool,
+        result: ShareSheetResult, timeout: float = 20.0,
+    ) -> ShareSheetResult:
+        """Espera el comprobante nuevo del auxiliar, sin buscar archivos ajenos."""
+        self._notify_stage("Esperando confirmación del auxiliar...")
+        extension = ".zip" if prefer_zip else ".txt"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for receipt_path in sorted(self.list_receipt_paths() - known_receipts):
+                receipt = self._read_receipt(receipt_path)
+                if not receipt:
+                    continue
+                try:
+                    created_at, size = int(receipt["createdAtEpochMs"]), int(receipt["sizeBytes"])
+                except (TypeError, ValueError):
+                    continue
+                remote_path = str(receipt["remotePath"])
+                if created_at < started_at_ms - 2000 or not remote_path.lower().endswith(extension):
+                    continue
+                result.receipt_id = str(receipt["id"])
+                result.receipt_path = receipt_path
+                result.receipt_state = str(receipt["state"])
+                result.expected_size_bytes = size
+                result.expected_sha256 = str(receipt["sha256"])
+                if result.receipt_state == "FAILED":
+                    result.stage_failed = "receiver_copy"
+                    result.failure_reason = str(receipt.get("error") or "El auxiliar no pudo copiar el archivo compartido.")
+                    return result
+                if result.receipt_state != "READY":
+                    continue
+                if size <= 0 or not re.fullmatch(r"[0-9a-fA-F]{64}", result.expected_sha256 or ""):
+                    result.stage_failed = "receiver_receipt_invalid"
+                    result.failure_reason = "El comprobante no contiene tamaño o hash válidos."
+                    return result
+                result.success, result.detected_path = True, remote_path
+                self._notify_stage("Archivo confirmado por AndroidTools Receiver.")
+                return result
+            time.sleep(0.7)
+        result.stage_failed = "wait_receiver_receipt"
+        result.failure_reason = "AndroidTools Receiver no publicó un comprobante dentro de 20 segundos."
+        return result
+
     def find_exported_chat_file(
         self,
         chat_name: Optional[str] = None,
@@ -637,6 +728,8 @@ class WhatsAppExporter:
         self,
         remote_path: str,
         local_dir: Union[str, Path] = "./exports",
+        expected_size_bytes: Optional[int] = None,
+        expected_sha256: Optional[str] = None,
     ) -> Path:
         """Descarga el archivo exportado desde el teléfono a la computadora local vía ADB."""
         dest_dir = Path(local_dir)
@@ -651,12 +744,33 @@ class WhatsAppExporter:
             if not local_target.exists() or local_target.stat().st_size == 0:
                 raise ChatExportError(f"El archivo descargado está vacío o no se creó: {local_target}")
 
-            logger.info("Archivo descargado exitosamente: %s (%.2f KB)", local_target, local_target.stat().st_size / 1024)
+            if expected_size_bytes is not None and local_target.stat().st_size != expected_size_bytes:
+                raise ChatExportError(f"Tamaño inválido: se esperaban {expected_size_bytes} bytes y se recibieron {local_target.stat().st_size}.")
+            if expected_sha256:
+                self._notify_stage("Verificando descarga...")
+                digest = hashlib.sha256()
+                with local_target.open("rb") as source:
+                    for block in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(block)
+                if digest.hexdigest().lower() != expected_sha256.lower():
+                    raise ChatExportError("La validación SHA-256 del archivo descargado falló.")
+
+            logger.info("Archivo descargado y validado: %s (%.2f KB)", local_target, local_target.stat().st_size / 1024)
             return local_target
         except Exception as exc:
+            try:
+                if local_target.exists():
+                    local_target.unlink()
+            except OSError:
+                pass
             msg = f"Fallo al descargar '{remote_path}' a '{local_target}': {exc}"
             logger.error(msg)
             raise ChatExportError(msg) from exc
+
+    def delete_exported_artifacts(self, remote_path: str, receipt_path: Optional[str] = None) -> bool:
+        """Elimina archivo y comprobante tras la validación local."""
+        self._notify_stage("Limpieza remota...")
+        return all(self.delete_exported_file(path) for path in (remote_path, receipt_path) if path)
 
     def delete_exported_file(self, remote_path: str) -> bool:
         """Elimina el archivo exportado del dispositivo Android para limpieza y privacidad."""
