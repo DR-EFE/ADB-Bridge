@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
 
 import uiautomator2 as u2
 
-from .receiver import ensure_receiver_ready
+from .receiver import clear_failed_install_cache, ensure_receiver_ready
 
 if TYPE_CHECKING:
     from .client import WhatsAppClient
@@ -206,6 +206,7 @@ class WhatsAppChatManager:
         if not serial and hasattr(self.client, "device_mgr") and self.client.device_mgr:
             serial = self.client.device_mgr.serial
 
+        clear_failed_install_cache(serial)
         is_receiver_ready, receiver_status_desc = ensure_receiver_ready(serial=serial)
         logger.info(
             "Estado del receptor auxiliar antes del lote: %s (%s)",
@@ -213,6 +214,11 @@ class WhatsAppChatManager:
             receiver_status_desc,
         )
         print(f"Estado auxiliar   : {receiver_status_desc}")
+        if not is_receiver_ready:
+            raise RuntimeError(
+                f"No se pudo instalar ni verificar el auxiliar AndroidTools Receiver en el dispositivo ({receiver_status_desc}). "
+                "El proceso de exportación se ha cancelado porque el auxiliar es requerido."
+            )
 
         # 1. Asegurar WhatsApp abierto y obtener nombres
         if not self.client.is_on_chat_list():

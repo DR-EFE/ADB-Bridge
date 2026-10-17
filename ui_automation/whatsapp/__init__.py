@@ -6,6 +6,7 @@ from .export import ChatExportError, ShareSheetResult, WhatsAppExporter
 from .receiver import (
     PACKAGE_NAME,
     ReceiverError,
+    clear_failed_install_cache,
     ensure_receiver_ready,
     install_receiver,
     is_receiver_installed,

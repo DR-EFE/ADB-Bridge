@@ -55,4 +55,15 @@ ADB: adb devices / adb connect
 - El script guarda información sensible, como contactos, SMS, llamadas, redes Wi‑Fi y posibles datos del portapapeles.
 - El registro multi-dispositivo se guarda en `%USERPROFILE%\AndroidTools\devices.json`; no es necesario recordar la IP anterior para usar el descubrimiento mDNS.
 - Los respaldos normalmente se guardan dentro de `Downloads\AndroidBackup`.
+
+## Compilación del Auxiliar AndroidTools Receiver (Exportación de WhatsApp)
+
+Para que la exportación de WhatsApp funcione de forma nativa en cualquier dispositivo sin depender de una app de archivos de terceros, se utiliza el auxiliar `AndroidToolsReceiver.apk`.
+
+Si necesitas compilarlo o regenerarlo manualmente, ejecuta en PowerShell:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\androidtools_receiver\build_receiver.ps1
+```
+*El script detecta automáticamente el Android SDK (en `C:\Program Files (x86)\Android\android-sdk` o `%LOCALAPPDATA%\Android\Sdk`) y el JDK de Java instalados en el sistema.*
+
 - La arquitectura y los contratos del módulo están documentados en [ARCHITECTURE.md](C:/Users/pipe6/Downloads/Android/ARCHITECTURE.md).

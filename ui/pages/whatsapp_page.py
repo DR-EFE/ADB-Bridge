@@ -13,6 +13,7 @@ import flet as ft
 from ui_automation.device import DeviceManager
 from ui_automation.whatsapp import (
     WhatsAppClient,
+    clear_failed_install_cache,
     ensure_receiver_ready,
     install_receiver,
     uninstall_receiver,
@@ -353,6 +354,33 @@ class WhatsAppPage:
         print(f"[UI] Exportación INICIADA (n={n}, media={include_media}, serial={serial}, destino={out_dir})")
 
         def work(_stop) -> None:
+            # 1. Comprobar e intentar instalar el receptor auxiliar si falta
+            self._set_busy(True, "Comprobando receptor auxiliar en el dispositivo...", indeterminate=True)
+            self._receiver_status.value = "Comprobando auxiliar..."
+            try:
+                self._receiver_status.update()
+            except Exception:
+                pass
+
+            clear_failed_install_cache(serial)
+            ready, status_desc = ensure_receiver_ready(serial=serial)
+            if not ready:
+                self._receiver_status.value = f"Auxiliar no disponible ({status_desc})"
+                try:
+                    self._receiver_status.update()
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"No se pudo instalar el auxiliar AndroidTools Receiver en el dispositivo ({status_desc}). "
+                    "El proceso se canceló porque el auxiliar es obligatorio para la exportación."
+                )
+
+            self._receiver_status.value = f"Auxiliar: {status_desc} ({serial})"
+            try:
+                self._receiver_status.update()
+            except Exception:
+                pass
+
             client = WhatsAppClient(DeviceManager(serial=serial), auto_watchers=True)
             try:
                 # Si job_queue está disponible, registrar cada chat en el historial
