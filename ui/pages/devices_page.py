@@ -10,6 +10,7 @@ import flet as ft
 
 from .. import theme
 from ..services.device_service import DeviceService
+from ..services.wireless_qr_service import WirelessQrPairingService
 
 logger = logging.getLogger("ui.devices")
 
@@ -84,6 +85,10 @@ class DevicesPage:
             text_size=13,
             dense=True,
         )
+        self._qr_service: Optional[WirelessQrPairingService] = None
+        self._qr_dialog: Optional[ft.AlertDialog] = None
+        self._qr_status = ft.Text("", size=12, color=theme.TEXT_MUTED)
+        self._qr_image = ft.Image(width=280, height=280, fit=ft.ImageFit.CONTAIN)
 
         self._connect_mode_btn = ft.SegmentedButton(
             selected=["tcp"],
@@ -127,8 +132,13 @@ class DevicesPage:
                         self._pair_code_field,
                         ft.FilledButton(
                             "Vincular y Conectar",
-                            icon=ft.Icons.QR_CODE_SCANNER,
+                            icon=ft.Icons.PHONELINK_LOCK,
                             on_click=self._handle_pair_wireless,
+                        ),
+                        ft.OutlinedButton(
+                            "Generar QR",
+                            icon=ft.Icons.QR_CODE_2,
+                            on_click=self._handle_pair_wireless_qr,
                         ),
                     ],
                 ),
@@ -854,6 +864,86 @@ class DevicesPage:
                 self.refresh_devices()
 
         threading.Thread(target=worker, name="dev-pair-wireless", daemon=True).start()
+
+    def _handle_pair_wireless_qr(self, _e: ft.ControlEvent) -> None:
+        """Muestra el QR estándar y ejecuta pairing/conexión en segundo plano."""
+        page = getattr(self.view, "page", None)
+        if not page:
+            self._set_busy(False, "La interfaz aún no está conectada a una ventana.", is_error=True)
+            return
+        try:
+            service, payload = self._device.create_qr_payload()
+        except Exception as exc:
+            self._set_busy(False, str(exc), is_error=True)
+            return
+        self._qr_service = service
+        self._qr_status.value = "QR generado. En el teléfono abre Depuración inalámbrica → Vincular con código QR."
+        self._qr_status.color = theme.WARN
+        self._qr_image.src_base64 = payload.image_base64
+
+        def close_dialog(_e=None):
+            if self._qr_service:
+                self._qr_service.cancel()
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
+
+        def start_pair(_e=None):
+            self._qr_status.value = "Esperando que el teléfono escanee el QR…"
+            self._qr_status.color = theme.WARN
+            self._qr_status.update()
+            self._set_busy(True, "Emparejamiento QR en curso…")
+
+            def progress(message: str) -> None:
+                self._qr_status.value = message
+                try:
+                    self._qr_status.update()
+                except Exception:
+                    pass
+
+            def worker():
+                ok, message = self._device.pair_wireless_qr(
+                    friendly_name=self._new_name_field.value or "", progress=progress,
+                    qr_service=self._qr_service, qr_payload=payload,
+                )
+                self._log(message, theme.OK if ok else theme.ERR)
+                self._set_busy(False, message, is_error=not ok)
+                if ok:
+                    self._qr_status.value = "Conectado correctamente."
+                    self._qr_status.color = theme.OK
+                    try:
+                        page.pop_dialog()
+                    except Exception:
+                        pass
+                    self.refresh_devices()
+                else:
+                    self._qr_status.value = message
+                    self._qr_status.color = theme.ERR
+                    self._qr_status.update()
+
+            threading.Thread(target=worker, name="dev-pair-wireless-qr", daemon=True).start()
+
+        self._qr_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Vincular Wireless Debugging mediante QR"),
+            content=ft.Column(
+                [
+                    self._qr_image,
+                    ft.Text("Escanea este QR desde el teléfono. Ambos dispositivos deben estar en la misma red Wi‑Fi.", size=12),
+                    self._qr_status,
+                ],
+                tight=True,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=close_dialog),
+            ],
+        )
+        page.show_dialog(self._qr_dialog)
+        # El servidor empieza a esperar inmediatamente: el usuario solo debe
+        # pulsar "Generar QR" y escanearlo desde el teléfono.
+        start_pair()
 
     def _open_rename_panel(self, device_id: str, current_name: str) -> None:
         self._rename_id = device_id

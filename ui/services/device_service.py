@@ -1371,6 +1371,63 @@ class DeviceService:
             logger.warning("No se pudo configurar Wireless Debugging: %s", exc)
             return False, f"No se pudo configurar Wireless Debugging: {exc}"
 
+    def pair_wireless_qr(
+        self,
+        friendly_name: str = "",
+        timeout: float = 120.0,
+        progress: Optional[Callable[[str], None]] = None,
+        qr_service=None,
+        qr_payload=None,
+    ) -> Tuple[bool, str]:
+        """Genera un QR estándar, espera el escaneo del teléfono y conecta por mDNS."""
+        from .wireless_qr_service import WirelessQrError, WirelessQrPairingService
+
+        service = qr_service or WirelessQrPairingService()
+        payload = qr_payload or service.create_payload()
+        # La UI puede obtener el payload/imagen mediante ``create_qr_payload``;
+        # este método se encarga del flujo completo para consumidores no-UI.
+        try:
+            result = service.pair(payload, timeout=timeout, progress=progress)
+            endpoint = result.endpoint
+            if not endpoint:
+                services = self.find_wireless_devices()
+                matching = [item for item in services if item.get("service_name", "").startswith("_adb-tls-connect")]
+                endpoint = matching[0]["endpoint"] if len(matching) == 1 else None
+            if not endpoint:
+                return False, "Emparejamiento correcto, pero no se encontró el endpoint de conexión mDNS."
+            client = get_adb_client()
+            connect_output = client.connect(endpoint, timeout=12.0).strip()
+            store = read_devices_store(self.devices_json)
+            devices = store.setdefault("Devices", [])
+            device_id = uuid.uuid4().hex
+            record = {
+                "Id": device_id,
+                "FriendlyName": friendly_name.strip() or f"Android Wireless ({endpoint})",
+                "UsbSerial": None,
+                "MdnsServiceName": result.service_name,
+                "Mode": "wireless-debugging-tls",
+                "IsPaired": True,
+                "NetworkProfiles": [],
+            }
+            self._record_successful_endpoint(record, endpoint, source="mdns", mdns_service_name=result.service_name)
+            devices.append(record)
+            store["CurrentDeviceId"] = device_id
+            save_devices_store(store, self.devices_json)
+            self.serial = endpoint
+            self._explicitly_selected = True
+            return True, f"Conectado por QR a {endpoint} ({connect_output})."
+        except WirelessQrError as exc:
+            return False, str(exc)
+        except Exception as exc:
+            logger.warning("No se pudo configurar Wireless Debugging mediante QR: %s", exc)
+            return False, f"No se pudo configurar Wireless Debugging mediante QR: {exc}"
+
+    def create_qr_payload(self):
+        """Crea un payload QR para la UI y conserva la sesión que lo completa."""
+        from .wireless_qr_service import WirelessQrPairingService
+        service = WirelessQrPairingService()
+        return service, service.create_payload()
+
     def connect_endpoint(self, endpoint: str, friendly_name: str = "") -> Tuple[bool, str]:
         """Conecta manualmente a una IP:Puerto y lo guarda."""
         ep = endpoint.strip()

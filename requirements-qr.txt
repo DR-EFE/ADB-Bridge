@@ -1,0 +1,2 @@
+# Dependencia para vinculación Android Wireless Debugging mediante QR.
+qrcode[pil]>=7.4
