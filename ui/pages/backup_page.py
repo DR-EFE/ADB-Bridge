@@ -31,10 +31,12 @@ class BackupPage:
         device: DeviceService,
         page: Optional[ft.Page] = None,
         on_log: Optional[Callable[[str, str], None]] = None,
+        job_queue: Optional[Any] = None,
     ) -> None:
         self._device = device
         self.page = page
         self._on_log = on_log
+        self._job_queue = job_queue
 
         self._categories: List[CategoryDef] = get_available_category_definitions()
         self._backup_service = BackupService(
@@ -334,18 +336,46 @@ class BackupPage:
 
         def worker():
             try:
+                # Si job_queue está disponible, registrar el trabajo
+                jid = None
+                if self._job_queue:
+                    cat_names = ", ".join(c.name for c in enabled_cats)
+                    jid = self._job_queue.enqueue(
+                        job_type=JobType.BACKUP_CATEGORY,
+                        title=f"Respaldo: {cat_names}",
+                        serial=serial,
+                        payload={"destination": str(target_path), "categories": [c.id for c in enabled_cats]},
+                    )
+
                 self._backup_service.run_backup(
                     serial=serial,
                     device_label=model,
                     destination_dir=target_path,
                     categories=self._categories,
                 )
+
+                if self._job_queue and jid:
+                    job = self._job_queue.get_job(jid)
+                    if job:
+                        job.status = JobStatus.COMPLETED
+                        job.progress_percent = 1.0
+                        job.current_step = "Respaldo finalizado con éxito"
+                        self._job_queue._notify(job)
+                        self._job_queue._persist_history()
+
             except Exception as exc:
                 logger.error("Error inesperado en backup worker: %s", exc)
                 self._status_text.value = f"Error crítico: {exc}"
                 self._status_text.color = theme.ERR
                 self._btn_start.visible = True
                 self._btn_cancel.visible = False
+                if self._job_queue and 'jid' in locals() and jid:
+                    job = self._job_queue.get_job(jid)
+                    if job:
+                        job.status = JobStatus.FAILED
+                        job.error = str(exc)
+                        self._job_queue._notify(job)
+                        self._job_queue._persist_history()
                 try:
                     self._status_text.update()
                     self._btn_start.update()

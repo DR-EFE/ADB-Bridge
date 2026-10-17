@@ -309,6 +309,76 @@ class TestDeviceService(unittest.TestCase):
         self.assertEqual(store_after.get("CurrentDeviceId"), "dev-action-2")
         self.assertEqual(service.serial, "192.168.1.20:5555")
 
+    @patch("ui.services.device_service.get_adb_client")
+    @patch("ui.services.device_service.get_adb_executable")
+    def test_run_technical_diagnostics_all_fields(self, mock_exe, mock_client):
+        """Verifica que run_technical_diagnostics reporte los 12 puntos requeridos."""
+        mock_exe.return_value = "C:\\fake\\adb.exe"
+        fake_client = MagicMock()
+        fake_client.server_version.return_value = 41
+
+        mock_dev = MagicMock()
+        mock_dev.serial = "192.168.1.150:5555"
+        mock_dev.get_state.return_value = "device"
+        mock_dev.getprop.side_effect = lambda k: {
+            "ro.product.model": "Pixel 7 Pro",
+            "ro.product.manufacturer": "Google",
+            "ro.build.version.release": "14",
+            "ro.build.version.sdk": "34",
+            "ro.product.cpu.abi": "arm64-v8a",
+        }.get(k, "")
+        mock_dev.wlan_ip.return_value = "192.168.1.150"
+        mock_dev.shell.side_effect = lambda cmd: {
+            "dumpsys battery": "Current Battery Service state:\n  level: 88\n  status: 2",
+            "df -h /sdcard": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/fuse       112G   42G   70G  38% /sdcard",
+        }.get(cmd, "")
+
+        fake_client.device_list.return_value = [mock_dev]
+        fake_client.device.return_value = mock_dev
+        mock_client.return_value = fake_client
+
+        service = DeviceService(devices_json_path=self.canonical_json)
+        service.serial = "192.168.1.150:5555"
+
+        with patch.object(service, "find_wireless_devices", return_value=[{"service_name": "adb-1234", "endpoint": "192.168.1.150:41234"}]), \
+             patch.object(service, "ping_device", return_value=(True, "Ping exitoso (22ms)")):
+            rep = service.run_technical_diagnostics()
+
+        # 1. Versión ADB
+        self.assertTrue(rep.adb_version)
+        # 2. Ruta ejecutable
+        self.assertEqual(rep.adb_path, "C:\\fake\\adb.exe")
+        # 3. Estado servidor
+        self.assertIn("En ejecución", rep.adb_server_status)
+        self.assertEqual(rep.adb_server_port, 5037)
+        # 4. Dispositivos detectados
+        self.assertEqual(len(rep.detected_devices), 1)
+        self.assertEqual(rep.detected_devices[0]["serial"], "192.168.1.150:5555")
+        # 5. Estado autorización
+        self.assertEqual(rep.authorization_status, "device")
+        # 6. Estado mDNS
+        self.assertIn("Activo", rep.mdns_status)
+        self.assertEqual(len(rep.mdns_services), 1)
+        # 7. IP PC
+        self.assertTrue(rep.pc_ip)
+        # 8. IP Dispositivo
+        self.assertEqual(rep.device_ip, "192.168.1.150")
+        # 9. Puertos utilizados
+        self.assertEqual(rep.ports_used.get("device_port"), 5555)
+        self.assertEqual(rep.ports_used.get("adb_server_port"), 5037)
+        # 10. Prueba de conectividad
+        self.assertTrue(rep.connectivity_test.get("icmp_ping_ok"))
+        # 11. Versión de Android
+        self.assertEqual(rep.android_version, "14")
+        self.assertEqual(rep.sdk_api, "34")
+        self.assertEqual(rep.device_model, "Pixel 7 Pro")
+        # 12. Espacio libre y batería
+        self.assertEqual(rep.battery_level, 88)
+        self.assertEqual(rep.battery_status, "Cargando")
+        self.assertIn("70G", rep.storage_phone)
+        self.assertTrue(rep.storage_pc)
+
 
 if __name__ == "__main__":
     unittest.main()
+

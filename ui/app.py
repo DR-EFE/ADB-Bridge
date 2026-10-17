@@ -11,6 +11,7 @@ import flet as ft
 from ui_automation.adb_manager import stop_reconnect_watchdog
 
 from . import theme
+from .components.job_drawer import JobDrawer
 from .components.sidebar import Sidebar
 from .pages.backup_page import BackupPage
 from .pages.commands_page import CommandsPage
@@ -20,6 +21,7 @@ from .pages.logs_page import LogsPage
 from .pages.notifications_page import NotificationsPage
 from .pages.whatsapp_page import WhatsAppPage
 from .services.device_service import DeviceService
+from .services.job_queue_service import JobQueueService
 
 logger = logging.getLogger("ui.app")
 
@@ -46,6 +48,7 @@ class AndroidToolsApp:
     def __init__(self, page: ft.Page, serial: Optional[str] = None) -> None:
         self.page = page
         self.device = DeviceService(serial=serial)
+        self.job_queue = JobQueueService()
 
         theme.apply_theme(page, title="Android ADB Tools - Control Center")
 
@@ -57,9 +60,9 @@ class AndroidToolsApp:
         )
         self.logs = LogsPage(page)
         self.notifications = NotificationsPage(self.device)
-        self.whatsapp = WhatsAppPage(self.device)
+        self.whatsapp = WhatsAppPage(self.device, job_queue=self.job_queue)
         self.explorer = ExplorerPage(self.device, page=page, on_log=self._on_custom_log)
-        self.backup = BackupPage(self.device, page=page, on_log=self._on_custom_log)
+        self.backup = BackupPage(self.device, page=page, on_log=self._on_custom_log, job_queue=self.job_queue)
         self.commands = CommandsPage(self.device, on_log=self._on_custom_log)
 
         # Conectar logging global de Python al visor de logs
@@ -68,8 +71,14 @@ class AndroidToolsApp:
 
         self.sidebar = Sidebar(self.device, on_log=self._on_custom_log)
 
+        # Drawer inferior transversal para la cola de trabajos
+        self.job_drawer = JobDrawer(
+            self.job_queue,
+            on_badge_update=self._update_window_title_badge,
+        )
+
         # Sistema de pestañas con iconos modernos
-        tabs = ft.Tabs(
+        self.tabs = ft.Tabs(
             length=7,
             selected_index=0,
             expand=True,
@@ -104,6 +113,7 @@ class AndroidToolsApp:
             ),
         )
 
+        # Layout general: Sidebar a la izquierda + Columna (Pestañas expandibles + JobDrawer abajo)
         page.add(
             ft.Row(
                 expand=True,
@@ -111,10 +121,29 @@ class AndroidToolsApp:
                 controls=[
                     self.sidebar.view,
                     ft.VerticalDivider(width=1, color=theme.BORDER),
-                    tabs,
+                    ft.Column(
+                        expand=True,
+                        spacing=0,
+                        controls=[
+                            self.tabs,
+                            self.job_drawer.view,
+                        ],
+                    ),
                 ],
             )
         )
+
+    def _update_window_title_badge(self, active_count: int) -> None:
+        """Actualiza el título de la ventana con un badge del conteo de trabajos activos."""
+        base_title = "Android ADB Tools - Control Center"
+        if active_count > 0:
+            self.page.title = f"({active_count}) {base_title}"
+        else:
+            self.page.title = base_title
+        try:
+            self.page.update()
+        except Exception:
+            pass
 
     def _on_custom_log(self, text: str, color: str = theme.TEXT) -> None:
         """Permite que cualquier componente agregue mensajes directamente al registro."""
@@ -141,6 +170,7 @@ class AndroidToolsApp:
         self.sidebar.stop_polling()
         for page in (self.devices, self.explorer, self.backup, self.whatsapp, self.notifications, self.commands, self.logs):
             page.shutdown()
+        self.job_queue.shutdown()
         if self._log_handler:
             logging.getLogger().removeHandler(self._log_handler)
         stop_reconnect_watchdog()

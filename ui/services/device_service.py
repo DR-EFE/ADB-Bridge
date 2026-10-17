@@ -17,6 +17,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -234,6 +236,66 @@ class DeviceStatus:
     requires_selection: bool = False
     primary_device_id: Optional[str] = None
     is_stale: bool = False
+
+
+@dataclass
+class TechnicalDiagnosticsReport:
+    """Informe consolidado de diagnóstico técnico del sistema ADB y dispositivo."""
+
+    adb_version: str = "Desconocida"
+    adb_path: str = "No localizado"
+    adb_server_status: str = "Detenido o sin respuesta"
+    adb_server_port: int = 5037
+    detected_devices: List[Dict[str, str]] = field(default_factory=list)
+    selected_serial: Optional[str] = None
+    authorization_status: str = "Sin dispositivo"
+    mdns_status: str = "No disponible"
+    mdns_services: List[Dict[str, str]] = field(default_factory=list)
+    pc_ip: str = "127.0.0.1"
+    pc_all_ips: List[str] = field(default_factory=list)
+    device_ip: Optional[str] = None
+    ports_used: Dict[str, Any] = field(default_factory=dict)
+    connectivity_test: Dict[str, Any] = field(default_factory=dict)
+    android_version: str = "—"
+    sdk_api: str = "—"
+    cpu_abi: str = "—"
+    device_model: str = "—"
+    device_manufacturer: str = "—"
+    storage_phone: str = "—"
+    storage_pc: str = "—"
+    battery_level: Optional[int] = None
+    battery_status: Optional[str] = None
+    recommendations: List[str] = field(default_factory=list)
+    timestamp: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "adb_version": self.adb_version,
+            "adb_path": self.adb_path,
+            "adb_server_status": self.adb_server_status,
+            "adb_server_port": self.adb_server_port,
+            "detected_devices": self.detected_devices,
+            "selected_serial": self.selected_serial,
+            "authorization_status": self.authorization_status,
+            "mdns_status": self.mdns_status,
+            "mdns_services": self.mdns_services,
+            "pc_ip": self.pc_ip,
+            "pc_all_ips": self.pc_all_ips,
+            "device_ip": self.device_ip,
+            "ports_used": self.ports_used,
+            "connectivity_test": self.connectivity_test,
+            "android_version": self.android_version,
+            "sdk_api": self.sdk_api,
+            "cpu_abi": self.cpu_abi,
+            "device_model": self.device_model,
+            "device_manufacturer": self.device_manufacturer,
+            "storage_phone": self.storage_phone,
+            "storage_pc": self.storage_pc,
+            "battery_level": self.battery_level,
+            "battery_status": self.battery_status,
+            "recommendations": self.recommendations,
+            "timestamp": self.timestamp,
+        }
 
 
 def read_devices_store(path: Path = DEVICES_JSON) -> Dict[str, Any]:
@@ -1474,3 +1536,244 @@ class DeviceService:
             return int(match.group(1)) if match else None
         except Exception:
             return None
+
+    def run_technical_diagnostics(self) -> TechnicalDiagnosticsReport:
+        """Ejecuta un diagnóstico técnico exhaustivo de ADB, red, conectividad y hardware.
+
+        Cubre los 12 puntos de diagnóstico técnico:
+        1. Versión de ADB.
+        2. Ruta del ejecutable usado.
+        3. Estado del servidor ADB.
+        4. Dispositivos detectados.
+        5. Estado de autorización.
+        6. Estado de mDNS.
+        7. IP de la PC.
+        8. IP del dispositivo.
+        9. Puertos utilizados.
+        10. Prueba de conectividad.
+        11. Versión de Android.
+        12. Espacio libre y batería.
+        """
+        report = TechnicalDiagnosticsReport()
+        recs = report.recommendations
+
+        # 1 & 2. Ruta y Versión de ADB
+        try:
+            exe = get_adb_executable()
+            report.adb_path = str(exe) if exe else "No localizado en el sistema"
+            if exe and os.path.isfile(exe):
+                res = subprocess.run([exe, "version"], capture_output=True, text=True, timeout=5.0)
+                v_out = (res.stdout or "").strip()
+                lines = v_out.splitlines()
+                report.adb_version = lines[0] if lines else "ADB ejecutable presente"
+            else:
+                report.adb_version = "ADB no encontrado"
+                recs.append("Instala o configura Android SDK Platform-Tools para tener adb disponible.")
+        except Exception as exc:
+            report.adb_version = f"Error al consultar versión: {exc}"
+            recs.append("Comprueba los permisos del ejecutable ADB.")
+
+        # 3. Estado del servidor ADB y puerto local 5037
+        try:
+            client = get_adb_client()
+            s_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s_sock.settimeout(1.0)
+            open_code = s_sock.connect_ex(("127.0.0.1", 5037))
+            s_sock.close()
+            if open_code == 0:
+                try:
+                    s_ver = client.server_version()
+                    report.adb_server_status = f"En ejecución (Versión de protocolo: {s_ver}, Puerto: 5037)"
+                except Exception:
+                    report.adb_server_status = "Puerto 5037 abierto, pero cliente no pudo negociar versión"
+            else:
+                report.adb_server_status = "Servidor detenido (puerto 5037 cerrado)"
+                recs.append("Reinicia el servidor ADB con 'adb start-server' o desde la opción de reinicio.")
+        except Exception as exc:
+            report.adb_server_status = f"Error consultando servidor ADB: {exc}"
+
+        # 4 & 5. Dispositivos detectados y Estado de autorización
+        try:
+            client = get_adb_client()
+            dev_list = client.device_list()
+            for d in dev_list:
+                st = "desconocido"
+                try:
+                    st = d.get_state()
+                except Exception:
+                    pass
+                transport = "network" if is_network_serial(d.serial) else "usb"
+                report.detected_devices.append({
+                    "serial": d.serial,
+                    "state": st,
+                    "transport": transport,
+                })
+
+            if not dev_list:
+                recs.append("No se detectaron dispositivos por USB o Wi-Fi. Conecta un cable o empareja por Wireless Debugging.")
+        except Exception as exc:
+            logger.debug("Error listando dispositivos en diagnóstico: %s", exc)
+
+        report.selected_serial = self.serial
+        target_serial = self.serial
+        dev_obj: Any = None
+        if target_serial:
+            try:
+                client = get_adb_client()
+                dev_obj = client.device(target_serial)
+                state = dev_obj.get_state()
+                report.authorization_status = state
+                if state == "unauthorized":
+                    recs.append(f"El dispositivo {target_serial} está NO AUTORIZADO. Acepta la solicitud de depuración USB en su pantalla.")
+                elif state == "offline":
+                    recs.append(f"El dispositivo {target_serial} está OFFLINE. Desconecta y vuelve a conectar o reinicia el servidor ADB.")
+            except Exception as exc:
+                report.authorization_status = f"No disponible ({exc})"
+        else:
+            report.authorization_status = "Ningún dispositivo seleccionado"
+            if report.detected_devices:
+                recs.append("Hay dispositivos detectados pero ninguno está seleccionado. Selecciona uno en el panel lateral.")
+
+        # 6. Estado de mDNS
+        try:
+            mdns_services = self.find_wireless_devices()
+            report.mdns_services = mdns_services
+            if mdns_services:
+                report.mdns_status = f"Activo ({len(mdns_services)} servicio(s) detectado(s))"
+            else:
+                report.mdns_status = "Sin servicios detectados"
+        except Exception as exc:
+            report.mdns_status = f"Error al consultar mDNS: {exc}"
+
+        # 7. IP de la PC
+        try:
+            host_name = socket.gethostname()
+            host_ip = socket.gethostbyname(host_name)
+            ips = set()
+            try:
+                for item in socket.getaddrinfo(host_name, None, socket.AF_INET):
+                    ip_found = item[4][0]
+                    if not ip_found.startswith("127."):
+                        ips.add(ip_found)
+            except Exception:
+                pass
+            if not ips and host_ip:
+                ips.add(host_ip)
+            report.pc_all_ips = sorted(list(ips))
+            report.pc_ip = host_ip or (report.pc_all_ips[0] if report.pc_all_ips else "127.0.0.1")
+        except Exception as exc:
+            report.pc_ip = f"Error resolviendo IP local: {exc}"
+
+        # 8, 9, 10, 11, 12: IP del dispositivo, puertos, conectividad, Android, espacio y batería
+        phone_ip: Optional[str] = None
+        device_port = 5555
+        if target_serial and is_network_serial(target_serial):
+            parts = target_serial.split(":")
+            phone_ip = parts[0].strip("[]")
+            if len(parts) > 1 and parts[1].isdigit():
+                device_port = int(parts[1])
+
+        # Consultar propiedades si el dispositivo está disponible y autorizado
+        if dev_obj and report.authorization_status == "device":
+            try:
+                if not phone_ip:
+                    wlan = dev_obj.wlan_ip()
+                    if wlan:
+                        phone_ip = wlan
+            except Exception:
+                pass
+
+            try:
+                report.device_model = dev_obj.getprop("ro.product.model") or "—"
+                report.device_manufacturer = (dev_obj.getprop("ro.product.manufacturer") or dev_obj.getprop("ro.product.brand") or "—").capitalize()
+                report.android_version = dev_obj.getprop("ro.build.version.release") or "—"
+                report.sdk_api = dev_obj.getprop("ro.build.version.sdk") or "—"
+                report.cpu_abi = dev_obj.getprop("ro.product.cpu.abi") or "—"
+            except Exception as exc:
+                logger.debug("Error leyendo props en diagnóstico: %s", exc)
+
+            # Batería
+            try:
+                dump_bat = dev_obj.shell("dumpsys battery") or ""
+                m_lvl = re.search(r"level:\s*(\d+)", dump_bat)
+                if m_lvl:
+                    report.battery_level = int(m_lvl.group(1))
+                m_st = re.search(r"status:\s*(\d+)", dump_bat)
+                if m_st:
+                    st_code = int(m_st.group(1))
+                    status_map = {1: "Desconocido", 2: "Cargando", 3: "Descargando", 4: "No cargando", 5: "Llena"}
+                    report.battery_status = status_map.get(st_code, f"Código {st_code}")
+                if report.battery_level is not None and report.battery_level < 20:
+                    recs.append(f"La batería del teléfono está baja ({report.battery_level}%). Conéctalo a la corriente.")
+            except Exception:
+                pass
+
+            # Almacenamiento teléfono (/sdcard)
+            try:
+                df_out = dev_obj.shell("df -h /sdcard") or ""
+                lines = [ln.strip() for ln in df_out.splitlines() if ln.strip()]
+                if len(lines) > 1:
+                    report.storage_phone = lines[-1]
+                else:
+                    report.storage_phone = df_out.strip() or "—"
+            except Exception as exc:
+                report.storage_phone = f"No disponible ({exc})"
+
+        report.device_ip = phone_ip
+
+        # 9. Puertos utilizados
+        report.ports_used = {
+            "adb_server_port": 5037,
+            "device_port": device_port if (target_serial and is_network_serial(target_serial)) else "USB / N/A",
+            "is_tls": True if (device_port != 5555 and is_network_serial(target_serial or "")) else False,
+        }
+
+        # 10. Prueba de conectividad (Ping ICMP y Socket TCP si hay IP)
+        if phone_ip:
+            ping_ok, ping_msg = self.ping_device(phone_ip)
+            tcp_ok = False
+            tcp_err = ""
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2.0)
+                code = sock.connect_ex((phone_ip, device_port))
+                sock.close()
+                tcp_ok = (code == 0)
+                if not tcp_ok:
+                    tcp_err = f"Código error socket: {code}"
+            except Exception as exc:
+                tcp_err = str(exc)
+
+            report.connectivity_test = {
+                "tested_host": phone_ip,
+                "tested_port": device_port,
+                "icmp_ping_ok": ping_ok,
+                "icmp_ping_message": ping_msg,
+                "tcp_port_open": tcp_ok,
+                "tcp_error": tcp_err,
+            }
+            if not ping_ok:
+                recs.append(f"No hay respuesta de ping hacia {phone_ip}. Comprueba que la PC y el móvil estén en la misma red Wi-Fi o sin aislamiento de cliente (AP isolation).")
+            elif not tcp_ok and is_network_serial(target_serial or ""):
+                recs.append(f"El puerto ADB {device_port} en {phone_ip} no responde. Revisa si la depuración inalámbrica cambió de puerto o se desactivó.")
+        else:
+            report.connectivity_test = {
+                "tested_host": None,
+                "status": "No se determinó dirección IP para prueba de red (dispositivo no conectado o solo USB)",
+            }
+
+        # Almacenamiento local PC
+        try:
+            total_b, used_b, free_b = shutil.disk_usage(".")
+            report.storage_pc = f"{free_b / (1024**3):.1f} GB libres de {total_b / (1024**3):.1f} GB"
+        except Exception:
+            report.storage_pc = "No disponible"
+
+        if not recs:
+            recs.append("Todos los servicios y diagnósticos básicos operan de forma correcta.")
+
+        return report
+
+    def run_network_diagnostics(self) -> TechnicalDiagnosticsReport:
+        """Alias retrocompatible para ejecutar diagnóstico técnico completo."""
+        return self.run_technical_diagnostics()

@@ -2,6 +2,7 @@
 
 from .backup_service import BackupProgress, BackupService, CategoryDef, get_available_category_definitions
 from .device_service import DeviceRecord, DeviceService, DeviceStatus
+from .job_queue_service import JobItem, JobQueueService, JobStatus, JobType
 from .monitor_service import UiNotificationMonitor
 from .transfer_service import RemotePath, TransferJob, TransferService, TransferStatus, TransferType
 
@@ -19,4 +20,8 @@ __all__ = [
     "CategoryDef",
     "BackupProgress",
     "get_available_category_definitions",
+    "JobQueueService",
+    "JobItem",
+    "JobStatus",
+    "JobType",
 ]

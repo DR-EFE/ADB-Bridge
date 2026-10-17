@@ -33,12 +33,108 @@ class CommandsPage:
             color=theme.TEXT_MUTED,
         )
 
+        # Tiles visuales de diagnóstico técnico
+        self._tile_adb_status = ft.Text("Versión: — | Servidor: —", size=12, color=theme.TEXT_MUTED)
+        self._tile_network = ft.Text("PC: — | Móvil: —", size=12, color=theme.TEXT_MUTED)
+        self._tile_device_info = ft.Text("Dispositivo: — | Android: —", size=12, color=theme.TEXT_MUTED)
+        self._tile_hardware = ft.Text("Batería: — | Almacenamiento: —", size=12, color=theme.TEXT_MUTED)
+        self._diag_progress = ft.ProgressBar(visible=False, color=theme.ACCENT, bgcolor=theme.SURFACE_ALT)
+
         self.view = ft.Column(
             expand=True,
             spacing=16,
             scroll=ft.ScrollMode.AUTO,
             controls=[
-                # 1. Controles y Pantalla
+                # 1. Panel de Diagnóstico Técnico Integral (Requerimiento #10)
+                theme.card(
+                    ft.Column(
+                        spacing=12,
+                        controls=[
+                            ft.Row(
+                                [
+                                    ft.Row(
+                                        [
+                                            ft.Icon(ft.Icons.HEALTH_AND_SAFETY_OUTLINED, color=theme.ACCENT, size=20),
+                                            ft.Text("Diagnóstico Técnico Integral", weight=ft.FontWeight.BOLD, size=15),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    ft.FilledButton(
+                                        "🩺 Ejecutar Diagnóstico Completo",
+                                        icon=ft.Icons.PLAY_ARROW_ROUNDED,
+                                        on_click=self._run_full_technical_diagnostics,
+                                    ),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            ),
+                            self._diag_progress,
+                            ft.ResponsiveRow(
+                                columns=12,
+                                spacing=10,
+                                run_spacing=10,
+                                controls=[
+                                    ft.Container(
+                                        col={"sm": 12, "md": 6, "lg": 3},
+                                        bgcolor=theme.SURFACE_ALT,
+                                        border_radius=8,
+                                        padding=12,
+                                        border=ft.Border.all(1, theme.BORDER),
+                                        content=ft.Column(
+                                            spacing=4,
+                                            controls=[
+                                                ft.Row([ft.Icon(ft.Icons.TERMINAL, size=16, color=theme.ACCENT), ft.Text("Entorno ADB", size=12, weight=ft.FontWeight.BOLD)]),
+                                                self._tile_adb_status,
+                                            ],
+                                        ),
+                                    ),
+                                    ft.Container(
+                                        col={"sm": 12, "md": 6, "lg": 3},
+                                        bgcolor=theme.SURFACE_ALT,
+                                        border_radius=8,
+                                        padding=12,
+                                        border=ft.Border.all(1, theme.BORDER),
+                                        content=ft.Column(
+                                            spacing=4,
+                                            controls=[
+                                                ft.Row([ft.Icon(ft.Icons.WIFI, size=16, color=theme.OK), ft.Text("Red y Puertos", size=12, weight=ft.FontWeight.BOLD)]),
+                                                self._tile_network,
+                                            ],
+                                        ),
+                                    ),
+                                    ft.Container(
+                                        col={"sm": 12, "md": 6, "lg": 3},
+                                        bgcolor=theme.SURFACE_ALT,
+                                        border_radius=8,
+                                        padding=12,
+                                        border=ft.Border.all(1, theme.BORDER),
+                                        content=ft.Column(
+                                            spacing=4,
+                                            controls=[
+                                                ft.Row([ft.Icon(ft.Icons.PHONE_ANDROID, size=16, color=theme.WARN), ft.Text("Dispositivo & SO", size=12, weight=ft.FontWeight.BOLD)]),
+                                                self._tile_device_info,
+                                            ],
+                                        ),
+                                    ),
+                                    ft.Container(
+                                        col={"sm": 12, "md": 6, "lg": 3},
+                                        bgcolor=theme.SURFACE_ALT,
+                                        border_radius=8,
+                                        padding=12,
+                                        border=ft.Border.all(1, theme.BORDER),
+                                        content=ft.Column(
+                                            spacing=4,
+                                            controls=[
+                                                ft.Row([ft.Icon(ft.Icons.BATTERY_CHARGING_FULL, size=16, color=theme.OK), ft.Text("Batería y Almacenamiento", size=12, weight=ft.FontWeight.BOLD)]),
+                                                self._tile_hardware,
+                                            ],
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ],
+                    )
+                ),
+                # 2. Controles y Pantalla
                 theme.card(
                     ft.Column(
                         spacing=10,
@@ -65,7 +161,7 @@ class CommandsPage:
                         ],
                     )
                 ),
-                # 2. Diagnóstico del Sistema
+                # 3. Acciones Individuales de Diagnóstico
                 theme.card(
                     ft.Column(
                         spacing=10,
@@ -73,7 +169,7 @@ class CommandsPage:
                             ft.Row(
                                 [
                                     ft.Icon(ft.Icons.ANALYTICS_OUTLINED, color=theme.OK),
-                                    ft.Text("Diagnóstico & Rendimiento", weight=ft.FontWeight.BOLD, size=14),
+                                    ft.Text("Consultas Específicas & Acciones", weight=ft.FontWeight.BOLD, size=14),
                                 ],
                                 spacing=8,
                             ),
@@ -85,14 +181,14 @@ class CommandsPage:
                                     ft.OutlinedButton("💾 Espacio en Disco", on_click=self._diag_storage),
                                     ft.OutlinedButton("📱 Info Completa", on_click=self._diag_system),
                                     ft.OutlinedButton("🌐 IP e Interfaces", on_click=self._diag_network),
-                                    ft.OutlinedButton("🧭 Diagnóstico de conexión", on_click=self._diag_connection),
+                                    ft.OutlinedButton("🧭 Diagnóstico de Conexión", on_click=self._diag_connection),
                                     ft.OutlinedButton("🔄 Reiniciar Teléfono", on_click=self._reboot_device),
                                 ],
                             ),
                         ],
                     )
                 ),
-                # 3. Consola de Salida del Comando
+                # 4. Consola de Salida del Comando
                 theme.card(
                     ft.Column(
                         spacing=8,
@@ -100,7 +196,7 @@ class CommandsPage:
                             ft.Row(
                                 [
                                     ft.Icon(ft.Icons.TERMINAL, size=16, color=theme.TEXT_MUTED),
-                                    ft.Text("Resultado del Comando", weight=ft.FontWeight.W_600, size=13),
+                                    ft.Text("Detalle & Consola de Diagnóstico", weight=ft.FontWeight.W_600, size=13),
                                 ],
                                 spacing=6,
                             ),
@@ -230,38 +326,126 @@ class CommandsPage:
         self._set_output(out)
         self._log("Interfaces de red consultadas.", theme.OK)
 
-    def _diag_connection(self, _e: ft.ControlEvent) -> None:
-        """Ejecuta diagnóstico completo de ADB, LAN, mDNS, endpoints y VPN."""
-        self._set_output("Ejecutando diagnóstico de conectividad...")
+    def _run_full_technical_diagnostics(self, _e: Optional[ft.ControlEvent] = None) -> None:
+        """Ejecuta el diagnóstico técnico integral y actualiza tanto los tiles como el reporte detallado."""
+        self._set_output("Iniciando diagnóstico técnico completo de ADB, red, conectividad y hardware...")
+        self._diag_progress.visible = True
+        try:
+            self._diag_progress.update()
+        except Exception:
+            pass
 
         def work() -> None:
             try:
-                report = self._device.run_network_diagnostics()
-                payload = report.to_dict()
-                lines = [
-                    f"ADB: {payload['adb_path']}",
-                    f"Version ADB: {payload['adb_version'].splitlines()[0] if payload['adb_version'] else 'desconocida'}",
-                    f"Servidor ADB: {payload['adb_server_status'].splitlines()[0] if payload['adb_server_status'] else 'sin respuesta'}",
-                    f"Estado ADB: {payload['adb_state']}",
-                    f"Serial actual: {payload['current_serial'] or '—'}",
-                    f"Interfaces: {', '.join(payload['active_networks']) or 'ninguna'}",
-                    f"Gateways: {', '.join(payload['gateways']) or 'ninguno'}",
-                    f"VPN: {', '.join(payload['vpn_interfaces']) or 'no detectada'}",
-                    f"mDNS: {len(payload['mdns_services'])} servicio(s)",
-                    "Endpoints conocidos: " + (", ".join(str(item.get("Endpoint")) for item in payload["known_endpoints"]) or "ninguno"),
-                    "Servicios mDNS: " + (", ".join(str(item.get("endpoint")) for item in payload["mdns_services"]) or "ninguno"),
-                    "Endpoints probados:",
-                ]
-                lines.extend(f"  {'OK' if item['reachable'] else 'FALLO'} {item['endpoint']}" + (f" ({item['error']})" if item.get('error') else "") for item in payload["tcp_tests"])
-                lines.append("Recomendaciones:")
-                lines.extend(f"  - {item}" for item in payload["recommendations"])
-                self._set_output("\n".join(lines))
-                self._log("Diagnóstico completo de conectividad ejecutado.", theme.OK)
-            except Exception as exc:
-                self._set_output(f"Error en diagnóstico de conectividad: {exc}")
-                self._log("No se pudo completar el diagnóstico de conectividad.", theme.ERR)
+                report = self._device.run_technical_diagnostics()
+                data = report.to_dict()
 
-        threading.Thread(target=work, name="network-diagnostics", daemon=True).start()
+                # Actualizar tiles visuales
+                # 1. ADB
+                adb_ver = (data["adb_version"].splitlines()[0] if data["adb_version"] else "—")
+                if "version " in adb_ver.lower():
+                    adb_ver = adb_ver.split("version ")[-1].strip()
+                adb_srv = "OK" if "en ejecución" in data["adb_server_status"].lower() else "Error"
+                self._tile_adb_status.value = f"ADB: {adb_ver}\nServidor: {adb_srv} (P:{data['adb_server_port']})"
+
+                # 2. Red
+                phone_ip_str = data["device_ip"] or "No detectada"
+                dev_port_str = data["ports_used"].get("device_port", "—")
+                self._tile_network.value = f"PC IP: {data['pc_ip']}\nTeléfono: {phone_ip_str}:{dev_port_str}"
+
+                # 3. Dispositivo & SO
+                model_str = f"{data['device_manufacturer']} {data['device_model']}".strip()
+                if not model_str or model_str == "— —":
+                    model_str = data["selected_serial"] or "Sin selección"
+                android_str = f"v{data['android_version']} (API {data['sdk_api']})" if data["android_version"] != "—" else "—"
+                self._tile_device_info.value = f"Modelo: {model_str}\nAndroid: {android_str} ({data['authorization_status']})"
+
+                # 4. Hardware
+                bat_str = f"{data['battery_level']}% ({data['battery_status']})" if data["battery_level"] is not None else "—"
+                self._tile_hardware.value = f"Batería: {bat_str}\nPC Libre: {data['storage_pc']}"
+
+                # Formatear informe exhaustivo para la consola
+                lines = [
+                    "=" * 64,
+                    "              INFORME DE DIAGNÓSTICO TÉCNICO",
+                    "=" * 64,
+                    f"Fecha y hora: {data['timestamp']}",
+                    "",
+                    "[1] ENTORNO Y SERVIDOR ADB",
+                    f"  • Versión ADB       : {data['adb_version']}",
+                    f"  • Ruta ejecutable   : {data['adb_path']}",
+                    f"  • Estado servidor   : {data['adb_server_status']}",
+                    f"  • Puerto local      : {data['adb_server_port']}",
+                    "",
+                    "[2] DISPOSITIVOS Y AUTORIZACIÓN",
+                    f"  • Dispositivo actual: {data['selected_serial'] or 'Ninguno seleccionado'}",
+                    f"  • Estado autorización: {data['authorization_status']}",
+                    f"  • Total detectados  : {len(data['detected_devices'])}",
+                ]
+                for d in data["detected_devices"]:
+                    lines.append(f"      - Serial: {d['serial']:<24} Estado: {d['state']:<12} Tipo: {d['transport']}")
+
+                lines.extend([
+                    "",
+                    "[3] RED, MDNS Y PUERTOS",
+                    f"  • IP de la PC       : {data['pc_ip']} (todas: {', '.join(data['pc_all_ips']) or '127.0.0.1'})",
+                    f"  • IP del dispositivo: {phone_ip_str}",
+                    f"  • Puertos utilizados: ADB Local={data['ports_used'].get('adb_server_port')}, Dispositivo={data['ports_used'].get('device_port')} (TLS: {data['ports_used'].get('is_tls')})",
+                    f"  • Estado de mDNS    : {data['mdns_status']}",
+                ])
+                if data["mdns_services"]:
+                    for s in data["mdns_services"]:
+                        lines.append(f"      - Servicio: {s.get('service_name')} -> {s.get('endpoint')}")
+
+                conn = data["connectivity_test"]
+                lines.extend([
+                    "",
+                    "[4] PRUEBA DE CONECTIVIDAD",
+                ])
+                if conn.get("tested_host"):
+                    lines.append(f"  • Destino probado   : {conn['tested_host']}:{conn.get('tested_port')}")
+                    lines.append(f"  • Ping ICMP         : {'EXITOSO' if conn.get('icmp_ping_ok') else 'FALLÓ'} - {conn.get('icmp_ping_message')}")
+                    lines.append(f"  • Puerto TCP        : {'ABIERTO (Conexión exitosa)' if conn.get('tcp_port_open') else 'CERRADO o NO RESPONDE'} {conn.get('tcp_error') or ''}")
+                else:
+                    lines.append(f"  • Estado            : {conn.get('status', 'No aplicable')}")
+
+                lines.extend([
+                    "",
+                    "[5] HARDWARE Y SISTEMA",
+                    f"  • Modelo / Marca    : {data['device_manufacturer']} {data['device_model']}",
+                    f"  • Versión Android   : {data['android_version']} (Nivel API: {data['sdk_api']}, ABI: {data['cpu_abi']})",
+                    f"  • Batería           : {bat_str}",
+                    f"  • Almacenamiento PC : {data['storage_pc']}",
+                    f"  • Espacio en móvil  : {data['storage_phone']}",
+                    "",
+                    "[6] RECOMENDACIONES",
+                ])
+                for rec in data["recommendations"]:
+                    lines.append(f"  ⚠ {rec}")
+
+                lines.append("=" * 64)
+                self._set_output("\n".join(lines))
+                self._log("Diagnóstico técnico completo completado exitosamente.", theme.OK)
+            except Exception as exc:
+                logger.exception("Error al ejecutar diagnóstico técnico completo: %s", exc)
+                self._set_output(f"Error ejecutando diagnóstico técnico: {exc}")
+                self._log(f"Fallo en diagnóstico técnico: {exc}", theme.ERR)
+            finally:
+                self._diag_progress.visible = False
+                try:
+                    self._diag_progress.update()
+                    self._tile_adb_status.update()
+                    self._tile_network.update()
+                    self._tile_device_info.update()
+                    self._tile_hardware.update()
+                except Exception:
+                    pass
+
+        threading.Thread(target=work, name="tech-diagnostics", daemon=True).start()
+
+    def _diag_connection(self, _e: ft.ControlEvent) -> None:
+        """Ejecuta diagnóstico completo de ADB, LAN, mDNS, conectividad y hardware."""
+        self._run_full_technical_diagnostics(_e)
 
     def _reboot_device(self, _e: ft.ControlEvent) -> None:
         dev = self._get_device_or_alert()

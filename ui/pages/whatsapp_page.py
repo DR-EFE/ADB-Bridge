@@ -31,8 +31,9 @@ _PROGRESS_RE = re.compile(r"\[(\d+)/(\d+)\] Iniciando exportación")
 class WhatsAppPage:
     """Contenido de la pestaña. El control a insertar es ``.view``."""
 
-    def __init__(self, device: DeviceService) -> None:
+    def __init__(self, device: DeviceService, job_queue: Optional[Any] = None) -> None:
         self._device = device
+        self._job_queue = job_queue
         self._task: Optional[BackgroundTask] = None
         self._receiver_task: Optional[BackgroundTask] = None
         self._log_handler: Optional[UiLogHandler] = None
@@ -240,7 +241,27 @@ class WhatsAppPage:
         def work(_stop) -> None:
             client = WhatsAppClient(DeviceManager(serial=serial), auto_watchers=True)
             try:
+                # Si job_queue está disponible, registrar cada chat en el historial
                 self._results = client.export_top_chats(n=n, include_media=include_media, local_dir=out_dir)
+                if self._job_queue:
+                    for r in self._results:
+                        chat_name = r.get("chat", "Chat")
+                        is_ok = r.get("success", False)
+                        jid = self._job_queue.enqueue(
+                            job_type=JobType.WHATSAPP_EXPORT_CHAT,
+                            title=f"Chat '{chat_name}'",
+                            serial=serial,
+                            payload={"chat_name": chat_name, "include_media": include_media, "local_dir": out_dir},
+                        )
+                        job = self._job_queue.get_job(jid)
+                        if job:
+                            job.status = JobStatus.COMPLETED if is_ok else JobStatus.FAILED
+                            job.progress_percent = 1.0 if is_ok else 0.0
+                            job.current_step = "Completado" if is_ok else (r.get("failure_reason") or "Fallo en exportación")
+                            job.error = None if is_ok else r.get("failure_reason")
+                            job.result = r
+                            self._job_queue._notify(job)
+                            self._job_queue._persist_history()
             finally:
                 client.close()
 
