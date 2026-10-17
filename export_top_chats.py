@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ui_automation.device import DeviceManager
 from ui_automation.whatsapp import WhatsAppClient
+from ui_automation.whatsapp.processor import export_processed_chat, process_chat_file
 
 
 def setup_logging():
@@ -37,6 +38,10 @@ def main():
         default=10,
         help="Número de chats más recientes a exportar (predeterminado: 10)",
     )
+    parser.add_argument("--process", action="store_true", help="Procesar los chats descargados y generar análisis local")
+    parser.add_argument("--format", choices=("json", "csv", "xlsx", "all"), default="all", help="Formato analítico al usar --process")
+    parser.add_argument("--report", action="store_true", help="Generar también el reporte Markdown")
+    parser.add_argument("--my-name", default=None, help="Nombre propio para identificar mensajes enviados en grupos")
     parser.add_argument(
         "--include-media",
         action="store_true",
@@ -66,6 +71,20 @@ def main():
             include_media=args.include_media,
             local_dir=args.output_dir,
         )
+        if args.process:
+            for result in results:
+                local_path = result.get("local_path")
+                if not result.get("success") or not local_path:
+                    continue
+                try:
+                    conversation = process_chat_file(local_path, my_name=args.my_name, chat_name=result.get("chat_name"))
+                    generated = export_processed_chat(
+                        conversation, args.output_dir, formats=(args.format,), report=args.report
+                    )
+                    print(f"[ANÁLISIS] {conversation.chat_name}: " + ", ".join(generated.values()))
+                except Exception as exc:
+                    result["processing_error"] = str(exc)
+                    logging.error("No se pudo procesar '%s': %s", result.get("chat_name"), exc)
         success_count = sum(1 for r in results if r.get("success"))
         sys.exit(0 if success_count > 0 else 1)
     except KeyboardInterrupt:

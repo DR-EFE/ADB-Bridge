@@ -39,6 +39,13 @@ param(
 
     [switch]$IncludeMedia,
 
+    [switch]$ProcessChats,
+
+    [ValidateSet('All', 'Excel', 'Json', 'Csv')]
+    [string]$Format = 'All',
+
+    [string]$MyName,
+
     [string]$OutputDir = ".\exports",
 
     [string]$Serial,
@@ -79,6 +86,9 @@ function Invoke-WhatsAppExport {
     param(
         [int]$Limit = 10,
         [bool]$Media = $false,
+        [bool]$Process = $false,
+        [string]$ExportFormat = 'All',
+        [string]$OwnName,
         [string]$Destination = ".\exports",
         [string]$TargetSerial
     )
@@ -135,17 +145,21 @@ function Invoke-WhatsAppExport {
     Write-Host "`nIniciando exportación de WhatsApp..." -ForegroundColor Cyan
     Write-Host "Chats a exportar : $Limit" -ForegroundColor Gray
     Write-Host "Archivos medios  : $(if($Media){'Sí (.zip)'}else{'No (.txt)'})" -ForegroundColor Gray
+    Write-Host "Procesar chats   : $(if($Process){"Sí ($ExportFormat)"}else{'No'})" -ForegroundColor Gray
     Write-Host "Carpeta destino  : $fullOutputDir" -ForegroundColor Gray
     Write-Host "Dispositivo ADB  : $resolvedSerial`n" -ForegroundColor Gray
 
     # 6. Invocar export_top_chats.py
-    $pyArgs = @($scriptPath, "-n", $Limit.ToString(), "--output-dir", "`"$fullOutputDir`"", "--serial", "`"$resolvedSerial`"")
-    if ($Media) {
-        $pyArgs += "--include-media"
-    }
-
     try {
-        & python $scriptPath -n $Limit --output-dir $fullOutputDir --serial $resolvedSerial $(if($Media){"--include-media"})
+        $cliArgs = @($scriptPath, '-n', $Limit.ToString(), '--output-dir', $fullOutputDir, '--serial', $resolvedSerial)
+        if ($Media) { $cliArgs += '--include-media' }
+        if ($Process) {
+            $cliArgs += '--process'
+            $cliArgs += '--format'
+            $cliArgs += $ExportFormat.ToLowerInvariant()
+            if (-not [string]::IsNullOrWhiteSpace($OwnName)) { $cliArgs += '--my-name'; $cliArgs += $OwnName }
+        }
+        & python @cliArgs
         $exitCode = $LASTEXITCODE
         if ($exitCode -eq 0) {
             Write-Host "`nProceso de exportación finalizado exitosamente." -ForegroundColor Green
@@ -158,4 +172,4 @@ function Invoke-WhatsAppExport {
 }
 
 # Invocar la función con los parámetros recibidos
-Invoke-WhatsAppExport -Limit $Top -Media $IncludeMedia.IsPresent -Destination $OutputDir -TargetSerial $Serial
+Invoke-WhatsAppExport -Limit $Top -Media $IncludeMedia.IsPresent -Process $ProcessChats.IsPresent -ExportFormat $Format -OwnName $MyName -Destination $OutputDir -TargetSerial $Serial

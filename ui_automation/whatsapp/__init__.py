@@ -11,6 +11,18 @@ from .receiver import (
     is_receiver_installed,
     uninstall_receiver,
 )
+from .processor import (
+    ChatAnalytics,
+    ChatConversation,
+    ChatExporter,
+    ChatFilter,
+    ChatMessage,
+    MediaAttachment,
+    WhatsAppParser,
+    WhatsAppUnpacker,
+    export_processed_chat,
+    process_chat_file,
+)
 
 __all__ = [
     "WhatsAppClient",
@@ -25,4 +37,14 @@ __all__ = [
     "install_receiver",
     "is_receiver_installed",
     "uninstall_receiver",
+    "ChatMessage",
+    "MediaAttachment",
+    "ChatAnalytics",
+    "ChatConversation",
+    "WhatsAppParser",
+    "WhatsAppUnpacker",
+    "ChatFilter",
+    "ChatExporter",
+    "process_chat_file",
+    "export_processed_chat",
 ]
