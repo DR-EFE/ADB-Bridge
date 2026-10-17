@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import flet as ft
@@ -15,6 +17,7 @@ from ui_automation.whatsapp import (
     install_receiver,
     uninstall_receiver,
 )
+from ui_automation.whatsapp.processor import ChatFilter, export_processed_chat, process_chat_file
 
 from .. import theme
 from ..components.log_view import LogView, UiLogHandler, level_color
@@ -41,12 +44,17 @@ class WhatsAppPage:
         self._total_chats: int = 0
         self._last_serial: Optional[str] = None
         self._last_out_dir: str = "./exports"
+        self._processed: List[Dict[str, Any]] = []
 
         self._count = ft.TextField(label="Cantidad de chats", value="10", width=170,
                                    keyboard_type=ft.KeyboardType.NUMBER)
         self._media = ft.Switch(label="Incluir multimedia (.zip)", value=False)
+        self._auto_process = ft.Switch(label="Auto-procesar chats", value=False)
+        self._my_name = ft.TextField(label="Mi nombre en este grupo (opcional)", width=250)
         self._out_dir = ft.TextField(label="Carpeta de destino", value="./exports", width=260)
         self._export_btn = ft.FilledButton("Exportar", icon=ft.Icons.DOWNLOAD, on_click=self._on_export)
+        self._process_folder_btn = ft.OutlinedButton("Procesar carpeta existente", icon=ft.Icons.FOLDER_OPEN, on_click=self._on_process_folder)
+        self._cancel_btn = ft.OutlinedButton("Cancelar", icon=ft.Icons.CANCEL, disabled=True, on_click=self._on_cancel)
         self._retry_downloads_btn = ft.OutlinedButton(
             "Reintentar descargas", icon=ft.Icons.REPLAY, disabled=True, on_click=self._on_retry_downloads
         )
@@ -62,6 +70,10 @@ class WhatsAppPage:
         self._receiver_status = ft.Text("Auxiliar: estado no verificado (clic en Verificar auxiliar)", size=11, color=theme.TEXT_MUTED)
         self._progress = ft.ProgressBar(value=0, bar_height=8, border_radius=4, color=theme.ACCENT, bgcolor=theme.BORDER)
         self._progress_text = ft.Text("Listo.", size=12, color=theme.TEXT_MUTED)
+        self._search = ft.TextField(label="Buscar en mensajes procesados", width=300, on_change=self._refresh_processed_cards)
+        self._filter_sender = ft.TextField(label="Filtrar remitente", width=210, on_change=self._refresh_processed_cards)
+        self._only_media = ft.Switch(label="Solo con multimedia", value=False, on_change=self._refresh_processed_cards)
+        self._processed_cards = ft.Column(spacing=8)
         self._log = LogView()
 
         self.view = ft.Column(
@@ -73,7 +85,8 @@ class WhatsAppPage:
                         wrap=True, spacing=24, run_spacing=10,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            self._count, self._media, self._out_dir, self._export_btn,
+                            self._count, self._media, self._auto_process, self._my_name, self._out_dir, self._export_btn,
+                            self._process_folder_btn, self._cancel_btn,
                             self._retry_downloads_btn,
                             self._check_receiver_btn,
                             self._install_receiver_btn, self._remove_receiver_btn,
@@ -82,6 +95,9 @@ class WhatsAppPage:
                     )
                 ),
                 theme.card(ft.Column([self._progress, self._progress_text], spacing=8)),
+                ft.Text("Chats procesados", size=14, weight=ft.FontWeight.W_600),
+                ft.Row([self._search, self._filter_sender, self._only_media], wrap=True),
+                self._processed_cards,
                 ft.Text("Registro de estado", size=14, weight=ft.FontWeight.W_600),
                 self._log.view,
             ],
@@ -90,8 +106,98 @@ class WhatsAppPage:
     # ---------------------------------------------------------- acciones
 
     def shutdown(self) -> None:
-        """La exportación no es cancelable en esta fase; solo limpia el handler."""
+        """Cancela trabajo local en curso y limpia el handler."""
+        if self._task:
+            self._task.stop()
         self._detach_log_handler()
+
+    def _on_cancel(self, _e: ft.ControlEvent) -> None:
+        if self._task:
+            self._task.stop()
+            self._progress_text.value = "Cancelación solicitada; se detendrá al terminar la operación actual."
+            self._progress_text.color = theme.WARN
+            self._progress_text.update()
+
+    def _on_process_folder(self, _e: ft.ControlEvent) -> None:
+        directory = Path((self._out_dir.value or "./exports").strip())
+        if not directory.is_dir():
+            self._progress_text.value = f"No existe la carpeta: {directory}"
+            self._progress_text.color = theme.ERR
+            self._progress_text.update()
+            return
+        paths = [path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in {".txt", ".zip"}]
+        if not paths:
+            self._progress_text.value = "No hay exportaciones .txt o .zip en la carpeta indicada."
+            self._progress_text.color = theme.WARN
+            self._progress_text.update()
+            return
+        self._start_processing(paths)
+
+    def _start_processing(self, paths: List[Path]) -> None:
+        self._processed = []
+        self._set_busy(True, "Preparando análisis de chats...", progress=0)
+
+        def work(stop) -> None:
+            for index, path in enumerate(paths, 1):
+                if stop.is_set():
+                    raise InterruptedError("Procesamiento cancelado por el usuario.")
+                self._progress_text.value = f"[{index}/{len(paths)}] Procesando {path.name}..."
+                try:
+                    conversation = process_chat_file(path, my_name=(self._my_name.value or None), cancel_event=stop)
+                    files = export_processed_chat(conversation, path.parent, formats=("json", "csv", "xlsx"), report=True)
+                    self._processed.append({"conversation": conversation, "files": files})
+                except InterruptedError:
+                    raise
+                except Exception as exc:  # un archivo no impide el resto del lote
+                    self._log.append(f"No se pudo procesar {path.name}: {exc}", theme.ERR)
+                self._progress.value = index / len(paths)
+
+        def done(error: Optional[BaseException]) -> None:
+            self._refresh_processed_cards()
+            if isinstance(error, InterruptedError):
+                self._set_busy(False, "Procesamiento cancelado.", progress=0)
+            elif error:
+                self._set_busy(False, f"Falló el procesamiento: {error}", progress=0)
+            else:
+                self._set_busy(False, f"Procesamiento completado: {len(self._processed)}/{len(paths)} chats.", progress=1)
+
+        self._task = BackgroundTask("whatsapp-process", target=work, on_done=done)
+        self._task.start()
+
+    def _refresh_processed_cards(self, _e: Optional[ft.ControlEvent] = None) -> None:
+        query = (self._search.value or "").strip()
+        sender = (self._filter_sender.value or "").strip()
+        only_media = bool(self._only_media.value)
+        cards: List[ft.Control] = []
+        for item in self._processed:
+            conversation = item["conversation"]
+            matched = ChatFilter.apply(conversation.messages, sender=sender or None, text=query or None, has_media=True if only_media else None)
+            if (query or sender or only_media) and not matched:
+                continue
+            stats = conversation.analytics
+            photos = stats.media_counts_by_type.get("image", 0)
+            audios = stats.media_counts_by_type.get("audio", 0)
+            files = item["files"]
+            actions = [
+                ft.TextButton("Abrir Excel", on_click=lambda _e, p=files.get("xlsx"): self._open_path(p)),
+                ft.TextButton("Abrir JSON", on_click=lambda _e, p=files.get("json"): self._open_path(p)),
+                ft.TextButton("Abrir carpeta", on_click=lambda _e, p=files.get("xlsx"): self._open_path(str(Path(p).parent) if p else None)),
+            ]
+            cards.append(theme.card(ft.Column([
+                ft.Text(conversation.chat_name, weight=ft.FontWeight.W_600),
+                ft.Text(f"{stats.total_messages} mensajes · enviados {stats.outgoing_count} · recibidos {stats.incoming_count} · fotos {photos} · audios {audios}"),
+                ft.Row(actions, wrap=True),
+            ], spacing=4)))
+        self._processed_cards.controls = cards or [ft.Text("Aún no hay chats procesados.", color=theme.TEXT_MUTED)]
+        try:
+            self._processed_cards.update()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _open_path(path: Optional[str]) -> None:
+        if path and Path(path).exists():
+            os.startfile(path)  # type: ignore[attr-defined]  # UI solo se distribuye para Windows
 
     def _on_install_receiver(self, _e: ft.ControlEvent) -> None:
         status = self._device.get_status()
@@ -248,6 +354,14 @@ class WhatsAppPage:
             client = WhatsAppClient(DeviceManager(serial=serial), auto_watchers=True)
             try:
                 self._results = client.export_top_chats(n=n, include_media=include_media, local_dir=out_dir)
+                if self._auto_process.value:
+                    for result in self._results:
+                        if _stop.is_set():
+                            raise InterruptedError("Procesamiento cancelado por el usuario.")
+                        if result.get("success") and result.get("local_path"):
+                            conversation = process_chat_file(result["local_path"], my_name=(self._my_name.value or None), chat_name=result.get("chat_name"), cancel_event=_stop)
+                            files = export_processed_chat(conversation, out_dir, formats=("json", "csv", "xlsx"), report=True)
+                            self._processed.append({"conversation": conversation, "files": files})
             finally:
                 client.close()
 
@@ -299,6 +413,7 @@ class WhatsAppPage:
     def _on_done(self, error: Optional[BaseException]) -> None:
         self._detach_log_handler()
         ok = sum(1 for r in self._results if r.get("success"))
+        self._refresh_processed_cards()
         total = len(self._results)
 
         # Informar detalladamente por cada chat
@@ -416,8 +531,12 @@ class WhatsAppPage:
 
     def _set_busy(self, busy: bool, text: str, progress: Optional[float] = 0, indeterminate: bool = False) -> None:
         self._export_btn.disabled = busy
+        self._process_folder_btn.disabled = busy
+        self._cancel_btn.disabled = not busy
         self._count.disabled = busy
         self._media.disabled = busy
+        self._auto_process.disabled = busy
+        self._my_name.disabled = busy
         self._out_dir.disabled = busy
         self._progress.value = None if indeterminate else progress
         self._progress_text.value = text

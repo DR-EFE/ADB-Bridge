@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union
 
 import uiautomator2 as u2
 
 from ..device import DeviceManager
 from ..watchers import UIWatcherManager
+
+if TYPE_CHECKING:
+    from .processor import ChatConversation
 
 logger = logging.getLogger("ui_automation.whatsapp")
 
@@ -363,5 +366,17 @@ class WhatsAppClient:
         from .chats import WhatsAppChatManager
         manager = WhatsAppChatManager(self)
         return manager.export_top_chats(n=n, include_media=include_media, local_dir=local_dir)
+
+    def process_chat(self, local_path: str, my_name: Optional[str] = None) -> "ChatConversation":
+        """Procesa una exportación local (.txt o .zip) sin usar el dispositivo."""
+        from .processor import process_chat_file
+        return process_chat_file(local_path, my_name=my_name)
+
+    def export_processed_chat(
+        self, conversation: "ChatConversation", output_dir: str, formats: Sequence[str] = ("json", "csv", "xlsx")
+    ) -> Dict[str, str]:
+        """Escribe los formatos analíticos solicitados para una conversación."""
+        from .processor import export_processed_chat
+        return export_processed_chat(conversation, output_dir, formats=formats)
 
 
