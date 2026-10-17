@@ -358,7 +358,7 @@ class Sidebar:
                         [
                             ft.Text(f"Modelo: {card.get('model', '—')}", size=11, color=theme.TEXT_MUTED),
                             ft.Text(f"Android {card.get('android_version', '—')}", size=11, color=theme.TEXT_MUTED),
-                            ft.Text(f"🔋 {bat_text}", size=11, color=bat_color),
+                            ft.Text(f"Bat: {bat_text}", size=11, color=bat_color),
                         ],
                         spacing=8,
                     ),
@@ -730,7 +730,7 @@ class Sidebar:
 
     def _on_auto_wifi_result(self, ok: bool, msg: str) -> None:
         color = theme.OK if ok else theme.WARN
-        self._log_msg(f"⚡ [Auto-WiFi] {msg}", color)
+        self._log_msg(f"[Auto-WiFi] {msg}", color)
         self._feedback.value = msg
         self._feedback.color = color
         self.refresh_now()

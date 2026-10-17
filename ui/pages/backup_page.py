@@ -57,7 +57,7 @@ class BackupPage:
         # Selectores nativos Flet
         self._dir_picker = ft.FilePicker(on_result=self._on_dir_picked)
         if self.page:
-            self.page.overlay.append(self._dir_picker)
+            self.page.services.append(self._dir_picker)
 
         # Componentes de progreso
         self._progress_bar = ft.ProgressBar(value=0.0, expand=True, color=theme.ACCENT, visible=False)
@@ -142,7 +142,8 @@ class BackupPage:
                                 controls=[
                                     self._dest_field,
                                     ft.OutlinedButton(
-                                        "📁 Elegir Carpeta...",
+                                        "Elegir Carpeta...",
+                                        icon=ft.Icons.FOLDER_OPEN,
                                         on_click=lambda _: self._dir_picker.get_directory_path(
                                             dialog_title="Seleccionar carpeta de respaldo"
                                         ),
@@ -156,7 +157,7 @@ class BackupPage:
                                         spacing=8,
                                         controls=[
                                             ft.FilledButton(
-                                                "⭐ Backup Completo (Todo)",
+                                                "Backup Completo (Todo)",
                                                 icon=ft.Icons.BACKUP,
                                                 on_click=lambda _: self._select_all_categories(True),
                                             ),

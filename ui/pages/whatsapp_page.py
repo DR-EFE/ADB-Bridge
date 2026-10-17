@@ -455,7 +455,7 @@ class WhatsAppPage:
                 target = r.get("target_used") or "AndroidTools Receiver"
                 path = r.get("local_path") or ""
                 self._log.append(
-                    f"✔ '{chat_name}': descargado con éxito vía {target} ({method}) -> {path}",
+                    f"[OK] '{chat_name}': descargado con éxito vía {target} ({method}) -> {path}",
                     theme.OK,
                 )
                 if r.get("receipt_id"):
@@ -465,24 +465,24 @@ class WhatsAppPage:
                 reason = r.get("failure_reason") or "Fallo no especificado"
                 target = r.get("target_used")
                 if stage == "file_wait" or "no_file_detected" in reason:
-                    msg = f"⚠ '{chat_name}': se seleccionó guardado"
+                    msg = f"[WARN] '{chat_name}': se seleccionó guardado"
                     if target:
                         msg += f" ({target})"
                     msg += " pero no se localizó el archivo a tiempo."
                     self._log.append(msg, theme.WARN)
                 elif "timeout" in stage or "timeout" in reason.lower() or "límite" in reason.lower():
                     self._log.append(
-                        f"✖ '{chat_name}': cancelado por límite de tiempo/desplazamientos en etapa '{stage}': {reason}",
+                        f"[FAIL] '{chat_name}': cancelado por límite de tiempo/desplazamientos en etapa '{stage}': {reason}",
                         theme.ERR,
                     )
                 elif stage == "receiver_conflict":
                     self._log.append(
-                        f"✖ '{chat_name}': cancelado por conflicto (múltiples receptores exactos): {reason}",
+                        f"[FAIL] '{chat_name}': cancelado por conflicto (múltiples receptores exactos): {reason}",
                         theme.ERR,
                     )
                 else:
                     self._log.append(
-                        f"✖ '{chat_name}': cancelado en etapa '{stage}': {reason}",
+                        f"[FAIL] '{chat_name}': cancelado en etapa '{stage}': {reason}",
                         theme.ERR,
                     )
 

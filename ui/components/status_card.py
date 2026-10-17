@@ -145,7 +145,7 @@ class StatusCard:
                 self._mode_badge.bgcolor = "#0d2b18"
                 self._mode_icon.name = ft.Icons.WIFI
                 self._mode_icon.color = theme.OK
-                self._mode_text.value = "Inalámbrico (Wi-Fi) ✓ Cable no requerido"
+                self._mode_text.value = "Inalámbrico (Wi-Fi) - Cable no requerido"
                 self._mode_text.color = theme.OK
                 self._btn_wifi_convert.visible = False
         else:

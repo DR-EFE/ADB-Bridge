@@ -47,7 +47,7 @@ class ExplorerPage:
         self._download_dir_picker = ft.FilePicker(on_result=self._on_download_dir_selected)
 
         if self.page:
-            self.page.overlay.extend([self._file_picker, self._folder_picker, self._download_dir_picker])
+            self.page.services.extend([self._file_picker, self._folder_picker, self._download_dir_picker])
 
         # Barra de navegación
         self._path_field = ft.TextField(
@@ -63,12 +63,12 @@ class ExplorerPage:
 
         # Accesos rápidos estándar
         quick_buttons = [
-            ft.TextButton("🏠 /sdcard", on_click=lambda _: self._navigate_to("/sdcard")),
-            ft.TextButton("📸 DCIM", on_click=lambda _: self._navigate_to("/sdcard/DCIM")),
-            ft.TextButton("⬇️ Download", on_click=lambda _: self._navigate_to("/sdcard/Download")),
-            ft.TextButton("📄 Documents", on_click=lambda _: self._navigate_to("/sdcard/Documents")),
-            ft.TextButton("🖼️ Pictures", on_click=lambda _: self._navigate_to("/sdcard/Pictures")),
-            ft.TextButton("🎵 Music", on_click=lambda _: self._navigate_to("/sdcard/Music")),
+            ft.TextButton("/sdcard", icon=ft.Icons.HOME, on_click=lambda _: self._navigate_to("/sdcard")),
+            ft.TextButton("DCIM", icon=ft.Icons.CAMERA_ALT, on_click=lambda _: self._navigate_to("/sdcard/DCIM")),
+            ft.TextButton("Download", icon=ft.Icons.DOWNLOAD, on_click=lambda _: self._navigate_to("/sdcard/Download")),
+            ft.TextButton("Documents", icon=ft.Icons.DESCRIPTION, on_click=lambda _: self._navigate_to("/sdcard/Documents")),
+            ft.TextButton("Pictures", icon=ft.Icons.IMAGE, on_click=lambda _: self._navigate_to("/sdcard/Pictures")),
+            ft.TextButton("Music", icon=ft.Icons.MUSIC_NOTE, on_click=lambda _: self._navigate_to("/sdcard/Music")),
         ]
 
         # Zona visual "Agregar archivos o carpetas" (acceso claro a selectores nativos)
@@ -91,7 +91,7 @@ class ExplorerPage:
                             spacing=10,
                             controls=[
                                 ft.FilledButton(
-                                    "📄 Subir Archivos",
+                                    "Subir Archivos",
                                     icon=ft.Icons.ATTACH_FILE,
                                     on_click=lambda _: self._file_picker.pick_files(
                                         allow_multiple=True,
@@ -99,7 +99,7 @@ class ExplorerPage:
                                     ),
                                 ),
                                 ft.OutlinedButton(
-                                    "📁 Subir Carpeta",
+                                    "Subir Carpeta",
                                     icon=ft.Icons.DRIVE_FOLDER_UPLOAD,
                                     on_click=lambda _: self._folder_picker.get_directory_path(
                                         dialog_title="Seleccionar carpeta para subir (conserva estructura)",
@@ -136,10 +136,10 @@ class ExplorerPage:
                                         controls=[
                                             self._path_field,
                                             ft.FilledButton("Ir", icon=ft.Icons.ARROW_FORWARD, on_click=self._on_navigate_submit),
-                                            ft.OutlinedButton("⬆ Arriba", icon=ft.Icons.ARROW_UPWARD, on_click=self._navigate_up),
-                                            ft.OutlinedButton("🔄", icon=ft.Icons.REFRESH, tooltip="Refrescar", on_click=lambda _: self._refresh()),
+                                            ft.OutlinedButton("Arriba", icon=ft.Icons.ARROW_UPWARD, on_click=self._navigate_up),
+                                            ft.OutlinedButton("Refrescar", icon=ft.Icons.REFRESH, tooltip="Refrescar", on_click=lambda _: self._refresh()),
                                             ft.FilledButton(
-                                                "➕ Carpeta",
+                                                "Nueva Carpeta",
                                                 icon=ft.Icons.CREATE_NEW_FOLDER,
                                                 on_click=lambda _: self._show_create_folder_dialog(),
                                             ),
@@ -157,7 +157,7 @@ class ExplorerPage:
                                 controls=[
                                     self._status_text,
                                     ft.OutlinedButton(
-                                        "📁 Abrir Descargas Locales",
+                                        "Abrir Descargas Locales",
                                         icon=ft.Icons.FOLDER_OPEN,
                                         on_click=self._open_downloads_folder,
                                     ),

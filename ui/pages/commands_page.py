@@ -60,8 +60,8 @@ class CommandsPage:
                                         spacing=8,
                                     ),
                                     ft.FilledButton(
-                                        "🩺 Ejecutar Diagnóstico Completo",
-                                        icon=ft.Icons.PLAY_ARROW_ROUNDED,
+                                        "Ejecutar Diagnóstico Completo",
+                                        icon=ft.Icons.HEALTH_AND_SAFETY,
                                         on_click=self._run_full_technical_diagnostics,
                                     ),
                                 ],
@@ -150,12 +150,12 @@ class CommandsPage:
                                 wrap=True,
                                 spacing=10,
                                 controls=[
-                                    ft.FilledButton("📸 Capturar Pantalla", on_click=self._take_screenshot),
-                                    ft.OutlinedButton("☀️ Despertar Pantalla", on_click=lambda _: self._keyevent(224, "Despertar pantalla")),
-                                    ft.OutlinedButton("🔒 Botón Power", on_click=lambda _: self._keyevent(26, "Power")),
-                                    ft.OutlinedButton("🏠 Botón Inicio", on_click=lambda _: self._keyevent(3, "Home")),
-                                    ft.OutlinedButton("◀ Botón Atrás", on_click=lambda _: self._keyevent(4, "Atrás")),
-                                    ft.OutlinedButton("🔔 Bajar Notificaciones", on_click=self._expand_statusbar),
+                                    ft.FilledButton("Capturar Pantalla", icon=ft.Icons.CAMERA_ALT, on_click=self._take_screenshot),
+                                    ft.OutlinedButton("Despertar Pantalla", icon=ft.Icons.WB_SUNNY, on_click=lambda _: self._keyevent(224, "Despertar pantalla")),
+                                    ft.OutlinedButton("Botón Power", icon=ft.Icons.POWER_SETTINGS_NEW, on_click=lambda _: self._keyevent(26, "Power")),
+                                    ft.OutlinedButton("Botón Inicio", icon=ft.Icons.HOME, on_click=lambda _: self._keyevent(3, "Home")),
+                                    ft.OutlinedButton("Botón Atrás", icon=ft.Icons.ARROW_BACK, on_click=lambda _: self._keyevent(4, "Atrás")),
+                                    ft.OutlinedButton("Bajar Notificaciones", icon=ft.Icons.NOTIFICATIONS, on_click=self._expand_statusbar),
                                 ],
                             ),
                         ],
@@ -177,12 +177,12 @@ class CommandsPage:
                                 wrap=True,
                                 spacing=10,
                                 controls=[
-                                    ft.FilledButton("🔋 Diagnóstico Batería", on_click=self._diag_battery),
-                                    ft.OutlinedButton("💾 Espacio en Disco", on_click=self._diag_storage),
-                                    ft.OutlinedButton("📱 Info Completa", on_click=self._diag_system),
-                                    ft.OutlinedButton("🌐 IP e Interfaces", on_click=self._diag_network),
-                                    ft.OutlinedButton("🧭 Diagnóstico de Conexión", on_click=self._diag_connection),
-                                    ft.OutlinedButton("🔄 Reiniciar Teléfono", on_click=self._reboot_device),
+                                    ft.FilledButton("Diagnóstico Batería", icon=ft.Icons.BATTERY_CHARGING_FULL, on_click=self._diag_battery),
+                                    ft.OutlinedButton("Espacio en Disco", icon=ft.Icons.STORAGE, on_click=self._diag_storage),
+                                    ft.OutlinedButton("Info Completa", icon=ft.Icons.PHONE_ANDROID, on_click=self._diag_system),
+                                    ft.OutlinedButton("IP e Interfaces", icon=ft.Icons.LANGUAGE, on_click=self._diag_network),
+                                    ft.OutlinedButton("Diagnóstico de Conexión", icon=ft.Icons.EXPLORE, on_click=self._diag_connection),
+                                    ft.OutlinedButton("Reiniciar Teléfono", icon=ft.Icons.RESTART_ALT, on_click=self._reboot_device),
                                 ],
                             ),
                         ],
@@ -421,7 +421,7 @@ class CommandsPage:
                     "[6] RECOMENDACIONES",
                 ])
                 for rec in data["recommendations"]:
-                    lines.append(f"  ⚠ {rec}")
+                    lines.append(f"  [!] {rec}")
 
                 lines.append("=" * 64)
                 self._set_output("\n".join(lines))

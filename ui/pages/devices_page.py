@@ -420,11 +420,11 @@ class DevicesPage:
 
         # Activo
         if is_active:
-            badges.append(self._badge("⭐ ACTIVO", theme.ACCENT, is_bold=True))
+            badges.append(self._badge("ACTIVO", theme.ACCENT, is_bold=True))
 
         # Batería
         if battery is not None:
-            badges.append(self._badge(f"🔋 {battery}%", theme.TEXT))
+            badges.append(self._badge(f"Bat: {battery}%", theme.TEXT))
 
         # Acciones para este dispositivo
         action_buttons = []
@@ -432,7 +432,8 @@ class DevicesPage:
         if not is_active and state == "device":
             action_buttons.append(
                 ft.FilledButton(
-                    "⭐ Usar como Activo",
+                    "Usar como Activo",
+                    icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
                     height=30,
                     on_click=lambda _, s=serial: self._action_set_active(s),
                 )
@@ -441,7 +442,7 @@ class DevicesPage:
         if not is_net and state == "device":
             action_buttons.append(
                 ft.OutlinedButton(
-                    "⚡ Pasar a Wi-Fi",
+                    "Pasar a Wi-Fi",
                     icon=ft.Icons.WIFI,
                     height=30,
                     on_click=lambda _, s=serial: self._action_convert_wifi(s),
@@ -451,7 +452,8 @@ class DevicesPage:
         if is_net:
             action_buttons.append(
                 ft.OutlinedButton(
-                    "🌐 Ping",
+                    "Ping",
+                    icon=ft.Icons.NETWORK_CHECK,
                     height=30,
                     on_click=lambda _, s=serial: self._action_ping(s),
                 )
@@ -459,7 +461,8 @@ class DevicesPage:
 
         action_buttons.append(
             ft.OutlinedButton(
-                "ℹ️ Ficha",
+                "Ficha",
+                icon=ft.Icons.INFO_OUTLINE,
                 height=30,
                 on_click=lambda _, s=serial: self._load_specs(s),
             )
@@ -524,21 +527,24 @@ class DevicesPage:
             badges.append(self._badge("Offline", theme.TEXT_MUTED))
 
         if is_active:
-            badges.append(self._badge("⭐ ACTIVO", theme.ACCENT, is_bold=True))
+            badges.append(self._badge("ACTIVO", theme.ACCENT, is_bold=True))
 
         actions = [
             ft.FilledButton(
-                "🚀 Conectar",
+                "Conectar",
+                icon=ft.Icons.PLAY_ARROW,
                 height=30,
                 on_click=lambda _, i=dev_id: self._action_activate_saved(i),
             ),
             ft.OutlinedButton(
-                "⭐ Principal",
+                "Principal",
+                icon=ft.Icons.STAR_BORDER,
                 height=30,
                 on_click=lambda _, i=dev_id: self._action_set_primary(i),
             ),
             ft.OutlinedButton(
-                "✏️ Renombrar",
+                "Renombrar",
+                icon=ft.Icons.EDIT_OUTLINED,
                 height=30,
                 on_click=lambda _, i=dev_id, n=friendly: self._open_rename_panel(i, n),
             ),
@@ -548,6 +554,7 @@ class DevicesPage:
             actions.append(
                 ft.OutlinedButton(
                     "Desconectar",
+                    icon=ft.Icons.LINK_OFF,
                     height=30,
                     on_click=lambda _, i=dev_id: self._action_disconnect(i),
                 )
@@ -556,7 +563,8 @@ class DevicesPage:
         if ep and ":" in ep:
             actions.append(
                 ft.OutlinedButton(
-                    "🌐 Ping",
+                    "Ping",
+                    icon=ft.Icons.NETWORK_CHECK,
                     height=30,
                     on_click=lambda _, e=ep: self._action_ping(e),
                 )
@@ -564,7 +572,8 @@ class DevicesPage:
 
         actions.append(
             ft.OutlinedButton(
-                "🗑️ Eliminar",
+                "Eliminar",
+                icon=ft.Icons.DELETE_OUTLINE,
                 height=30,
                 on_click=lambda _, i=dev_id, n=friendly, s=(ep or usb or "—"): self._action_delete_saved(i, n, s),
             )

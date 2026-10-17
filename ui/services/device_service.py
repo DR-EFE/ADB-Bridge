@@ -1149,16 +1149,16 @@ class DeviceService:
                 self._auto_converted_serials.add(usb_target)
                 return
 
-            logger.info("⚡ Dispositivo USB detectado (%s). Iniciando auto-conversión a Wi-Fi...", usb_target)
+            logger.info("[Auto-WiFi] Dispositivo USB detectado (%s). Iniciando auto-conversión a Wi-Fi...", usb_target)
             self._auto_converted_serials.add(usb_target)
 
             def worker():
                 try:
                     ok, msg = self.convert_usb_to_wifi(usb_serial=usb_target)
                     if ok:
-                        logger.info("⚡ %s", msg)
+                        logger.info("[Auto-WiFi] %s", msg)
                     else:
-                        logger.warning("⚡ Auto-conversión a Wi-Fi no completada: %s", msg)
+                        logger.warning("[Auto-WiFi] Auto-conversión a Wi-Fi no completada: %s", msg)
                     if on_result:
                         on_result(ok, msg)
                 finally:

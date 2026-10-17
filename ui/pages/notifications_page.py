@@ -91,12 +91,12 @@ class NotificationsPage:
     def _start_monitor(self) -> None:
         status = self._device.get_status()
         if status.requires_selection:
-            self._log.append("⚠️ Hay varios dispositivos conectados. Selecciona uno obligatoriamente en el panel lateral antes de encender el monitor.", theme.ERR)
+            self._log.append("Hay varios dispositivos conectados. Selecciona uno obligatoriamente en el panel lateral antes de encender el monitor.", theme.ERR)
             return
 
         serial = self._device.serial
         if not serial or not status.connected:
-            self._log.append(f"⚠️ No hay dispositivo conectado o listo: {status.error or 'Selecciona uno en el panel lateral'}", theme.ERR)
+            self._log.append(f"No hay dispositivo conectado o listo: {status.error or 'Selecciona uno en el panel lateral'}", theme.ERR)
             return
 
         interval = float(self._interval.value)
