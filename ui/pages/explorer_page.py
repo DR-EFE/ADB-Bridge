@@ -93,17 +93,12 @@ class ExplorerPage:
                                 ft.FilledButton(
                                     "Subir Archivos",
                                     icon=ft.Icons.ATTACH_FILE,
-                                    on_click=lambda _: self._file_picker.pick_files(
-                                        allow_multiple=True,
-                                        dialog_title="Seleccionar archivos para subir a Android",
-                                    ),
+                                    on_click=self._on_upload_files_click,
                                 ),
                                 ft.OutlinedButton(
                                     "Subir Carpeta",
                                     icon=ft.Icons.DRIVE_FOLDER_UPLOAD,
-                                    on_click=lambda _: self._folder_picker.get_directory_path(
-                                        dialog_title="Seleccionar carpeta para subir (conserva estructura)",
-                                    ),
+                                    on_click=self._on_upload_folder_click,
                                 ),
                             ],
                         ),
@@ -311,12 +306,19 @@ class ExplorerPage:
                                             tooltip="Abrir carpeta",
                                             on_click=lambda _, p=full_remote_path: self._navigate_to(p),
                                         ) if is_dir else ft.Container(),
-                                        # Botón descargar
+                                        # Botón descargar rápido a PC
                                         ft.IconButton(
                                             ft.Icons.DOWNLOAD,
                                             icon_size=16,
-                                            tooltip="Descargar a PC",
+                                            tooltip="Descargar a PC (exports/downloads)",
                                             on_click=lambda _, p=full_remote_path: self._prompt_download(p),
+                                        ),
+                                        # Botón descargar a carpeta personalizada
+                                        ft.IconButton(
+                                            ft.Icons.DRIVE_FILE_MOVE_OUTLINED,
+                                            icon_size=16,
+                                            tooltip="Descargar y elegir carpeta...",
+                                            on_click=lambda _, p=full_remote_path: self._download_to_custom_dir(p),
                                         ),
                                         # Botón renombrar
                                         ft.IconButton(
@@ -521,32 +523,90 @@ class ExplorerPage:
         self._log(f"Encolada subida de carpeta {Path(e.path).name} hacia {self._current_path}", theme.OK)
         self._render_transfers_panel()
 
-    def _prompt_download(self, remote_path: str) -> None:
+    async def _on_upload_files_click(self, _e: ft.ControlEvent) -> None:
+        err = self._check_device_ready()
+        if err:
+            self._log(err, theme.ERR)
+            return
+        files = await self._file_picker.pick_files(
+            allow_multiple=True,
+            dialog_title="Seleccionar archivos locales para subir a Android",
+        )
+        if files:
+            local_files = [f.path for f in files if f.path]
+            if local_files:
+                job_ids = self._transfer_service.enqueue_push(self._device.serial, local_files, self._current_path)
+                self._log(f"Encolada subida de {len(job_ids)} archivos hacia {self._current_path}", theme.OK)
+                self._render_transfers_panel()
+
+    async def _on_upload_folder_click(self, _e: ft.ControlEvent) -> None:
+        err = self._check_device_ready()
+        if err:
+            self._log(err, theme.ERR)
+            return
+        folder = await self._folder_picker.get_directory_path(
+            dialog_title="Seleccionar carpeta local para subir a Android (conserva estructura)",
+        )
+        if folder:
+            job_ids = self._transfer_service.enqueue_push(self._device.serial, [folder], self._current_path)
+            self._log(f"Encolada subida de carpeta {Path(folder).name} hacia {self._current_path}", theme.OK)
+            self._render_transfers_panel()
+
+    def _prompt_download(self, remote_path: str, custom_dir: Optional[str] = None) -> None:
         err = self._check_device_ready()
         if err:
             self._log(err, theme.ERR)
             return
 
-        self._pending_download_remote_paths = [remote_path]
-        self._download_dir_picker.get_directory_path(
-            dialog_title="Seleccionar carpeta de destino en tu PC para la descarga"
-        )
+        target_dir = Path(custom_dir or "exports/downloads").resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        name = RemotePath(remote_path).name or remote_path
+
+        self._transfer_service.enqueue_pull(self._device.serial, [remote_path], str(target_dir))
+        self._log(f"Iniciada descarga de '{name}' hacia {target_dir}", theme.OK)
+        self._status_text.value = f"Descargando {name}..."
+        self._status_text.color = theme.OK
+        try:
+            self._status_text.update()
+        except Exception:
+            pass
+
+        self._render_transfers_panel()
+
+        if self.page:
+            try:
+                snack = ft.SnackBar(
+                    content=ft.Text(f"Descargando '{name}' hacia exports/downloads"),
+                    action="Abrir descargas",
+                    on_action=self._open_downloads_folder,
+                    duration=4000,
+                )
+                self.page.overlay.append(snack)
+                snack.open = True
+                self.page.update()
+            except Exception:
+                pass
+
+    def _download_to_custom_dir(self, remote_path: str) -> None:
+        async def _worker():
+            dest = await self._download_dir_picker.get_directory_path(
+                dialog_title="Seleccionar carpeta de destino en tu PC para la descarga"
+            )
+            if dest:
+                self._prompt_download(remote_path, custom_dir=dest)
+
+        if self.page:
+            self.page.run_task(_worker)
+        else:
+            self._prompt_download(remote_path)
 
     def _on_download_dir_selected(self, e: ft.FilePickerResultEvent) -> None:
         if not e.path or not self._pending_download_remote_paths:
             return
-        err = self._check_device_ready()
-        if err:
-            self._log(err, theme.ERR)
-            return
-
         dest_dir = e.path
         for rp in self._pending_download_remote_paths:
-            self._transfer_service.enqueue_pull(self._device.serial, [rp], dest_dir)
-            self._log(f"Encolada descarga de {RemotePath(rp).name} hacia {dest_dir}", theme.OK)
-
+            self._prompt_download(rp, custom_dir=dest_dir)
         self._pending_download_remote_paths = []
-        self._render_transfers_panel()
 
     def _open_downloads_folder(self, _e: ft.ControlEvent) -> None:
         dest_dir = Path("exports/downloads").resolve()

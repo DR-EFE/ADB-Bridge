@@ -24,10 +24,12 @@ class Sidebar:
         device: DeviceService,
         on_status: Optional[Callable[[DeviceStatus], None]] = None,
         on_log: Optional[Callable[[str, str], None]] = None,
+        on_collapse: Optional[Callable[[], None]] = None,
     ) -> None:
         self._device = device
         self._on_status = on_status
         self._on_log = on_log
+        self._on_collapse = on_collapse
         self._stop = threading.Event()
         self._busy = threading.Lock()
 
@@ -100,16 +102,26 @@ class Sidebar:
                 controls=[
                     ft.Row(
                         [
-                            ft.Icon(ft.Icons.ANDROID, color=theme.OK, size=28),
-                            ft.Column(
-                                spacing=1,
-                                controls=[
-                                    ft.Text("Android Tools", size=18, weight=ft.FontWeight.BOLD),
-                                    ft.Text("Administrador de Dispositivos", size=11, color=theme.TEXT_MUTED),
+                            ft.Row(
+                                [
+                                    ft.Icon(ft.Icons.ANDROID, color=theme.OK, size=28),
+                                    ft.Column(
+                                        spacing=1,
+                                        controls=[
+                                            ft.Text("Android Tools", size=18, weight=ft.FontWeight.BOLD),
+                                            ft.Text("Administrador de Dispositivos", size=11, color=theme.TEXT_MUTED),
+                                        ],
+                                    ),
                                 ],
+                                spacing=10,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CHEVRON_LEFT,
+                                tooltip="Ocultar panel lateral (Dispositivos)",
+                                on_click=lambda _: self._on_collapse() if self._on_collapse else None,
                             ),
                         ],
-                        spacing=10,
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
                     self._mandatory_selection_banner,
                     ft.Row(

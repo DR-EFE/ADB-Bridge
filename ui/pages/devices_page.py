@@ -21,10 +21,12 @@ class DevicesPage:
     def __init__(
         self,
         device: DeviceService,
+        page: Optional[ft.Page] = None,
         on_log: Optional[Callable[[str, str], None]] = None,
         on_device_changed: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._device = device
+        self._page = page
         self._on_log = on_log
         self._on_device_changed = on_device_changed
 
@@ -88,14 +90,17 @@ class DevicesPage:
         self._qr_service: Optional[WirelessQrPairingService] = None
         self._qr_dialog: Optional[ft.AlertDialog] = None
         self._qr_status = ft.Text("", size=12, color=theme.TEXT_MUTED)
-        self._qr_image = ft.Image(width=280, height=280, fit=ft.ImageFit.CONTAIN)
+        _fit_contain = getattr(ft, "BoxFit", getattr(ft, "ImageFit", None))
+        _fit_val = _fit_contain.CONTAIN if _fit_contain else "contain"
+        self._qr_image = ft.Image(src="", width=280, height=280, fit=_fit_val)
 
         self._connect_mode_btn = ft.SegmentedButton(
             selected=["tcp"],
             allow_multiple_selection=False,
             segments=[
                 ft.Segment(value="tcp", label=ft.Text("Conexión Directa TCP/IP (Puerto 5555)"), icon=ft.Icon(ft.Icons.WIFI)),
-                ft.Segment(value="pair", label=ft.Text("Vincular Wireless Debugging (Código)"), icon=ft.Icon(ft.Icons.PHONELINK_LOCK)),
+                ft.Segment(value="pair", label=ft.Text("Vincular con Código (6 dígitos)"), icon=ft.Icon(ft.Icons.PIN)),
+                ft.Segment(value="qr", label=ft.Text("Vincular con Código QR"), icon=ft.Icon(ft.Icons.QR_CODE_2)),
             ],
             on_change=self._on_connect_mode_change,
         )
@@ -145,6 +150,30 @@ class DevicesPage:
             ],
         )
 
+        self._qr_panel = ft.Column(
+            visible=False,
+            spacing=10,
+            controls=[
+                ft.Text(
+                    "En tu celular (Android 11+): Ajustes → Opciones de desarrollador → Depuración inalámbrica → Vincular dispositivo con código QR.",
+                    size=12,
+                    color=theme.TEXT_MUTED,
+                ),
+                ft.Row(
+                    spacing=10,
+                    controls=[
+                        ft.FilledButton(
+                            "Generar y Mostrar Código QR",
+                            icon=ft.Icons.QR_CODE_2,
+                            bgcolor=theme.OK,
+                            color=theme.BG,
+                            on_click=self._handle_pair_wireless_qr,
+                        ),
+                    ],
+                ),
+            ],
+        )
+
         self._connect_card = ft.Container(
             visible=False,
             content=theme.card(
@@ -171,6 +200,7 @@ class DevicesPage:
                         self._connect_mode_btn,
                         self._tcp_panel,
                         self._pair_panel,
+                        self._qr_panel,
                     ],
                 )
             ),
@@ -261,6 +291,14 @@ class DevicesPage:
                                     "Refrescar",
                                     icon=ft.Icons.REFRESH,
                                     on_click=lambda _: self.refresh_devices(),
+                                ),
+                                ft.FilledButton(
+                                    "Vincular con QR",
+                                    icon=ft.Icons.QR_CODE_2,
+                                    bgcolor=theme.OK,
+                                    color=theme.BG,
+                                    tooltip="Empareja un teléfono Android 11+ escaneando un código QR",
+                                    on_click=self._handle_pair_wireless_qr,
                                 ),
                                 ft.FilledButton(
                                     "Conectar Nuevo",
@@ -807,9 +845,9 @@ class DevicesPage:
 
     def _on_connect_mode_change(self, e: ft.ControlEvent) -> None:
         val = next(iter(self._connect_mode_btn.selected), "tcp")
-        is_pair = (val == "pair")
-        self._tcp_panel.visible = not is_pair
-        self._pair_panel.visible = is_pair
+        self._tcp_panel.visible = (val == "tcp")
+        self._pair_panel.visible = (val == "pair")
+        self._qr_panel.visible = (val == "qr")
         try:
             self._connect_card.update()
         except Exception:
@@ -867,7 +905,7 @@ class DevicesPage:
 
     def _handle_pair_wireless_qr(self, _e: ft.ControlEvent) -> None:
         """Muestra el QR estándar y ejecuta pairing/conexión en segundo plano."""
-        page = getattr(self.view, "page", None)
+        page = self._page or getattr(self.view, "page", None)
         if not page:
             self._set_busy(False, "La interfaz aún no está conectada a una ventana.", is_error=True)
             return
@@ -879,7 +917,12 @@ class DevicesPage:
         self._qr_service = service
         self._qr_status.value = "QR generado. En el teléfono abre Depuración inalámbrica → Vincular con código QR."
         self._qr_status.color = theme.WARN
-        self._qr_image.src_base64 = payload.image_base64
+        self._qr_image.src = payload.image_base64
+        if hasattr(self._qr_image, "src_base64"):
+            try:
+                self._qr_image.src_base64 = payload.image_base64
+            except Exception:
+                pass
 
         def close_dialog(_e=None):
             if self._qr_service:
@@ -926,15 +969,46 @@ class DevicesPage:
 
         self._qr_dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Vincular Wireless Debugging mediante QR"),
-            content=ft.Column(
-                [
-                    self._qr_image,
-                    ft.Text("Escanea este QR desde el teléfono. Ambos dispositivos deben estar en la misma red Wi‑Fi.", size=12),
-                    self._qr_status,
-                ],
-                tight=True,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            title=ft.Text("Vincular Wireless Debugging mediante QR", weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                width=380,
+                content=ft.Column(
+                    [
+                        self._qr_image,
+                        ft.Container(
+                            padding=10,
+                            border_radius=8,
+                            bgcolor=ft.Colors.with_opacity(0.12, theme.WARN),
+                            content=ft.Column(
+                                [
+                                    ft.Row(
+                                        [
+                                            ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=theme.WARN, size=18),
+                                            ft.Text("No uses la cámara normal ni Google Lens", weight=ft.FontWeight.BOLD, size=12, color=theme.WARN),
+                                        ],
+                                        spacing=6,
+                                    ),
+                                    ft.Text(
+                                        "Si usas la cámara normal, tu celular creerá que es una red Wi-Fi y no se conectará.",
+                                        size=11,
+                                        color=theme.TEXT,
+                                    ),
+                                    ft.Text(
+                                        "Debes escanearlo desde:\nAjustes → Opciones de desarrollador → Depuración inalámbrica → 'Vincular dispositivo con código QR'.",
+                                        size=11,
+                                        weight=ft.FontWeight.W_500,
+                                        color=theme.TEXT,
+                                    ),
+                                ],
+                                spacing=4,
+                            ),
+                        ),
+                        self._qr_status,
+                    ],
+                    tight=True,
+                    spacing=12,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
             ),
             actions=[
                 ft.TextButton("Cancelar", on_click=close_dialog),

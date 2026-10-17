@@ -1271,7 +1271,13 @@ class DeviceService:
     def _run_adb_host(*arguments: str, timeout: float = 15.0) -> str:
         """Ejecuta un comando ADB del host (pair, mdns o connect)."""
         command = [get_adb_executable(), *arguments]
-        kwargs: Dict[str, Any] = {"capture_output": True, "text": True, "timeout": timeout, "check": False}
+        kwargs: Dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "timeout": timeout,
+            "check": False,
+            "env": {**os.environ, "ADB_MDNS_OPENSCREEN": "1"},
+        }
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         try:
@@ -1339,7 +1345,28 @@ class DeviceService:
                 if not services:
                     time.sleep(1.0)
             if not services:
-                return False, "Emparejamiento correcto, pero no se encontró el servicio mDNS."
+                store = read_devices_store(self.devices_json)
+                devices = store.setdefault("Devices", [])
+                matching_dev = next((d for d in devices if any(p.get("Host") == host for p in d.get("NetworkProfiles", []))), None)
+                if not matching_dev:
+                    dev_id = uuid.uuid4().hex
+                    matching_dev = {
+                        "Id": dev_id,
+                        "FriendlyName": friendly_name.strip() or f"Android Wireless ({host})",
+                        "UsbSerial": usb_serial if usb_serial and not is_network_serial(usb_serial) else None,
+                        "MdnsServiceName": "",
+                        "Mode": "wireless-debugging-tls",
+                        "IsPaired": True,
+                        "NetworkProfiles": [],
+                    }
+                    devices.append(matching_dev)
+                else:
+                    matching_dev["IsPaired"] = True
+                save_devices_store(store, self.devices_json)
+                return True, (
+                    f"¡Emparejamiento exitoso con {host}! Tu red bloquea el anuncio mDNS. "
+                    f"Para conectar: ve a 'Conexión Directa', pon la IP y puerto principal que muestra tu celular (ej. {host}:PUERTO) y pulsa 'Conectar Endpoint'."
+                )
             matching = [item for item in services if item["host"].lower() == host.lower()]
             selected = matching[0] if len(matching) == 1 else services[0] if len(services) == 1 else None
             if selected is None:

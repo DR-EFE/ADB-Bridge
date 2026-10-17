@@ -55,6 +55,7 @@ class AndroidToolsApp:
         # Pestañas principales
         self.devices = DevicesPage(
             self.device,
+            page=page,
             on_log=self._on_custom_log,
             on_device_changed=lambda _: self.sidebar.refresh_now(),
         )
@@ -69,7 +70,36 @@ class AndroidToolsApp:
         self._log_handler = GlobalUiLogHandler(self.logs)
         logging.getLogger().addHandler(self._log_handler)
 
-        self.sidebar = Sidebar(self.device, on_log=self._on_custom_log)
+        self._sidebar_visible = True
+        self._sidebar_divider = ft.VerticalDivider(width=1, color=theme.BORDER)
+
+        self._sidebar_toggle_btn = ft.IconButton(
+            icon=ft.Icons.MENU_OPEN,
+            tooltip="Ocultar panel lateral (Dispositivos)",
+            on_click=self._toggle_sidebar,
+        )
+
+        self._active_device_chip = ft.Container(
+            padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+            border_radius=12,
+            bgcolor=theme.SURFACE_ALT,
+            content=ft.Row(
+                spacing=6,
+                controls=[
+                    ft.Icon(ft.Icons.PHONE_ANDROID, size=15, color=theme.OK if self.device.serial else theme.TEXT_MUTED),
+                    ft.Text(self.device.serial or "Sin dispositivo", size=11, weight=ft.FontWeight.W_500),
+                ],
+            ),
+            tooltip="Dispositivo activo. Clic para mostrar/ocultar panel de dispositivos",
+            on_click=self._toggle_sidebar,
+        )
+
+        self.sidebar = Sidebar(
+            self.device,
+            on_status=self._on_device_status_update,
+            on_log=self._on_custom_log,
+            on_collapse=self._toggle_sidebar,
+        )
 
         # Drawer inferior transversal para la cola de trabajos
         self.job_drawer = JobDrawer(
@@ -77,7 +107,33 @@ class AndroidToolsApp:
             on_badge_update=self._update_window_title_badge,
         )
 
-        # Sistema de pestañas con iconos modernos
+        # Sistema de pestañas con barra superior integrada y botón de menú desplegable
+        self._tab_bar = ft.TabBar(
+            tabs=[
+                ft.Tab(label="Dispositivos", icon=ft.Icons.PHONELINK_SETUP_OUTLINED),
+                ft.Tab(label="Explorador & Transferencias", icon=ft.Icons.FOLDER_SPECIAL_OUTLINED),
+                ft.Tab(label="Backup avanzado", icon=ft.Icons.BACKUP_OUTLINED),
+                ft.Tab(label="WhatsApp Extractor", icon=ft.Icons.CHAT_OUTLINED),
+                ft.Tab(label="Monitor de Notificaciones", icon=ft.Icons.NOTIFICATIONS_ACTIVE_OUTLINED),
+                ft.Tab(label="Comandos & Diagnóstico", icon=ft.Icons.BOLT_OUTLINED),
+                ft.Tab(label="Registro & Salida (Log)", icon=ft.Icons.RECEIPT_LONG_OUTLINED),
+            ]
+        )
+
+        self._top_bar = ft.Container(
+            padding=ft.Padding.symmetric(horizontal=4, vertical=2),
+            bgcolor=theme.SURFACE,
+            content=ft.Row(
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    self._sidebar_toggle_btn,
+                    ft.Container(expand=True, content=self._tab_bar),
+                    self._active_device_chip,
+                ],
+            ),
+        )
+
         self.tabs = ft.Tabs(
             length=7,
             selected_index=0,
@@ -86,17 +142,7 @@ class AndroidToolsApp:
                 expand=True,
                 spacing=0,
                 controls=[
-                    ft.TabBar(
-                        tabs=[
-                            ft.Tab(label="Dispositivos", icon=ft.Icons.PHONELINK_SETUP_OUTLINED),
-                            ft.Tab(label="Explorador & Transferencias", icon=ft.Icons.FOLDER_SPECIAL_OUTLINED),
-                            ft.Tab(label="Backup avanzado", icon=ft.Icons.BACKUP_OUTLINED),
-                            ft.Tab(label="WhatsApp Extractor", icon=ft.Icons.CHAT_OUTLINED),
-                            ft.Tab(label="Monitor de Notificaciones", icon=ft.Icons.NOTIFICATIONS_ACTIVE_OUTLINED),
-                            ft.Tab(label="Comandos & Diagnóstico", icon=ft.Icons.BOLT_OUTLINED),
-                            ft.Tab(label="Registro & Salida (Log)", icon=ft.Icons.RECEIPT_LONG_OUTLINED),
-                        ]
-                    ),
+                    self._top_bar,
                     ft.TabBarView(
                         expand=True,
                         controls=[
@@ -113,14 +159,14 @@ class AndroidToolsApp:
             ),
         )
 
-        # Layout general: Sidebar a la izquierda + Columna (Pestañas expandibles + JobDrawer abajo)
+        # Layout general: Sidebar a la izquierda (desplegable) + Columna con Tabs y Drawer
         page.add(
             ft.Row(
                 expand=True,
                 spacing=0,
                 controls=[
                     self.sidebar.view,
-                    ft.VerticalDivider(width=1, color=theme.BORDER),
+                    self._sidebar_divider,
                     ft.Column(
                         expand=True,
                         spacing=0,
@@ -132,6 +178,30 @@ class AndroidToolsApp:
                 ],
             )
         )
+
+    def _toggle_sidebar(self, _e=None) -> None:
+        self._sidebar_visible = not self._sidebar_visible
+        self.sidebar.view.visible = self._sidebar_visible
+        self._sidebar_divider.visible = self._sidebar_visible
+        self._sidebar_toggle_btn.icon = ft.Icons.MENU if not self._sidebar_visible else ft.Icons.MENU_OPEN
+        self._sidebar_toggle_btn.tooltip = (
+            "Mostrar panel de dispositivos" if not self._sidebar_visible else "Ocultar panel lateral (Dispositivos)"
+        )
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    def _on_device_status_update(self, status: DeviceStatus) -> None:
+        if hasattr(self, "_active_device_chip"):
+            color = theme.OK if status.connected else theme.TEXT_MUTED
+            text = status.serial or "Sin dispositivo"
+            self._active_device_chip.content.controls[0].color = color
+            self._active_device_chip.content.controls[1].value = text
+            try:
+                self._active_device_chip.update()
+            except Exception:
+                pass
 
     def _update_window_title_badge(self, active_count: int) -> None:
         """Actualiza el título de la ventana con un badge del conteo de trabajos activos."""
