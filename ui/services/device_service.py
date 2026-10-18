@@ -343,6 +343,7 @@ class DeviceService:
         self._explicitly_selected: bool = bool(serial)
         self._model_cache: Dict[str, str] = {}
         self.auto_wifi_enabled: bool = True
+        self.auto_reconnect_enabled: bool = True
         self._auto_converted_serials: Set[str] = set()
         self._converting_lock = threading.Lock()
         self._supervisor_stop_callbacks: Dict[str, Callable[[], None]] = {}
@@ -351,6 +352,10 @@ class DeviceService:
         self._watchdog_thread: Optional[threading.Thread] = None
         self._watchdog_device_id: Optional[str] = None
         self._watchdog_policy = RetryPolicy()
+        self._usb_monitor_stop = threading.Event()
+        self._usb_monitor_thread: Optional[threading.Thread] = None
+        self._device_change_listeners: Set[Callable[[], None]] = set()
+        self._device_change_listeners_lock = threading.Lock()
         logger.info("Serial inicial configurado: %s", self.serial or "autodetección")
 
     # -------------------------------------------------------------------------
@@ -431,6 +436,26 @@ class DeviceService:
 
         client = get_adb_client()
         raw_list = client.list()
+
+        # Si el USB autorizado está presente, usarlo primero. Evita bloquear
+        # la detección por varios endpoints Wi-Fi antiguos o fuera de la red.
+        usb_serial = target.get("UsbSerial")
+        usb_online = next((d for d in raw_list if d.serial == usb_serial and d.state == "device"), None) if usb_serial else None
+        if usb_online:
+            self.serial = usb_serial
+            self._explicitly_selected = True
+            now_utc = datetime.now(timezone.utc).isoformat()
+            target["LastConnectedUtc"] = now_utc
+            target["LastSeenUtc"] = now_utc
+            save_devices_store(store, self.devices_json)
+            self.refresh_device_metadata(device_id)
+            return ConnectionResult(
+                success=True,
+                device_id=device_id,
+                endpoint=usb_serial,
+                method="usb",
+                message=f"Conectado por USB ({usb_serial}).",
+            )
 
         # 1. Endpoint mDNS actual
         try:
@@ -534,7 +559,6 @@ class DeviceService:
                     logger.debug("Fallo al probar perfil %s: %s", pep, exc)
 
         # 5. USB como respaldo
-        usb_serial = target.get("UsbSerial")
         if usb_serial:
             usb_online = next((d for d in raw_list if d.serial == usb_serial and d.state == "device"), None)
             if usb_online:
@@ -559,6 +583,40 @@ class DeviceService:
             error="No fue posible conectar por mDNS, endpoint guardado, historial, VPN ni USB.",
             message="Dispositivo no localizable en red ni por USB.",
         )
+
+    def auto_reconnect_saved_devices(self) -> List[ConnectionResult]:
+        """Intenta reconectar en segundo plano todos los dispositivos guardados.
+
+        El dispositivo principal se prueba primero, seguido por los demás. Los
+        fallos son no destructivos: el registro y el historial permanecen para
+        que puedan intentarse de nuevo cuando cambie la red.
+        """
+        if not self.auto_reconnect_enabled:
+            return []
+        store = read_devices_store(self.devices_json)
+        devices = list(store.get("Devices") or [])
+        current_id = store.get("CurrentDeviceId")
+        devices.sort(key=lambda item: 0 if item.get("Id") == current_id else 1)
+        results: List[ConnectionResult] = []
+        for device in devices:
+            device_id = device.get("Id")
+            if not device_id:
+                continue
+            try:
+                result = self.connect_device(device_id)
+            except Exception as exc:
+                result = ConnectionResult(
+                    success=False,
+                    device_id=device_id,
+                    error=str(exc),
+                    message=f"No se pudo intentar la reconexión: {exc}",
+                )
+            results.append(result)
+            if result.success:
+                logger.info("Reconexión automática exitosa: %s (%s)", device.get("FriendlyName"), result.endpoint)
+            else:
+                logger.info("Dispositivo guardado no disponible todavía: %s", device.get("FriendlyName"))
+        return results
 
     def disconnect_device(self, device_id: str) -> OperationResult:
         """
@@ -984,6 +1042,41 @@ class DeviceService:
         except Exception as exc:
             logger.debug("Error listando ADB para tarjetas: %s", exc)
 
+        # Registrar automáticamente USB autorizados que nunca habían sido
+        # guardados. Un dispositivo ``unauthorized`` no se persiste hasta que
+        # el usuario acepta la clave RSA en el teléfono.
+        changed_store = False
+        for serial, info in online_map.items():
+            if is_network_serial(serial) or info.state != "device":
+                continue
+            known = next(
+                (item for item in saved_list if item.get("UsbSerial") == serial or item.get("LastEndpoint") == serial),
+                None,
+            )
+            if known:
+                continue
+            new_id = uuid.uuid4().hex
+            saved_list.append({
+                "Id": new_id,
+                "FriendlyName": f"USB Android ({serial})",
+                "UsbSerial": serial,
+                "LastEndpoint": serial,
+                "Mode": "usb",
+                "IsPaired": True,
+                "NetworkProfiles": [],
+                "Endpoints": [],
+                "LastSeenUtc": datetime.now(timezone.utc).isoformat(),
+            })
+            if not current_id and len(saved_list) == 1:
+                current_id = new_id
+                store["CurrentDeviceId"] = new_id
+                self.serial = serial
+                self._explicitly_selected = True
+            changed_store = True
+            logger.info("USB autorizado registrado automáticamente: %s", serial)
+        if changed_store:
+            save_devices_store(store, self.devices_json)
+
         cards: List[Dict[str, Any]] = []
         matched_online_serials: Set[str] = set()
 
@@ -1106,6 +1199,48 @@ class DeviceService:
         """Arranca o verifica el daemon ADB."""
         ensure_single_adb_server(force=False)
 
+    def add_device_change_listener(self, callback: Callable[[], None]) -> None:
+        """Registra un callback para cambios asíncronos de conexión."""
+        with self._device_change_listeners_lock:
+            self._device_change_listeners.add(callback)
+
+    def remove_device_change_listener(self, callback: Callable[[], None]) -> None:
+        """Elimina un callback registrado previamente."""
+        with self._device_change_listeners_lock:
+            self._device_change_listeners.discard(callback)
+
+    def _notify_device_change(self) -> None:
+        """Notifica cambios sin permitir que un consumidor detenga ADB."""
+        with self._device_change_listeners_lock:
+            callbacks = tuple(self._device_change_listeners)
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                logger.debug("Un observador de dispositivos no pudo actualizarse.", exc_info=True)
+
+    def start_usb_auto_connect_monitor(self) -> None:
+        """Vigila ADB en segundo plano y convierte USB autorizado a Wi-Fi."""
+        if self._usb_monitor_thread and self._usb_monitor_thread.is_alive():
+            return
+        self._usb_monitor_stop.clear()
+
+        def monitor() -> None:
+            while not self._usb_monitor_stop.is_set():
+                try:
+                    self.check_and_auto_convert_usb()
+                except Exception as exc:
+                    logger.debug("Error en monitor USB automático: %s", exc)
+                self._usb_monitor_stop.wait(1.0)
+
+        self._usb_monitor_thread = threading.Thread(target=monitor, name="usb-auto-connect", daemon=True)
+        self._usb_monitor_thread.start()
+        logger.info("Monitor automático USB→Wi-Fi iniciado.")
+
+    def stop_usb_auto_connect_monitor(self) -> None:
+        """Detiene el monitor USB al cerrar la aplicación."""
+        self._usb_monitor_stop.set()
+
     def check_and_auto_convert_usb(self, on_result: Optional[Callable[[bool, str], None]] = None) -> None:
         """Inspecciona si hay un dispositivo USB listo para auto-conversión a Wi-Fi."""
         if not self.auto_wifi_enabled:
@@ -1119,6 +1254,12 @@ class DeviceService:
             client = get_adb_client()
             available = client.list()
 
+            # Un serial deja de estar marcado en cuanto se desconecta. Al
+            # reconectarlo por USB podrá activar Wi-Fi ADB otra vez.
+            self._auto_converted_serials.intersection_update(
+                {d.serial for d in available if not is_network_serial(d.serial)}
+            )
+
             usb_candidates = [
                 d for d in available
                 if d.state == "device"
@@ -1126,34 +1267,24 @@ class DeviceService:
                 and d.serial not in self._auto_converted_serials
             ]
 
+            # Al desconectar se olvida el intento previo; si el mismo equipo
+            # vuelve por USB, se convierte de nuevo sin pedir confirmación.
+            current_usb_serials = {d.serial for d in available if not is_network_serial(d.serial)}
+            self._auto_converted_serials.intersection_update(current_usb_serials)
+
             if not usb_candidates:
                 return
 
             usb_target = usb_candidates[0].serial
-            saved_devices = read_devices_store(self.devices_json).get("Devices") or []
-            modern_saved = next(
-                (
-                    item for item in saved_devices
-                    if item.get("UsbSerial") == usb_target
-                    and item.get("Mode") == "wireless-debugging-tls"
-                ),
-                None,
-            )
-            if modern_saved is not None:
-                self._auto_converted_serials.add(usb_target)
-                logger.info("Wireless Debugging moderno ya configurado para %s; USB se mantiene como respaldo.", usb_target)
-                return
-
-            has_wifi_active = any(d.state == "device" and is_network_serial(d.serial) for d in available)
-            if has_wifi_active:
-                self._auto_converted_serials.add(usb_target)
-                return
-
+            # Un USB autorizado siempre tiene prioridad: aunque exista una
+            # sesión Wi-Fi o un perfil TLS previo, se renueva TCP/IP 5555 y se
+            # deja el endpoint actualizado sin pedir una acción al usuario.
             logger.info("[Auto-WiFi] Dispositivo USB detectado (%s). Iniciando auto-conversión a Wi-Fi...", usb_target)
             self._auto_converted_serials.add(usb_target)
 
             def worker():
                 try:
+                    self.set_active_by_serial(usb_target)
                     ok, msg = self.convert_usb_to_wifi(usb_serial=usb_target)
                     if ok:
                         logger.info("[Auto-WiFi] %s", msg)
@@ -1225,6 +1356,7 @@ class DeviceService:
             self.serial = endpoint
             self._explicitly_selected = True
             self._auto_converted_serials.add(serial)
+            self._notify_device_change()
             return True, f"¡Conexión Wi-Fi establecida con éxito a {endpoint}! Ya puedes desconectar el cable USB."
         except Exception as exc:
             logger.error("Error al convertir USB a Wi-Fi: %s", exc)

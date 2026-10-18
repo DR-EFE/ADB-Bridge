@@ -227,17 +227,38 @@ class AndroidToolsApp:
 
     def _boot(self) -> None:
         self.sidebar.set_message("Iniciando ADB...", theme.WARN)
+        polling_started = False
         try:
             self.device.init_adb()
+            self.device.start_usb_auto_connect_monitor()
+            # El sondeo USB debe iniciar inmediatamente; la reconexión de
+            # endpoints Wi-Fi históricos se ejecuta en paralelo y no bloquea UI.
+            self.sidebar.start_polling()
+            polling_started = True
+
+            def reconnect_saved() -> None:
+                reconnect_results = self.device.auto_reconnect_saved_devices()
+                connected = sum(1 for result in reconnect_results if result.success)
+                if reconnect_results:
+                    self.sidebar.set_message(
+                        f"Reconexión automática: {connected}/{len(reconnect_results)} dispositivo(s).",
+                        theme.OK if connected else theme.WARN,
+                    )
+
+            threading.Thread(target=reconnect_saved, name="auto-reconnect-saved", daemon=True).start()
         except Exception as exc:
             logger.error("No se pudo iniciar el daemon ADB: %s", exc)
             self.sidebar.set_message("ADB no disponible", theme.ERR)
-        self.sidebar.start_polling()
+        # El polling ya se inicia antes de la reconexión automática cuando ADB
+        # arranca correctamente. Este fallback cubre errores parciales de inicio.
+        if not polling_started:
+            self.sidebar.start_polling()
 
     def shutdown(self) -> None:
         """Cierra la aplicación y libera recursos."""
         logger.info("Cerrando Android Tools...")
         self.sidebar.stop_polling()
+        self.device.stop_usb_auto_connect_monitor()
         for page in (self.devices, self.explorer, self.backup, self.whatsapp, self.notifications, self.commands, self.logs):
             page.shutdown()
         self.job_queue.shutdown()

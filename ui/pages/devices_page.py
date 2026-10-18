@@ -29,6 +29,11 @@ class DevicesPage:
         self._page = page
         self._on_log = on_log
         self._on_device_changed = on_device_changed
+        self._refresh_lock = threading.Lock()
+        self._is_shutdown = False
+        # El monitor USB -> Wi-Fi corre fuera de esta página.  Este callback
+        # actualiza las tarjetas justo al cambiar ADB, sin pulsar Refrescar.
+        self._device.add_device_change_listener(self.refresh_devices)
 
         # ---------------------------------------------------------------------
         # Controles de Estado / Feedback
@@ -384,14 +389,47 @@ class DevicesPage:
     # -------------------------------------------------------------------------
     def refresh_devices(self) -> None:
         """Consulta y renderiza los dispositivos online y guardados."""
+        if self._is_shutdown or not self._refresh_lock.acquire(blocking=False):
+            return
         self._set_busy(True, "Consultando dispositivos ADB y archivo de configuración...")
-        threading.Thread(target=self._worker_refresh, name="devices-refresh", daemon=True).start()
+        threading.Thread(target=self._worker_refresh_guarded, name="devices-refresh", daemon=True).start()
+
+    def _worker_refresh_guarded(self) -> None:
+        """Ejecuta una sola actualización a la vez y libera el cerrojo."""
+        try:
+            self._worker_refresh()
+        finally:
+            self._refresh_lock.release()
 
     def _worker_refresh(self) -> None:
         try:
             data = self._device.get_management_data()
-            online_items = data.get("online_devices", [])
-            saved_items = data.get("saved_devices", [])
+            cards = data.get("cards", [])
+            saved_items = [
+                {
+                    "id": item.get("id"),
+                    "friendly_name": item.get("friendly_name", "Android"),
+                    "usb_serial": item.get("usb_serial"),
+                    "last_endpoint": item.get("current_endpoint"),
+                    "mode": item.get("mode", "usb"),
+                    "last_connected_utc": item.get("last_connected"),
+                    "is_online": item.get("state") == "conectado",
+                    "is_active": bool(item.get("is_active")),
+                }
+                for item in cards if item.get("is_saved")
+            ]
+            online_items = []
+            status = self._device.get_status()
+            for info in status.available_devices:
+                online_items.append({
+                    "serial": info.serial,
+                    "is_network": info.is_network,
+                    "is_active": bool(info.is_primary or info.serial == self._device.serial),
+                    "state": info.state,
+                    "model": info.model or info.serial,
+                    "friendly_name": info.friendly_name or info.serial,
+                    "battery": info.battery,
+                })
 
             # 1. Renderizar lista online
             online_controls = []
@@ -432,6 +470,17 @@ class DevicesPage:
                     saved_controls.append(self._build_saved_card(s))
 
             self._saved_list_col.controls = saved_controls
+
+            # Los cambios originados por el monitor ADB ocurren en segundo
+            # plano. Forzar el update de ambos nodos evita que el log se
+            # actualice antes que las tarjetas visibles.
+            try:
+                self._online_list_col.update()
+                self._saved_list_col.update()
+            except Exception:
+                # Los controles aún pueden no estar montados al iniciar o al
+                # cerrar la ventana; el siguiente refresco los renderiza.
+                pass
 
             # 3. Cargar ficha técnica del dispositivo activo
             specs = self._device.get_device_full_specs(self._device.serial)
@@ -1040,7 +1089,12 @@ class DevicesPage:
         if not self._rename_id:
             return
         new_name = self._rename_input.value or ""
-        ok, msg = self._device.rename_device(self._rename_id, new_name)
+        result = self._device.rename_device(self._rename_id, new_name)
+        # DeviceService devuelve OperationResult (no una tupla). Usar el
+        # mensaje de error cuando la operación falla evita el TypeError del
+        # handler de Flet y conserva feedback útil para el usuario.
+        ok = result.success
+        msg = result.message or result.error or ("Dispositivo renombrado." if ok else "No se pudo renombrar el dispositivo.")
         self._log(msg, theme.OK if ok else theme.WARN)
         self._set_busy(False, msg, is_error=not ok)
         self._toggle_rename_panel(False)
@@ -1109,4 +1163,5 @@ class DevicesPage:
 
     def shutdown(self) -> None:
         """Cierre de la página."""
-        pass
+        self._is_shutdown = True
+        self._device.remove_device_change_listener(self.refresh_devices)

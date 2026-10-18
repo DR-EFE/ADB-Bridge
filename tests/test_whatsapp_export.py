@@ -237,6 +237,20 @@ class TestWhatsAppExporterShareSheet(unittest.TestCase):
         self.assertTrue(swiped_coords)
         self.mock_device.swipe.assert_called_once()
 
+    def test_swipe_share_sheet_vertical_uses_vertical_scroll(self):
+        scrollable = MockUiElement(exists=True)
+
+        def query(**kwargs):
+            if kwargs.get("scrollable"):
+                return scrollable
+            return None
+
+        self.mock_device.query_handler = query
+        swiped = self.exporter.swipe_share_sheet(direction="vertical")
+        self.assertTrue(swiped)
+        scrollable.scroll.vert.forward.assert_called_once_with(steps=40)
+        scrollable.scroll.horiz.forward.assert_not_called()
+
     def test_find_file_manager_target_spanish_and_english(self):
         # 1. Probar "Mis archivos"
         my_files = MockUiElement(text="Mis archivos", exists=True)
@@ -263,6 +277,25 @@ class TestWhatsAppExporterShareSheet(unittest.TestCase):
         target2, name2 = self.exporter.find_file_manager_target()
         self.assertIsNotNone(target2)
         self.assertEqual(name2, "Files by Google")
+
+    def test_find_file_manager_target_recognizes_requested_names(self):
+        for manager_name in (
+            "EX Administrador de Archivos",
+            "Gestor de archivos",
+            "Cx Administrador de Archivos",
+        ):
+            with self.subTest(manager_name=manager_name):
+                manager = MockUiElement(text=manager_name, exists=True)
+
+                def query(**kwargs):
+                    if "textMatches" in kwargs and re.search(kwargs["textMatches"], manager_name):
+                        return manager
+                    return None
+
+                self.mock_device.query_handler = query
+                target, name = self.exporter.find_file_manager_target()
+                self.assertIs(target, manager)
+                self.assertEqual(name, manager_name)
 
     def test_find_file_manager_no_match(self):
         self.mock_device.query_handler = None
@@ -330,17 +363,17 @@ class TestWhatsAppExporterStructuredFlow(unittest.TestCase):
 
     @patch.object(WhatsAppExporter, "detect_share_sheet", return_value=True)
     @patch.object(WhatsAppExporter, "_wait_for_receiver")
-    @patch.object(WhatsAppExporter, "_wait_and_detect_file")
-    def test_share_sheet_receiver_direct_success(self, mock_wait_file, mock_wait_rec, mock_detect):
+    @patch.object(WhatsAppExporter, "_wait_for_receiver_receipt")
+    def test_share_sheet_receiver_direct_success(self, mock_wait_receipt, mock_wait_rec, mock_detect):
         rec_elem = MockUiElement(text="AndroidTools Receiver", exists=True)
         mock_wait_rec.return_value = (rec_elem, 1)
 
-        def sim_file(chat, ts, zip_p, result):
+        def sim_receipt(snapshot, started_at, zip_p, result):
             result.success = True
             result.detected_path = "/data/user/0/com.androidtools.receiver/files/WhatsApp_Familia.txt"
             return result
 
-        mock_wait_file.side_effect = sim_file
+        mock_wait_receipt.side_effect = sim_receipt
 
         res = self.exporter.handle_share_sheet_flow("Familia", 1000, prefer_zip=False)
         self.assertTrue(res.success)

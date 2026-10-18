@@ -41,6 +41,9 @@ KNOWN_FILE_MANAGERS = [
     "Archivos",
     "Files",
     "Administrador de archivos",
+    "EX Administrador de Archivos",
+    "Gestor de archivos",
+    "Cx Administrador de Archivos",
     "File Manager",
     "Guardar en archivos",
     "Save to Files",
@@ -279,8 +282,8 @@ class WhatsAppExporter:
         Ejecuta el controlador de etapas:
         1. Esperar menú Compartir (20s).
         2. Búsqueda inicial de AndroidTools Receiver exacta (8s).
-        3. Abrir 'Más' (1 intento).
-        4. Recorrido horizontal limitado (máximo 6 gestos).
+        3. Recorrido horizontal del carrusel inferior (máximo 6 gestos).
+        4. Abrir 'Más' y recorrido vertical de la lista completa.
         5. Fallback a administradores de archivos conocidos (15s).
         6. Espera de escritura y detección del archivo (15s).
         """
@@ -311,32 +314,14 @@ class WhatsAppExporter:
                 prefer_zip, result
             )
 
-        # Etapa 3: Abrir 'Más' si existe y no se ha inspeccionado la lista completa
-        self._notify_stage("Abriendo Más...")
-        more_opened = self.open_more_targets()
-        if more_opened:
-            time.sleep(1.0)
-            target_obj, count = self.find_receiver_exact_matches()
-            if count > 1:
-                result.stage_failed = "receiver_conflict"
-                result.failure_reason = "Conflicto: se encontraron múltiples coincidencias exactas de AndroidTools Receiver tras abrir Más."
-                return result
-            if count == 1 and target_obj:
-                logger.info("Seleccionando AndroidTools Receiver tras abrir 'Más'.")
-                target_obj.click()
-                result.target_used = "AndroidTools Receiver"
-                result.method = "receiver"
-                return self._wait_for_receiver_receipt(
-                    receipt_snapshot or set(), receipt_started_at_ms or int(time.time() * 1000),
-                    prefer_zip, result
-                )
-
-        # Etapa 4: Recorrer horizontalmente con límite de 6 gestos
-        self._notify_stage("Recorriendo selector de compartir...")
+        # Etapa 3: Samsung y otros selectores compactos ocultan destinos en
+        # este carrusel inferior. Se recorre ANTES de pulsar "Más", ya que
+        # ese botón abre una lista vertical diferente.
+        self._notify_stage("Buscando receptor en el carrusel de compartir...")
         swipes_done = 0
         max_swipes = 6
         while swipes_done < max_swipes:
-            swiped = self.swipe_share_sheet()
+            swiped = self.swipe_share_sheet(direction="horizontal")
             swipes_done += 1
             result.scrolls_count = swipes_done
             time.sleep(0.8)
@@ -344,18 +329,43 @@ class WhatsAppExporter:
             target_obj, count = self.find_receiver_exact_matches()
             if count > 1:
                 result.stage_failed = "receiver_conflict"
-                result.failure_reason = f"Conflicto: múltiples coincidencias exactas de AndroidTools Receiver tras desplazamiento {swipes_done}."
+                result.failure_reason = f"Conflicto: múltiples coincidencias exactas de AndroidTools Receiver tras desplazamiento horizontal {swipes_done}."
                 return result
             if count == 1 and target_obj:
-                logger.info("Seleccionando AndroidTools Receiver tras desplazamiento %d.", swipes_done)
+                logger.info("Seleccionando AndroidTools Receiver tras desplazamiento horizontal %d.", swipes_done)
                 target_obj.click()
                 result.target_used = "AndroidTools Receiver"
                 result.method = "receiver"
                 return self._wait_and_detect_file(chat_name, timestamp_before, prefer_zip, result)
 
             if not swiped:
-                # No se pudo desplazar más
                 break
+
+        # Etapa 4: La vista abierta con "Más" se desplaza verticalmente.
+        self._notify_stage("Abriendo Más...")
+        if self.open_more_targets():
+            time.sleep(1.0)
+            for vertical_swipes in range(0, max_swipes + 1):
+                target_obj, count = self.find_receiver_exact_matches()
+                if count > 1:
+                    result.stage_failed = "receiver_conflict"
+                    result.failure_reason = "Conflicto: se encontraron múltiples coincidencias exactas de AndroidTools Receiver tras abrir Más."
+                    return result
+                if count == 1 and target_obj:
+                    logger.info("Seleccionando AndroidTools Receiver desde la lista completa.")
+                    target_obj.click()
+                    result.target_used = "AndroidTools Receiver"
+                    result.method = "receiver"
+                    return self._wait_for_receiver_receipt(
+                        receipt_snapshot or set(), receipt_started_at_ms or int(time.time() * 1000),
+                        prefer_zip, result
+                    )
+                if vertical_swipes == max_swipes:
+                    break
+                if not self.swipe_share_sheet(direction="vertical"):
+                    break
+                result.scrolls_count += 1
+                time.sleep(0.8)
 
         # Etapa 5: Fallback con administradores de archivos conocidos
         self._notify_stage("Probando administrador de archivos...")
@@ -460,25 +470,37 @@ class WhatsAppExporter:
                 logger.debug("Error pulsando botón Más: %s", exc)
         return False
 
-    def swipe_share_sheet(self) -> bool:
+    def swipe_share_sheet(self, direction: str = "horizontal") -> bool:
         """
-        Realiza un desplazamiento horizontal en el selector.
+        Realiza un desplazamiento en el selector. El selector compacto usa un
+        carrusel horizontal; la lista abierta mediante "Más" es vertical.
         Prioriza selectores accesibles antes de usar coordenadas.
         """
+        if direction not in {"horizontal", "vertical"}:
+            raise ValueError("direction debe ser 'horizontal' o 'vertical'")
+
         # 1. Intentar scroll accesible sobre contenedor deslizable
         try:
             scrollable = self.d(scrollable=True)
             if scrollable.exists:
-                scrollable.scroll.horiz.forward(steps=40)
+                if direction == "horizontal":
+                    scrollable.scroll.horiz.forward(steps=40)
+                else:
+                    scrollable.scroll.vert.forward(steps=40)
                 return True
         except Exception as exc:
             logger.debug("Scroll accesible no disponible: %s", exc)
 
-        # 2. Último recurso: gesto swipe horizontal por coordenadas
+        # 2. Último recurso: gesto por coordenadas. El horizontal se realiza
+        # cerca del borde inferior, donde Samsung coloca el carrusel de apps.
         try:
             w, h = self.d.window_size()
-            y = int(h * 0.76)
-            self.d.swipe(int(w * 0.82), y, int(w * 0.18), y, 0.35)
+            if direction == "horizontal":
+                y = int(h * 0.88)
+                self.d.swipe(int(w * 0.88), y, int(w * 0.12), y, 0.35)
+            else:
+                x = int(w * 0.50)
+                self.d.swipe(x, int(h * 0.78), x, int(h * 0.32), 0.35)
             return True
         except Exception as exc:
             logger.debug("Gesto swipe por coordenadas falló: %s", exc)

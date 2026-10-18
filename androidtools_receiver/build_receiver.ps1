@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$SdkRoot,
-    [string]$Output
+    [string]$Output,
+    [string]$Platform = 'android-35'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,21 +44,24 @@ Write-Host "Usando SdkRoot: $SdkRoot"
 # Detectar android.jar más reciente disponible
 $platformsDir = Join-Path $SdkRoot 'platforms'
 Write-Host "Buscando platforms en: $platformsDir"
-$platformJars = @(Get-ChildItem -Path $platformsDir -Filter 'android.jar' -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName -Descending)
+$platformJars = @(Get-ChildItem -Path $platformsDir -Filter 'android.jar' -Recurse -ErrorAction SilentlyContinue |
+    Where-Object { $_.Directory.Name -match '^android-\d+(?:\.\d+)?$' } |
+    Sort-Object @{Expression={ try { [version]($_.Directory.Name -replace '^android-', '') } catch { [version]'0.0' } }; Descending=$true})
 if ($platformJars.Count -eq 0) { throw "No se encontró android.jar en $platformsDir" }
-$androidJar = $platformJars[0].FullName
+$requestedJar = Join-Path (Join-Path $platformsDir $Platform) 'android.jar'
+$androidJar = if (Test-Path -LiteralPath $requestedJar) { $requestedJar } else { $platformJars[0].FullName }
+if (-not (Test-Path -LiteralPath $requestedJar)) { Write-Warning "No existe $Platform; se usarÃ¡ $($androidJar | Split-Path -Parent | Split-Path -Leaf)." }
 
 # Detectar versión de build-tools compatible
 $buildToolsDir = Join-Path $SdkRoot 'build-tools'
-$buildToolsVersions = @(Get-ChildItem -Path $buildToolsDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+$buildToolsVersions = @(Get-ChildItem -Path $buildToolsDir -Directory -ErrorAction SilentlyContinue |
+    Sort-Object @{Expression={ try { [version]$_.Name } catch { [version]'0.0' } }; Descending=$true})
 if ($buildToolsVersions.Count -eq 0) { throw "No se encontraron build-tools en $buildToolsDir" }
 
-# Si hay varias versiones, buscar preferentemente una compatible con Java 8 (<= 32.x) o usar la disponible
+# Usar el Build Tools mÃ¡s reciente: aapt2 antiguo no puede leer los recursos
+# compilados de android.jar modernos (35/36).
 $buildTools = $buildToolsVersions[0].FullName
-$compatibleTools = $buildToolsVersions | Where-Object { $_.Name -like '32.*' -or $_.Name -like '30.*' }
-if ($compatibleTools) {
-    $buildTools = ($compatibleTools | Select-Object -First 1).FullName
-}
+Write-Host "Usando Build Tools: $($buildToolsVersions[0].Name)"
 
 $aapt2 = Join-Path $buildTools 'aapt2.exe'
 $d8 = Join-Path $buildTools 'd8.bat'

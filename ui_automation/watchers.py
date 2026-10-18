@@ -97,7 +97,12 @@ def setup_auto_popup_watcher(
         )
 
         def _create_click_callback(target_kw: str):
-            def _callback(selector, device: u2.Device):
+            def _callback(selector, device: Optional[u2.Device] = None):
+                # Algunas versiones de uiautomator2 invocan ``call`` sólo con
+                # el selector; otras pasan también el dispositivo. Aceptar
+                # ambas firmas evita que el hilo de watchers se detenga con
+                # "missing a required argument: device".
+                device = device or d
                 try:
                     el = selector.get_last_match()
                     if el:

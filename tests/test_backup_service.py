@@ -151,6 +151,57 @@ class TestBackupService(unittest.TestCase):
         )
         self.assertEqual(summary["OverallStatus"], "CANCELLED")
 
+    def test_multimedia_timeout_does_not_abort_full_backup(self):
+        """Un pull agotado se registra como error y las demás categorías siguen."""
+        categories = [
+            CategoryDef(
+                id="multimedia",
+                name="Multimedia",
+                description="test",
+                sub_folder="Multimedia",
+                is_multimedia=True,
+                folders=["DCIM"],
+            ),
+            CategoryDef(
+                id="contacts",
+                name="Contactos",
+                description="test",
+                sub_folder="Contacts",
+                queries=[QueryDef("contacts", "contacts.txt", "content query --uri contacts")],
+            ),
+        ]
+
+        def fake_run_cmd(adb_exe, args, timeout=None):
+            if "pull" in args:
+                return 124, "", "Tiempo agotado tras 300 segundos."
+            return 0, "Row 0: name=Ana\n", ""
+
+        with patch.object(self.service, "_run_cmd", side_effect=fake_run_cmd):
+            summary = self.service.run_backup("TEST_SERIAL", "Device", self.test_dir, categories)
+
+        manifest = json.loads((self.test_dir / "MANIFEST.json").read_text(encoding="utf-8"))
+        multimedia = next(c for c in manifest["Categories"] if c["Id"] == "multimedia")
+        contacts = next(c for c in manifest["Categories"] if c["Id"] == "contacts")
+        self.assertEqual(multimedia["Status"], "ERROR")
+        self.assertEqual(multimedia["Queries"][0]["Status"], "ERROR")
+        self.assertEqual(contacts["Status"], "OK")
+        self.assertEqual(summary["OverallStatus"], "PARTIAL")
+
+    def test_category_exception_does_not_abort_remaining_categories(self):
+        categories = [
+            CategoryDef("multimedia", "Multimedia", "test", "Multimedia", is_multimedia=True, folders=["DCIM"]),
+            CategoryDef("contacts", "Contactos", "test", "Contacts", queries=[QueryDef("contacts", "contacts.txt", "content query --uri contacts")]),
+        ]
+
+        with patch.object(self.service, "_backup_multimedia", side_effect=RuntimeError("fallo simulado")), \
+             patch.object(self.service, "_run_cmd", return_value=(0, "Row 0: name=Ana\n", "")):
+            summary = self.service.run_backup("TEST_SERIAL", "Device", self.test_dir, categories)
+
+        manifest = json.loads((self.test_dir / "MANIFEST.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["Categories"][0]["Status"], "ERROR")
+        self.assertEqual(manifest["Categories"][1]["Status"], "OK")
+        self.assertEqual(summary["OverallStatus"], "PARTIAL")
+
 
 if __name__ == "__main__":
     unittest.main()

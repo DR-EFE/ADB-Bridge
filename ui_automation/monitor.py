@@ -286,7 +286,19 @@ class NotificationMonitor:
             return True
         logger.warning("Conexión perdida con el dispositivo. Reintentando...")
         try:
+            # La instancia anterior puede haber dejado un watcher ejecutando
+            # contra el endpoint muerto. Detenerlo antes de crear el nuevo
+            # cliente evita errores remotos y callbacks duplicados.
+            if self.watcher_mgr:
+                try:
+                    self.watcher_mgr.stop()
+                except Exception as exc:
+                    logger.debug("No se pudo detener watcher anterior: %s", exc)
             device = self.device_mgr.connect()
+            if self.enable_watchers:
+                self.watcher_mgr = UIWatcherManager(device)
+                self.watcher_mgr.setup_auto_popup()
+                self.watcher_mgr.start(interval=2.0)
             self.extractor = NotificationExtractor(device)
             return True
         except Exception as exc:

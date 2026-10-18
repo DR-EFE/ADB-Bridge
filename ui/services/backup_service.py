@@ -365,10 +365,32 @@ class BackupService:
             cat_dir = destination_dir / cat.sub_folder
             cat_dir.mkdir(parents=True, exist_ok=True)
 
-            if cat.is_multimedia:
-                cat_res = self._backup_multimedia(adb_exe, serial, cat, cat_dir, progress)
-            else:
-                cat_res = self._backup_queries(adb_exe, serial, cat, cat_dir, progress)
+            try:
+                if cat.is_multimedia:
+                    cat_res = self._backup_multimedia(adb_exe, serial, cat, cat_dir, progress)
+                else:
+                    cat_res = self._backup_queries(adb_exe, serial, cat, cat_dir, progress)
+            except Exception as exc:
+                # Un fallo de una categoría (por ejemplo, una transferencia
+                # ADB agotada) no debe cancelar el respaldo total ni impedir
+                # que se escriba el manifiesto de lo que sí se pudo obtener.
+                logger.exception("Fallo no controlado en la categoría '%s'.", cat.name)
+                cat_res = CategoryResult(
+                    id=cat.id,
+                    name=cat.name,
+                    status="ERROR",
+                    directory=str(cat_dir.resolve()),
+                    query_count=len(cat.folders) if cat.is_multimedia else len(cat.queries),
+                    errors=1,
+                    queries=[QueryResult(
+                        name=cat.name,
+                        file=str(cat_dir.resolve()),
+                        command="backup category",
+                        status="ERROR",
+                        exit_code=-1,
+                        message=str(exc),
+                    )],
+                )
 
             category_results.append(cat_res)
             self._log(f"Categoría '{cat.name}': {cat_res.status}", "INFO" if cat_res.status == "OK" else "WARN")
@@ -443,26 +465,63 @@ class BackupService:
         args: List[str],
         timeout: Optional[float] = None,
     ) -> Tuple[int, str, str]:
-        cmd = [adb_exe] + args
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=_safe_subprocess_flags(),
-        )
-        with self._lock:
-            self._active_process = proc
-
-        try:
-            out, err = proc.communicate(timeout=timeout)
-            return proc.returncode, out or "", err or ""
-        finally:
+        def run_once() -> Tuple[int, str, str]:
+            proc = subprocess.Popen(
+                [adb_exe] + args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=_safe_subprocess_flags(),
+            )
             with self._lock:
-                if self._active_process == proc:
-                    self._active_process = None
+                self._active_process = proc
+
+            try:
+                out, err = proc.communicate(timeout=timeout)
+                return proc.returncode, out or "", err or ""
+            except subprocess.TimeoutExpired as exc:
+                # Un timeout no debe escapar al worker de la UI. Terminamos
+                # sólo este comando y lo convertimos en resultado clasificable.
+                proc.kill()
+                out, err = proc.communicate()
+                timeout_text = f"Tiempo agotado tras {timeout} segundos."
+                captured_err = exc.stderr or ""
+                if isinstance(captured_err, bytes):
+                    captured_err = captured_err.decode("utf-8", errors="replace")
+                return 124, out or "", "\n".join(
+                    part for part in (timeout_text, str(captured_err).strip(), err or "") if part
+                )
+            finally:
+                with self._lock:
+                    if self._active_process == proc:
+                        self._active_process = None
+
+        ret, out, err = run_once()
+        combined = f"{err} {out}".lower()
+        # Cuando el endpoint Wi-Fi cae, adb puede conservar el serial como
+        # offline. Renovar sólo el enlace TCP y reintentar una vez permite que
+        # el backup continúe sin reiniciar el daemon ADB ni duplicar pulls que
+        # ya agotaron su tiempo.
+        network_serial = len(args) > 1 and ":" in str(args[1])
+        transient = ret != 0 and any(re.search(pattern, combined) for pattern in TRANSIENT_PATTERNS)
+        if network_serial and transient:
+            serial = str(args[1])
+            try:
+                subprocess.run(
+                    [adb_exe, "connect", serial],
+                    capture_output=True,
+                    text=True,
+                    timeout=10.0,
+                    check=False,
+                    creationflags=_safe_subprocess_flags(),
+                )
+                retry_ret, retry_out, retry_err = run_once()
+                return retry_ret, retry_out, retry_err
+            except Exception as exc:
+                logger.debug("No se pudo renovar ADB Wi-Fi para %s: %s", serial, exc)
+        return ret, out, err
 
     def _backup_multimedia(
         self,
@@ -513,6 +572,9 @@ class BackupService:
                 if any(re.search(pat, combined_err) for pat in DENIED_PATTERNS):
                     q_status = "DENIED"
                     denied += 1
+                elif ret == 124 or any(re.search(pat, combined_err) for pat in TRANSIENT_PATTERNS):
+                    q_status = "ERROR"
+                    errors += 1
                 elif not has_files:
                     q_status = "EMPTY"
                     empty += 1
