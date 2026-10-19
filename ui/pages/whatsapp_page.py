@@ -395,16 +395,14 @@ class WhatsAppPage:
                             title=f"Chat '{chat_name}'",
                             serial=serial,
                             payload={"chat_name": chat_name, "include_media": include_media, "local_dir": out_dir},
+                            dispatch=False,
                         )
-                        job = self._job_queue.get_job(jid)
-                        if job:
-                            job.status = JobStatus.COMPLETED if is_ok else JobStatus.FAILED
-                            job.progress_percent = 1.0 if is_ok else 0.0
-                            job.current_step = "Completado" if is_ok else (r.get("failure_reason") or "Fallo en exportación")
-                            job.error = None if is_ok else r.get("failure_reason")
-                            job.result = r
-                            self._job_queue._notify(job)
-                            self._job_queue._persist_history()
+                        self._job_queue.finalize(
+                            jid,
+                            JobStatus.COMPLETED if is_ok else JobStatus.FAILED,
+                            error=None if is_ok else r.get("failure_reason"),
+                            result=r,
+                        )
 
                 # Auto-procesamiento local si está activado
                 if self._auto_process.value:

@@ -174,7 +174,7 @@ class TransferService:
 
     def __init__(
         self,
-        reconnect_callback: Optional[Callable[[str], bool]] = None,
+        reconnect_callback: Optional[Callable[[str], Optional[str]]] = None,
         on_job_updated: Optional[Callable[[TransferJob], None]] = None,
         auto_start: bool = True,
     ) -> None:
@@ -451,7 +451,13 @@ class TransferService:
                     # Intentar reconectar si tenemos callback
                     if self._reconnect_callback:
                         try:
-                            self._reconnect_callback(job.serial)
+                            replacement_serial = self._reconnect_callback(job.serial)
+                            if replacement_serial and replacement_serial != job.serial:
+                                logger.info(
+                                    "Trabajo %s cambia al endpoint reconectado %s -> %s.",
+                                    job.id, job.serial, replacement_serial,
+                                )
+                                job.serial = replacement_serial
                         except Exception as rc_err:
                             logger.debug("Error en callback de reconexión: %s", rc_err)
                     time.sleep(1.5 * job.attempts)

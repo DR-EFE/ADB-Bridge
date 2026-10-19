@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import shlex
 import threading
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -31,10 +33,16 @@ class ExplorerPage:
         self.page = page
         self._on_log = on_log
         self._current_path = "/sdcard"
+        self._is_shutdown = False
+        self._refresh_generation = 0
+        # La conexión Wi-Fi puede cambiar de puerto mientras esta pestaña está
+        # abierta. Al recibir el evento se vuelve a listar usando el serial
+        # actual, sin obligar al usuario a cerrar o reiniciar la aplicación.
+        self._device.add_device_change_listener(self._on_device_changed)
 
         # Servicio de transferencias compartido o propio
         self._transfer_service = transfer_service or TransferService(
-            reconnect_callback=lambda s: self._device.reconnect_device(),
+            reconnect_callback=self._device.reconnect_device,
             on_job_updated=self._on_transfer_job_updated,
         )
 
@@ -60,6 +68,8 @@ class ExplorerPage:
 
         self._files_list = ft.ListView(expand=True, spacing=4)
         self._status_text = ft.Text("Presiona 'Ir' o 'Refrescar' para explorar.", size=12, color=theme.TEXT_MUTED)
+        self._storage_text = ft.Text("Almacenamiento: pendiente de consulta", size=11, color=theme.TEXT_MUTED)
+        self._breadcrumbs = ft.Row(wrap=True, spacing=2)
 
         # Accesos rápidos estándar
         quick_buttons = [
@@ -70,6 +80,7 @@ class ExplorerPage:
             ft.TextButton("Pictures", icon=ft.Icons.IMAGE, on_click=lambda _: self._navigate_to("/sdcard/Pictures")),
             ft.TextButton("Music", icon=ft.Icons.MUSIC_NOTE, on_click=lambda _: self._navigate_to("/sdcard/Music")),
         ]
+        self._quick_locations = ft.Row(wrap=True, spacing=4, controls=quick_buttons)
 
         # Zona visual "Agregar archivos o carpetas" (acceso claro a selectores nativos)
         self._drop_zone = theme.card(
@@ -140,7 +151,8 @@ class ExplorerPage:
                                             ),
                                         ],
                                     ),
-                                    ft.Row(wrap=True, spacing=4, controls=quick_buttons),
+                                    self._breadcrumbs,
+                                    self._quick_locations,
                                 ],
                             ),
                             padding=8,
@@ -150,7 +162,7 @@ class ExplorerPage:
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
-                                    self._status_text,
+                                    ft.Column(spacing=2, expand=True, controls=[self._status_text, self._storage_text]),
                                     ft.OutlinedButton(
                                         "Abrir Descargas Locales",
                                         icon=ft.Icons.FOLDER_OPEN,
@@ -195,6 +207,7 @@ class ExplorerPage:
                 ),
             ],
         )
+        self._render_breadcrumbs()
 
     def _log(self, text: str, color: str = theme.TEXT) -> None:
         if self._on_log:
@@ -210,14 +223,128 @@ class ExplorerPage:
             return status.error or "No hay dispositivo ADB conectado."
         return None
 
+    def _on_device_changed(self) -> None:
+        if self._is_shutdown:
+            return
+        logger.info("El Explorador recibió un cambio de dispositivo; actualizando %s", self._current_path)
+        self._refresh()
+
     def _on_navigate_submit(self, _e: ft.ControlEvent) -> None:
         path = (self._path_field.value or "/sdcard").strip()
         self._navigate_to(path)
+
+    @staticmethod
+    def _format_bytes(value: str) -> str:
+        """Convierte tamaños del listado remoto a una unidad legible."""
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            return "—"
+        units = ("B", "KB", "MB", "GB", "TB")
+        amount = float(size)
+        for unit in units:
+            if amount < 1024 or unit == units[-1]:
+                return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
+            amount /= 1024
+        return f"{size} B"
+
+    @staticmethod
+    def _format_storage(df_output: str) -> str:
+        """Resume ``df -k`` sin depender del nombre del volumen Android."""
+        rows = [line.split() for line in (df_output or "").splitlines() if line.split()]
+        if len(rows) < 2:
+            return "Almacenamiento: no disponible"
+        row = rows[-1]
+        if len(row) < 5:
+            return "Almacenamiento: no disponible"
+        try:
+            total_kb, used_kb, available_kb = (int(row[1]), int(row[2]), int(row[3]))
+            return (
+                f"Almacenamiento: {ExplorerPage._format_bytes(str(available_kb * 1024))} libres de "
+                f"{ExplorerPage._format_bytes(str(total_kb * 1024))} "
+                f"({ExplorerPage._format_bytes(str(used_kb * 1024))} usados)"
+            )
+        except (TypeError, ValueError, IndexError):
+            return "Almacenamiento: no disponible"
+
+    @staticmethod
+    def _validate_remote_name(value: str) -> Optional[str]:
+        name = value.strip()
+        if not name:
+            return "Indica un nombre."
+        if name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+            return "El nombre no puede contener barras ni usar . o ..."
+        return None
+
+    @staticmethod
+    def _friendly_remote_error(raw_error: str, path: str, serial: str) -> str:
+        """Traduce respuestas frecuentes de ADB a acciones comprensibles."""
+        message = (raw_error or "").strip()
+        lowered = message.lower()
+        if "device offline" in lowered or "device not found" in lowered or "no devices" in lowered:
+            return f"Conexión perdida con {serial}. Espera la reconexión Wi‑Fi y pulsa Refrescar."
+        if "permission denied" in lowered or "not allowed" in lowered:
+            return f"Android no permite abrir {path}. Usa una carpeta de almacenamiento compartido como /sdcard/Download."
+        if "no such file" in lowered or "not found" in lowered:
+            return f"La ruta {path} ya no existe o fue movida. Regresa a la carpeta anterior."
+        if "read-only" in lowered:
+            return f"{path} es de solo lectura; no se pueden subir, renombrar ni eliminar elementos ahí."
+        return f"No se pudo abrir {path}: {message or 'respuesta no válida de ADB'}"
+
+    def _render_breadcrumbs(self) -> None:
+        parts = [part for part in self._current_path.split("/") if part]
+        controls: List[ft.Control] = [
+            ft.TextButton("Raíz", icon=ft.Icons.HOME, on_click=lambda _: self._navigate_to("/")),
+        ]
+        accumulated = ""
+        for part in parts:
+            accumulated += "/" + part
+            controls.append(ft.Text("›", color=theme.TEXT_MUTED, size=12))
+            controls.append(ft.TextButton(part, on_click=lambda _, p=accumulated: self._navigate_to(p)))
+        self._breadcrumbs.controls = controls
+
+    def _update_quick_locations(self, existing_paths: List[str]) -> None:
+        """Muestra solo ubicaciones que el dispositivo expone realmente."""
+        known_locations = [
+            ("/sdcard", "Almacenamiento", ft.Icons.PHONE_ANDROID),
+            ("/sdcard/DCIM", "Cámara", ft.Icons.CAMERA_ALT),
+            ("/sdcard/Download", "Descargas", ft.Icons.DOWNLOAD),
+            ("/sdcard/Documents", "Documentos", ft.Icons.DESCRIPTION),
+            ("/sdcard/Pictures", "Imágenes", ft.Icons.IMAGE),
+            ("/sdcard/Music", "Música", ft.Icons.MUSIC_NOTE),
+            ("/sdcard/Android/media", "Media de apps", ft.Icons.APPS),
+        ]
+        allowed = set(existing_paths)
+        self._quick_locations.controls = [
+            ft.TextButton(label, icon=icon, on_click=lambda _, p=path: self._navigate_to(p))
+            for path, label, icon in known_locations
+            if path in allowed
+        ]
+
+    @staticmethod
+    def _parse_ls_output(output: str) -> List[Dict[str, str]]:
+        """Interpreta ``ls -lan`` preservando nombres con espacios y enlaces."""
+        entries: List[Dict[str, str]] = []
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("total "):
+                continue
+            parts = line.split(maxsplit=7)
+            if len(parts) < 8 or not re.match(r"^[bcdlps-]", parts[0]):
+                continue
+            name = parts[7]
+            if " -> " in name and parts[0].startswith("l"):
+                name = name.split(" -> ", 1)[0]
+            if name in (".", ".."):
+                continue
+            entries.append({"perms": parts[0], "size": parts[4], "name": name})
+        return sorted(entries, key=lambda item: (not item["perms"].startswith("d"), item["name"].casefold()))
 
     def _navigate_to(self, path: str) -> None:
         clean = RemotePath(path).clean_path
         self._current_path = clean
         self._path_field.value = clean
+        self._render_breadcrumbs()
         try:
             self._path_field.update()
         except Exception:
@@ -248,6 +375,9 @@ class ExplorerPage:
             pass
 
         serial = self._device.serial
+        path = self._current_path
+        self._refresh_generation += 1
+        generation = self._refresh_generation
 
         def worker():
             try:
@@ -255,26 +385,33 @@ class ExplorerPage:
                 client = get_adb_client()
                 dev = client.device(serial)
 
-                cmd = f"ls -la '{self._current_path}'"
+                # ``--`` y shlex.quote hacen que una carpeta con espacios, comillas
+                # o nombres similares a opciones se consulte de forma segura.
+                cmd = f"ls -lan -- {shlex.quote(path)} 2>&1; printf '\n__ANDROID_TOOLS_EXIT:%s\n' $?"
                 out = dev.shell(cmd)
-                lines = out.splitlines()
+                exit_match = re.search(r"__ANDROID_TOOLS_EXIT:(\d+)", out)
+                exit_code = int(exit_match.group(1)) if exit_match else 0
+                listing = out[:exit_match.start()] if exit_match else out
+                if exit_code != 0:
+                    raise RuntimeError(listing.strip() or f"ls terminó con código {exit_code}")
+
+                # Consultas ligeras: espacio disponible y ubicaciones que sí
+                # existen en este Android (varía por fabricante/versión).
+                df_out = dev.shell(f"df -k {shlex.quote(path)} 2>/dev/null || true")
+                roots_out = dev.shell(
+                    "for p in /sdcard /sdcard/DCIM /sdcard/Download /sdcard/Documents "
+                    "/sdcard/Pictures /sdcard/Music /sdcard/Android/media; do "
+                    "[ -d \"$p\" ] && printf '%s\\n' \"$p\"; done"
+                )
+                entries = self._parse_ls_output(listing)
+                if generation != self._refresh_generation or serial != self._device.serial or path != self._current_path:
+                    return
 
                 items = []
-                for line in lines:
-                    line = line.strip()
-                    if not line or line.startswith("total "):
-                        continue
-
-                    parts = line.split(maxsplit=7)
-                    if len(parts) < 8:
-                        continue
-
-                    perms, _, _, _, size, _, _, name = parts
-                    if name in (".", ".."):
-                        continue
-
+                for entry in entries:
+                    perms, size, name = entry["perms"], entry["size"], entry["name"]
                     is_dir = perms.startswith("d")
-                    full_remote_path = f"{self._current_path.rstrip('/')}/{name}"
+                    full_remote_path = f"{path.rstrip('/')}/{name}" if path != "/" else f"/{name}"
 
                     icon = ft.Icons.FOLDER if is_dir else ft.Icons.INSERT_DRIVE_FILE_OUTLINED
                     icon_color = theme.ACCENT if is_dir else theme.TEXT_MUTED
@@ -298,7 +435,7 @@ class ExplorerPage:
                                 ft.Row(
                                     spacing=4,
                                     controls=[
-                                        ft.Text(f"{size} B" if not is_dir else "<CARPETA>", size=11, color=theme.TEXT_MUTED),
+                                        ft.Text(self._format_bytes(size) if not is_dir else "Carpeta", size=11, color=theme.TEXT_MUTED),
                                         # Botón entrar si es dir
                                         ft.IconButton(
                                             ft.Icons.ARROW_FORWARD,
@@ -345,17 +482,27 @@ class ExplorerPage:
                     )
                     items.append(row)
 
-                self._files_list.controls = items
-                self._status_text.value = f"{len(items)} elementos en {self._current_path}"
+                self._files_list.controls = items or [
+                    ft.Container(ft.Text("Esta carpeta está vacía.", color=theme.TEXT_MUTED), padding=16)
+                ]
+                self._status_text.value = f"{len(items)} elementos en {path}"
                 self._status_text.color = theme.OK
+                self._storage_text.value = self._format_storage(df_out)
+                self._update_quick_locations([line.strip() for line in roots_out.splitlines() if line.strip()])
+                self._render_breadcrumbs()
                 try:
                     self._files_list.update()
                     self._status_text.update()
+                    self._storage_text.update()
+                    self._quick_locations.update()
+                    self._breadcrumbs.update()
                 except Exception:
                     pass
 
             except Exception as exc:
-                err_msg = f"Error al listar {self._current_path}: {exc}"
+                if generation != self._refresh_generation:
+                    return
+                err_msg = self._friendly_remote_error(str(exc), path, serial or "dispositivo")
                 self._status_text.value = err_msg
                 self._status_text.color = theme.ERR
                 try:
@@ -380,7 +527,10 @@ class ExplorerPage:
 
         def on_confirm(_e: ft.ControlEvent) -> None:
             folder_name = (name_field.value or "").strip()
-            if not folder_name:
+            invalid = self._validate_remote_name(folder_name)
+            if invalid:
+                name_field.error_text = invalid
+                name_field.update()
                 return
             new_full_path = f"{self._current_path.rstrip('/')}/{folder_name}"
             dialog.open = False
@@ -424,6 +574,11 @@ class ExplorerPage:
             if not new_name or new_name == current_name:
                 dialog.open = False
                 self.page.update()
+                return
+            invalid = self._validate_remote_name(new_name)
+            if invalid:
+                name_field.error_text = invalid
+                name_field.update()
                 return
 
             parent = RemotePath(remote_path).parent
@@ -724,4 +879,6 @@ class ExplorerPage:
 
     def shutdown(self) -> None:
         """Detiene transferencias al cerrar."""
+        self._is_shutdown = True
+        self._device.remove_device_change_listener(self._on_device_changed)
         self._transfer_service.shutdown()

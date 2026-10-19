@@ -162,7 +162,7 @@ class BackupPage:
             options=[],
             width=260,
             text_size=12,
-            on_change=self._on_category_selected_for_view,
+            on_select=self._on_category_selected_for_view,
         )
         self._table_container = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
 

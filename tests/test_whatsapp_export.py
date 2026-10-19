@@ -180,7 +180,7 @@ class TestWhatsAppExporterShareSheet(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(matched, target)
 
-    def test_find_receiver_exact_matches_conflict(self):
+    def test_find_receiver_exact_matches_selects_first_duplicate(self):
         target1 = MockUiElement(
             text="AndroidTools Receiver",
             exists=True,
@@ -202,7 +202,7 @@ class TestWhatsAppExporterShareSheet(unittest.TestCase):
         self.mock_device.query_handler = query
         matched, count = self.exporter.find_receiver_exact_matches()
         self.assertEqual(count, 2)
-        self.assertIsNone(matched)  # Conflicto: no elige al azar
+        self.assertIs(matched, target1)
 
     @patch.object(WhatsAppExporter, "_read_receipt")
     @patch.object(WhatsAppExporter, "list_receipt_paths")
@@ -247,7 +247,7 @@ class TestWhatsAppExporterShareSheet(unittest.TestCase):
         self.assertTrue(opened)
         self.assertTrue(more_btn.clicked)
 
-    def test_swipe_share_sheet_accessible(self):
+    def test_swipe_share_sheet_horizontal_uses_bottom_apps_row_before_accessible_scroll(self):
         scrollable = MockUiElement(exists=True)
 
         def query(**kwargs):
@@ -258,7 +258,8 @@ class TestWhatsAppExporterShareSheet(unittest.TestCase):
         self.mock_device.query_handler = query
         swiped = self.exporter.swipe_share_sheet()
         self.assertTrue(swiped)
-        scrollable.scroll.horiz.forward.assert_called_once_with(steps=40)
+        self.mock_device.swipe.assert_called_once_with(950, 2112, 129, 2112, 0.25)
+        scrollable.scroll.horiz.forward.assert_not_called()
 
     def test_swipe_share_sheet_coordinates_fallback(self):
         # Sin scrollable disponible: debe recurrir a coordenadas
@@ -383,13 +384,12 @@ class TestWhatsAppExporterStructuredFlow(unittest.TestCase):
 
     @patch.object(WhatsAppExporter, "detect_share_sheet", return_value=True)
     @patch.object(WhatsAppExporter, "_wait_for_receiver")
-    def test_share_sheet_receiver_conflict(self, mock_wait_rec, mock_detect):
+    def test_share_sheet_receiver_duplicate_does_not_cancel_as_conflict(self, mock_wait_rec, mock_detect):
         mock_wait_rec.return_value = (None, 2)
 
         res = self.exporter.handle_share_sheet_flow("Familia", 1000, prefer_zip=False)
         self.assertFalse(res.success)
-        self.assertEqual(res.stage_failed, "receiver_conflict")
-        self.assertIn("Conflicto", res.failure_reason)
+        self.assertNotEqual(res.stage_failed, "receiver_conflict")
 
     @patch.object(WhatsAppExporter, "detect_share_sheet", return_value=True)
     @patch.object(WhatsAppExporter, "_wait_for_receiver")

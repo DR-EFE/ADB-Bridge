@@ -302,12 +302,7 @@ class WhatsAppExporter:
         # Etapa 2: Búsqueda inicial del receptor exacto (8s)
         self._notify_stage("Buscando receptor...")
         target_obj, count = self._wait_for_receiver(timeout=8.0)
-        if count > 1:
-            result.stage_failed = "receiver_conflict"
-            result.failure_reason = "Conflicto: se encontraron múltiples coincidencias exactas de AndroidTools Receiver."
-            return result
-
-        if count == 1 and target_obj:
+        if count >= 1 and target_obj:
             logger.info("Seleccionando AndroidTools Receiver directamente.")
             target_obj.click()
             result.target_used = "AndroidTools Receiver"
@@ -322,18 +317,22 @@ class WhatsAppExporter:
         self._notify_stage("Buscando receptor en el carrusel de compartir...")
         swipes_done = 0
         max_swipes = 6
-        while swipes_done < max_swipes:
+
+        # En OneUI, "Más" suele estar ya visible al extremo derecho de la fila
+        # inferior de aplicaciones. Ábrelo de inmediato: evita un gesto
+        # innecesario sobre la fila superior de contactos.
+        more_visible = (
+            self.d(textMatches=r"(?i)^M[áa]s$|^More$").exists
+            or self.d(descriptionMatches=r"(?i)^M[áa]s$|^More$").exists
+        )
+        while not more_visible and swipes_done < max_swipes:
             swiped = self.swipe_share_sheet(direction="horizontal")
             swipes_done += 1
             result.scrolls_count = swipes_done
             time.sleep(0.8)
 
             target_obj, count = self.find_receiver_exact_matches()
-            if count > 1:
-                result.stage_failed = "receiver_conflict"
-                result.failure_reason = f"Conflicto: múltiples coincidencias exactas de AndroidTools Receiver tras desplazamiento horizontal {swipes_done}."
-                return result
-            if count == 1 and target_obj:
+            if count >= 1 and target_obj:
                 logger.info("Seleccionando AndroidTools Receiver tras desplazamiento horizontal %d.", swipes_done)
                 target_obj.click()
                 result.target_used = "AndroidTools Receiver"
@@ -357,11 +356,7 @@ class WhatsAppExporter:
             # Primero intentar scrolls verticales
             for v_swipes in range(0, max_swipes + 1):
                 target_obj, count = self.find_receiver_exact_matches()
-                if count > 1:
-                    result.stage_failed = "receiver_conflict"
-                    result.failure_reason = "Conflicto: se encontraron múltiples coincidencias exactas de AndroidTools Receiver tras abrir Más."
-                    return result
-                if count == 1 and target_obj:
+                if count >= 1 and target_obj:
                     logger.info("Seleccionando AndroidTools Receiver desde la lista completa.")
                     target_obj.click()
                     result.target_used = "AndroidTools Receiver"
@@ -384,7 +379,7 @@ class WhatsAppExporter:
                 result.scrolls_count += 1
                 time.sleep(0.8)
                 target_obj, count = self.find_receiver_exact_matches()
-                if count == 1 and target_obj:
+                if count >= 1 and target_obj:
                     logger.info("Seleccionando AndroidTools Receiver tras desplazamiento horizontal secundario.")
                     target_obj.click()
                     result.target_used = "AndroidTools Receiver"
@@ -467,7 +462,9 @@ class WhatsAppExporter:
                     matches.append(node)
 
         total = len(matches)
-        target = matches[0] if total == 1 else None
+        target = matches[0] if total else None
+        if total > 1:
+            logger.warning("Se encontraron %d AndroidTools Receiver; se seleccionará la primera coincidencia.", total)
         return target, total
 
     def _wait_for_receiver(self, timeout: float = 8.0) -> Tuple[Optional[u2.UiObject], int]:
@@ -507,7 +504,29 @@ class WhatsAppExporter:
         if direction not in {"horizontal", "vertical"}:
             raise ValueError("direction debe ser 'horizontal' o 'vertical'")
 
-        # 1. Intentar scroll accesible sobre contenedor deslizable específico
+        # 1. En Samsung, hacer primero el gesto con coordenadas sobre la fila
+        # INFERIOR de aplicaciones. Los RecyclerView accesibles suelen apuntar
+        # antes a sugerencias/contactos y desplazan la fila equivocada.
+        if direction == "horizontal":
+            try:
+                w, h = self.d.window_size()
+                # En la captura de OneUI la fila de contactos ocupa ~75 % y la
+                # de aplicaciones ~88 %. El límite protege pantallas muy bajas.
+                target_y = max(int(h * 0.76), min(int(h * 0.90), int(h * 0.88)))
+                start_x = int(w * 0.88)
+                end_x = int(w * 0.12)
+                logger.info(
+                    "Ejecutando swipe horizontal sobre fila inferior de apps: (%d, %d) -> (%d, %d)",
+                    start_x, target_y, end_x, target_y,
+                )
+                self.d.swipe(start_x, target_y, end_x, target_y, 0.25)
+                time.sleep(0.3)
+                return True
+            except Exception as exc:
+                logger.debug("Gesto inferior horizontal no disponible: %s", exc)
+
+        # 2. Intentar scroll accesible sobre contenedor deslizable específico.
+        # Se conserva para listas abiertas y fabricantes con jerarquía accesible.
         try:
             # Buscar contenedores horizontales típicos de OneUI / Android Chooser
             if direction == "horizontal":
@@ -531,35 +550,12 @@ class WhatsAppExporter:
         except Exception as exc:
             logger.debug("Scroll accesible no disponible o falló: %s", exc)
 
-        # 2. Gesto adaptativo por coordenadas.
+        # 3. Gesto adaptativo por coordenadas.
         # En Samsung OneUI, el carrusel de aplicaciones en el Share Sheet se ubica
         # en el tercio inferior (típicamente entre 70% y 92% de la pantalla).
         try:
             w, h = self.d.window_size()
-            if direction == "horizontal":
-                # Si encontramos algún icono o texto de app en la hoja de compartir,
-                # usamos su coordenada Y para deslizar exactamente sobre la fila de apps
-                target_y = None
-                sample_apps = self.d(resourceIdMatches=r".*id/text1.*|.*id/title.*|.*id/icon.*")
-                if sample_apps.exists and sample_apps.count > 0:
-                    try:
-                        bounds = sample_apps[0].info.get("bounds")
-                        if bounds and "top" in bounds and "bottom" in bounds:
-                            target_y = (bounds["top"] + bounds["bottom"]) // 2
-                    except Exception:
-                        pass
-
-                # Fallback de altura Y si no se pudo determinar con precisión
-                if not target_y or target_y < int(h * 0.40):
-                    target_y = int(h * 0.82)
-
-                start_x = int(w * 0.88)
-                end_x = int(w * 0.12)
-                logger.info("Ejecutando swipe horizontal en ShareSheet: (%d, %d) -> (%d, %d)", start_x, target_y, end_x, target_y)
-                self.d.swipe(start_x, target_y, end_x, target_y, 0.25)
-                # Intento adicional con paso ligeramente diferente para asegurar arrastre
-                time.sleep(0.3)
-            else:
+            if direction == "vertical":
                 x = int(w * 0.50)
                 start_y = int(h * 0.78)
                 end_y = int(h * 0.30)
@@ -775,6 +771,27 @@ class WhatsAppExporter:
         # puede aceptar un comprobante antiguo de otro chat.
         if consume_receipt(self.list_receipt_paths()):
             return result
+
+        # Compatibilidad con Android/MediaStore: algunos Samsung materializan
+        # el archivo correctamente pero retrasan o pierden el JSON del recibo.
+        # Si el archivo recién creado existe, todavía podemos descargarlo y
+        # validarlo por tamaño/hash (el recibo no debe ser un punto único de
+        # fallo).
+        fallback_path = self.find_exported_chat_file(
+            min_mtime=max(0, int(started_at_ms / 1000) - 2),
+            prefer_zip=prefer_zip,
+        )
+        if fallback_path:
+            logger.warning(
+                "El auxiliar no publicó recibo; se usará el archivo recién materializado: %s",
+                fallback_path,
+            )
+            result.success = True
+            result.detected_path = fallback_path
+            result.receipt_state = "FILE_DETECTED"
+            self._notify_stage("Archivo detectado; preparando descarga...")
+            return result
+
         result.stage_failed = "wait_receiver_receipt"
         result.failure_reason = f"AndroidTools Receiver no publicó un comprobante dentro de {int(timeout)} segundos."
         return result

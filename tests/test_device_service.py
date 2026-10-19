@@ -310,6 +310,65 @@ class TestDeviceService(unittest.TestCase):
         self.assertEqual(service.serial, "192.168.1.20:5555")
 
     @patch("ui.services.device_service.get_adb_client")
+    def test_auto_reconnect_keeps_primary_active_and_notifies_endpoint_change(self, mock_get_client):
+        """Un registro secundario conectado no sustituye el endpoint elegido."""
+        save_devices_store(
+            {
+                "SchemaVersion": 1,
+                "CurrentDeviceId": "primary",
+                "Devices": [
+                    {"Id": "primary", "FriendlyName": "Principal", "LastEndpoint": "192.168.1.10:5555", "LastIp": "192.168.1.10"},
+                    {"Id": "secondary", "FriendlyName": "Secundario", "LastEndpoint": "192.168.1.20:5555", "LastIp": "192.168.1.20"},
+                ],
+            },
+            self.canonical_json,
+        )
+        client = MagicMock()
+        client.list.return_value = []
+        client.connect.return_value = "connected to device"
+        mock_get_client.return_value = client
+        service = DeviceService(serial="192.168.1.10:5555", devices_json_path=self.canonical_json)
+        changed = []
+        service.add_device_change_listener(lambda: changed.append(service.serial))
+
+        with patch.object(
+            service,
+            "find_wireless_devices",
+            return_value=[
+                {"service_name": "primary", "host": "192.168.1.10", "endpoint": "192.168.1.10:46617"},
+                {"service_name": "secondary", "host": "192.168.1.20", "endpoint": "192.168.1.20:46618"},
+            ],
+        ), patch.object(service, "refresh_device_metadata", return_value=None):
+            results = service.auto_reconnect_saved_devices()
+
+        self.assertEqual(2, sum(result.success for result in results))
+        self.assertEqual("192.168.1.10:46617", service.serial)
+        self.assertEqual(["192.168.1.10:46617"], changed)
+        self.assertEqual("primary", read_devices_store(self.canonical_json)["CurrentDeviceId"])
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_reconnect_device_returns_new_endpoint_for_transfer(self, mock_get_client):
+        save_devices_store(
+            {
+                "SchemaVersion": 1,
+                "CurrentDeviceId": "phone",
+                "Devices": [{"Id": "phone", "FriendlyName": "Phone", "LastEndpoint": "192.168.1.50:43863", "LastIp": "192.168.1.50"}],
+            },
+            self.canonical_json,
+        )
+        client = MagicMock()
+        client.list.return_value = []
+        client.connect.return_value = "connected to device"
+        mock_get_client.return_value = client
+        service = DeviceService(serial="192.168.1.50:43863", devices_json_path=self.canonical_json)
+
+        with patch.object(service, "find_wireless_devices", return_value=[{"service_name": "phone", "host": "192.168.1.50", "endpoint": "192.168.1.50:46617"}]), patch.object(service, "refresh_device_metadata", return_value=None):
+            endpoint = service.reconnect_device("192.168.1.50:43863")
+
+        self.assertEqual("192.168.1.50:46617", endpoint)
+        self.assertEqual(endpoint, service.serial)
+
+    @patch("ui.services.device_service.get_adb_client")
     @patch("ui.services.device_service.get_adb_executable")
     def test_run_technical_diagnostics_all_fields(self, mock_exe, mock_client):
         """Verifica que run_technical_diagnostics reporte los 12 puntos requeridos."""

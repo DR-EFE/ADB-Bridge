@@ -413,7 +413,7 @@ class DeviceService:
                 return rec
         return None
 
-    def connect_device(self, device_id: str) -> ConnectionResult:
+    def connect_device(self, device_id: str, *, activate: bool = True) -> ConnectionResult:
         """
         Reconecta un dispositivo usando la prioridad inteligente:
         1. Endpoint mDNS actual.
@@ -435,6 +435,24 @@ class DeviceService:
             )
 
         client = get_adb_client()
+
+        def activate_endpoint(endpoint: str) -> None:
+            """Publica un cambio real de endpoint para las vistas consumidoras.
+
+            Los puertos de Wireless Debugging cambian con frecuencia.  No basta
+            con guardar el puerto nuevo: el Explorador, Backup y las colas deben
+            dejar de usar el serial anterior en el mismo instante.
+            """
+            if not activate:
+                return
+            previous_serial = self.serial
+            previous_device_id = store.get("CurrentDeviceId")
+            self.serial = endpoint
+            self._explicitly_selected = True
+            store["CurrentDeviceId"] = device_id
+            if previous_serial != endpoint or previous_device_id != device_id:
+                save_devices_store(store, self.devices_json)
+                self._notify_device_change()
         raw_list = client.list()
 
         # Si el USB autorizado está presente, usarlo primero. Evita bloquear
@@ -442,8 +460,7 @@ class DeviceService:
         usb_serial = target.get("UsbSerial")
         usb_online = next((d for d in raw_list if d.serial == usb_serial and d.state == "device"), None) if usb_serial else None
         if usb_online:
-            self.serial = usb_serial
-            self._explicitly_selected = True
+            activate_endpoint(usb_serial)
             now_utc = datetime.now(timezone.utc).isoformat()
             target["LastConnectedUtc"] = now_utc
             target["LastSeenUtc"] = now_utc
@@ -475,8 +492,7 @@ class DeviceService:
                 if "connected to" in conn_res.lower() or "already connected" in conn_res.lower():
                     self._record_successful_endpoint(target, ep, source="mdns", mdns_service_name=matched_svc["service_name"])
                     save_devices_store(store, self.devices_json)
-                    self.serial = ep
-                    self._explicitly_selected = True
+                    activate_endpoint(ep)
                     self.refresh_device_metadata(device_id)
                     return ConnectionResult(
                         success=True,
@@ -497,8 +513,7 @@ class DeviceService:
                 if "connected to" in conn_res.lower() or "already connected" in conn_res.lower():
                     self._record_successful_endpoint(target, saved_ep, source="saved")
                     save_devices_store(store, self.devices_json)
-                    self.serial = saved_ep
-                    self._explicitly_selected = True
+                    activate_endpoint(saved_ep)
                     self.refresh_device_metadata(device_id)
                     return ConnectionResult(
                         success=True,
@@ -521,8 +536,7 @@ class DeviceService:
                     if "connected to" in conn_res.lower() or "already connected" in conn_res.lower():
                         self._record_successful_endpoint(target, ep, source="history")
                         save_devices_store(store, self.devices_json)
-                        self.serial = ep
-                        self._explicitly_selected = True
+                        activate_endpoint(ep)
                         self.refresh_device_metadata(device_id)
                         return ConnectionResult(
                             success=True,
@@ -545,8 +559,7 @@ class DeviceService:
                     if "connected to" in conn_res.lower() or "already connected" in conn_res.lower():
                         self._record_successful_endpoint(target, pep, source="profile")
                         save_devices_store(store, self.devices_json)
-                        self.serial = pep
-                        self._explicitly_selected = True
+                        activate_endpoint(pep)
                         self.refresh_device_metadata(device_id)
                         return ConnectionResult(
                             success=True,
@@ -562,8 +575,7 @@ class DeviceService:
         if usb_serial:
             usb_online = next((d for d in raw_list if d.serial == usb_serial and d.state == "device"), None)
             if usb_online:
-                self.serial = usb_serial
-                self._explicitly_selected = True
+                activate_endpoint(usb_serial)
                 now_utc = datetime.now(timezone.utc).isoformat()
                 target["LastConnectedUtc"] = now_utc
                 target["LastSeenUtc"] = now_utc
@@ -598,12 +610,16 @@ class DeviceService:
         current_id = store.get("CurrentDeviceId")
         devices.sort(key=lambda item: 0 if item.get("Id") == current_id else 1)
         results: List[ConnectionResult] = []
+        activated_any = False
         for device in devices:
             device_id = device.get("Id")
             if not device_id:
                 continue
             try:
-                result = self.connect_device(device_id)
+                # Reconectar los demás registros es útil para el inventario,
+                # pero no deben robar el dispositivo que el usuario eligió.
+                should_activate = device_id == current_id or (not current_id and not activated_any)
+                result = self.connect_device(device_id, activate=should_activate)
             except Exception as exc:
                 result = ConnectionResult(
                     success=False,
@@ -613,6 +629,7 @@ class DeviceService:
                 )
             results.append(result)
             if result.success:
+                activated_any = activated_any or should_activate
                 logger.info("Reconexión automática exitosa: %s (%s)", device.get("FriendlyName"), result.endpoint)
             else:
                 logger.info("Dispositivo guardado no disponible todavía: %s", device.get("FriendlyName"))
@@ -1639,15 +1656,44 @@ class DeviceService:
         except Exception as exc:
             return f"Error al reconectar: {exc}"
 
+    def reconnect_device(self, stale_serial: Optional[str] = None) -> Optional[str]:
+        """Reconecta el registro dueño de un serial y devuelve su endpoint vigente.
+
+        Se usa por operaciones largas (pull/push) cuando ADB informa que el
+        puerto con el que empezó el trabajo ya está ``offline``.  Los puertos
+        TLS de Wireless Debugging son efímeros, por lo que reconectar el texto
+        del serial anterior no es suficiente.
+        """
+        store = read_devices_store(self.devices_json)
+        current_id = store.get("CurrentDeviceId")
+        selected_id = current_id
+        if stale_serial:
+            for record in store.get("Devices") or []:
+                endpoints = [record.get("LastEndpoint"), record.get("UsbSerial")]
+                endpoints.extend(
+                    entry.get("Endpoint") if isinstance(entry, dict) else entry
+                    for entry in record.get("Endpoints") or []
+                )
+                if stale_serial in endpoints:
+                    selected_id = record.get("Id")
+                    break
+        if not selected_id:
+            return None
+        result = self.connect_device(selected_id, activate=True)
+        return result.endpoint if result.success else None
+
     def discover_and_reconnect_wireless(self, endpoint: Optional[str] = None) -> ConnectionResult:
         """Busca el nuevo endpoint mDNS o manual y lo conecta."""
         try:
             client = get_adb_client()
             if endpoint:
                 target_ep = endpoint.strip()
-                res = client.connect(target_ep, timeout=10.0)
+                res = client.connect(target_ep, timeout=10.0).strip()
+                if "connected to" not in res.lower() and "already connected" not in res.lower():
+                    return ConnectionResult(False, endpoint=target_ep, message=f"ADB no pudo conectar a {target_ep}: {res}", error=res)
                 self.serial = target_ep
                 self._explicitly_selected = True
+                self._notify_device_change()
                 return ConnectionResult(True, endpoint=target_ep, message=f"Conectado a {target_ep}.")
 
             services = self.find_wireless_devices()
@@ -1661,12 +1707,15 @@ class DeviceService:
             matching = [item for item in services if preferred_service and item["service_name"].lower() == preferred_service]
             selected = matching[0] if matching else services[0]
 
-            client.connect(selected["endpoint"], timeout=10.0)
+            res = client.connect(selected["endpoint"], timeout=10.0).strip()
+            if "connected to" not in res.lower() and "already connected" not in res.lower():
+                return ConnectionResult(False, endpoint=selected["endpoint"], message=f"ADB no pudo conectar a {selected['endpoint']}: {res}", error=res)
             self.serial = selected["endpoint"]
             self._explicitly_selected = True
             if record:
                 self._record_successful_endpoint(record, selected["endpoint"], source="mdns", mdns_service_name=selected["service_name"])
                 save_devices_store(store, self.devices_json)
+            self._notify_device_change()
             return ConnectionResult(True, endpoint=selected["endpoint"], method="mdns", message=f"Conectado por Wireless Debugging a {selected['endpoint']}.")
         except Exception as exc:
             return ConnectionResult(False, message=f"No se pudo buscar Wireless Debugging: {exc}", error=str(exc))

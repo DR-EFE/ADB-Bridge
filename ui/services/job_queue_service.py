@@ -236,6 +236,7 @@ class JobQueueService:
         payload: Optional[Dict[str, Any]] = None,
         max_retries: int = 5,
         custom_handler: Optional[Callable[[JobItem, Callable[[float, str], None]], Any]] = None,
+        dispatch: bool = True,
     ) -> str:
         """
         Encola un nuevo trabajo.
@@ -265,9 +266,33 @@ class JobQueueService:
         self._notify(job)
         self._persist_history()
 
-        # Despachar al worker correspondiente
-        self._dispatch(job)
+        # Algunas operaciones ya se ejecutaron fuera de esta cola y solo
+        # necesitan quedar registradas en el historial.
+        if dispatch:
+            self._dispatch(job)
         return job_id
+
+    def finalize(
+        self,
+        job_id: str,
+        status: JobStatus,
+        error: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Marca un trabajo previamente registrado sin volver a ejecutarlo."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return False
+            job.status = status
+            job.error = error
+            job.result = result
+            job.progress_percent = 1.0 if status == JobStatus.COMPLETED else 0.0
+            job.finished_at = datetime.now().isoformat()
+            job.current_step = "Completado" if status == JobStatus.COMPLETED else "Fallido"
+        self._notify(job)
+        self._persist_history()
+        return True
 
     def cancel(self, job_id: str) -> bool:
         """

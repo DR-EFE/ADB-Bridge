@@ -92,7 +92,7 @@ class NotificationsPage:
             value="TODOS",
             width=200,
             text_size=12,
-            on_change=self._on_filter_changed,
+            on_select=self._on_filter_changed,
         )
         self._filter_app = ft.TextField(
             label="Filtrar por app (paquete o nombre)",
