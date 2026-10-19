@@ -1,0 +1,2450 @@
+[
+  {
+    "package": "android",
+    "title": "Se conectó la depuración inalámbrica",
+    "text": "Presiona para desactivar la depuración inalámbrica",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:06:11",
+    "key": "-1|android|62|null|1000",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.googlequicksearchbox",
+    "title": "Google",
+    "text": "Tienes una notificación",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-18T12:49:51",
+    "key": "0|com.google.android.googlequicksearchbox|0|-985675285::SUMMARY::wx|10265",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.googlequicksearchbox",
+    "title": "19° en Ciudad Nezahualcóyotl",
+    "text": "Sensación térmica de 23° · Nublado · Consultar el pronóstico por hora",
+    "sub_text": "",
+    "timestamp": "2026-10-18T12:45:53",
+    "key": "0|com.google.android.googlequicksearchbox|0|-985675285::a:snotification:[0x394,wx.f,NOTIFICATION]|10265",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.sec.android.daemonapp",
+    "title": "Nezahualcóyotl | Lluvia",
+    "text": "Posible lluvia esta tarde",
+    "sub_text": "",
+    "timestamp": "2026-10-18T12:13:28",
+    "key": "0|com.sec.android.daemonapp|5|null|10221",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🍗 40% OFF en tus favs",
+    "text": "🔥 Elige strippers clásicos o boneless personales de Las Alitas y aprovecha el descuento. Ordena ahora. Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T12:11:54",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:118198910|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Shop：Botiquín al día",
+    "text": "Resurte tu botiquín con 30% OFF* en tus tiendas favoritas y ten lo esencial a la mano. ¡Pídelo ya! 💊 Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:29:43",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:117821616|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：☀️ El brunch del finde está aquí",
+    "text": "Despierta sin prisas. Pide tu platillo favorito desde $59 y empieza el fin de semana como se debe. ¡Pídelo ya! ☕",
+    "sub_text": "",
+    "timestamp": "2026-10-18T10:12:40",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:114552982|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi：¡Tienes un 10% en tu proximo viaje!🎉",
+    "text": "Tienes 10% de descuento en tu siguiente trayecto!💰",
+    "sub_text": "",
+    "timestamp": "2026-10-18T09:08:08",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:113402023|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🍕 Pizza de pepperoni $129",
+    "text": "🤤 Hazle caso al antojo con una pizza de pepperoni Deprizza por solo $129 m.n. Ordena ahora. Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T18:06:19",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:95190603|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi sigue funcionando aunque no estés en la app.",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-17T18:05:26",
+    "key": "0|com.didiglobal.passenger|0|null|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "Llegando pronto",
+    "text": "Te recomendamos revisar que no haya vehículos cercanos antes de bajar y que no olvides tus pertenencias. La grabación ha finalizado. ¡Esperamos verte pronto de nuevo!",
+    "sub_text": "",
+    "timestamp": "2026-10-17T18:03:44",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:95113509|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "",
+    "text": "Aviso：El conductor ha estado esperando un ...",
+    "sub_text": "",
+    "timestamp": "2026-10-17T17:45:25",
+    "key": "0|com.didiglobal.passenger|962934813|null|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🎬 ¿Ya tienes la peli? Falta el snack",
+    "text": "Que no se te olvide lo más importante. Elige tu platillo favorito desde $79. ¡Pídelo ya!",
+    "sub_text": "",
+    "timestamp": "2026-10-17T17:13:43",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:92758349|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Shop： 🎉 Día del Mezcal",
+    "text": "Celebra el día del mezcal con los mejores descuentos en Bodegas Alianza. ¡Pide Ya! Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T15:17:45",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:90273904|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Card：¡20% de CASHBACK* + 3 MSI solo este fin!",
+    "text": "Pide tu tarjeta sin anualidad hoy antes de las 9 p.m. y te regresamos el 20% de CASHBACK* en cualquier compra. Además disfruta de 3 MSI en la compra que elijas sin importar comercio ni monto.  *Sujeto a analisis crediticio. Consulta Términos y Condiciones  CAT promedio de 130.4% sin IVA",
+    "sub_text": "",
+    "timestamp": "2026-10-17T15:00:46",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:89795214|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：❤️🍲Hoy toca caldo tlalpeño",
+    "text": "Si se te antoja algo calientito, aquí está tu señal 🍲✨ Caldo Tlalpeño por solo $89 en Vips. Aplican TyC",
+    "sub_text": "",
+    "timestamp": "2026-10-17T12:06:50",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:85607060|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Shop：Botanea con Barcel 😋",
+    "text": "Dale gusto al antojo: encuentra productos Barcel con hasta 30% OFF* y disfruta tu botana favorita. Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T11:20:34",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:85297975|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🥞 Un buen día se comparte",
+    "text": "☀️ ¡El desayuno sabe mejor cuando se comparte! Pídelo ya y comiencen el día con todo! 🔥 🚨 Aplican TyC. LP: 3918440796",
+    "sub_text": "",
+    "timestamp": "2026-10-17T09:13:28",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:83323428|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi：Última oportunidad⚡",
+    "text": "🎁 Aprovecha hasta 10% OFF* y muevete por la ciudad sin vueltas antes del primer café 🚕☀️ Aplican TyC* https://d.didiglobal.com/y0c55Pq",
+    "sub_text": "",
+    "timestamp": "2026-10-17T09:08:06",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:83277011|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "TikTok",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:47:36",
+    "key": "0|com.zhiliaoapp.musically|19768|app_summary_tag|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "compartió un video",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:47:36",
+    "key": "0|com.zhiliaoapp.musically|977013113|app_notify_ame|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "compartió un video",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:23:34",
+    "key": "0|com.zhiliaoapp.musically|2133489972|app_notify_ame|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "alexa_valdes_",
+    "text": "Nueva historia",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:29:59",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_story_suite_organic_campaign&65e2075670504H1101c8da3dH65e20befd07d6H22d|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.forest",
+    "title": "Consulte su informe semanal",
+    "text": "Usó su teléfono 1 h 27 min más que la semana pasada.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T09:18:29",
+    "key": "0|com.samsung.android.forest|104|null|1000",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "UAM Xochimilco y 7 más",
+    "text": "8 fotos",
+    "sub_text": "",
+    "timestamp": "2026-10-18T08:55:05",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_follower_activity&65e1de972956bH1101c8da3dH65e1e3308983dH31|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.lool",
+    "title": "Cuidado del dispositivo",
+    "text": "Algunas aplicaciones se pusieron en modo de suspensión profunda porque enviaban alertas de anuncios con frecuencia y ralentizaban su teléfono.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T02:25:43",
+    "key": "0|com.samsung.android.lool|1002|null|1000",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.pinterest",
+    "title": "Guía de Peinados para la universidad",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-17T23:37:00",
+    "key": "0|com.pinterest|-204622728|null|10361",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "pumpk1n_w1tch",
+    "text": "Indicó que le gusta el reel de victoriacuadros.ec que reposteaste",
+    "sub_text": "",
+    "timestamp": "2026-10-17T21:20:15",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_mutual_liked_media_with_my_media_note&65e14962ede1cH1101c8da3dH65e14dfc4e0eeH5f7|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "Ferna SP y otras personas",
+    "text": "Instantáneas nuevas",
+    "sub_text": "",
+    "timestamp": "2026-10-17T19:59:12",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_ig_peek_sent&65e136d03b900H1101c8da3dH65e13b699bbd2H66c|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "_ferxxo_sp",
+    "text": "La nota caduca pronto: zzz",
+    "sub_text": "",
+    "timestamp": "2026-10-17T12:21:53",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_ig_expiring_notes_notif&65e0cfa5e77fdH1101c8da3dH65e0d43f47acfH72d|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "_ferxxo_sp",
+    "text": "String (Nueva nota: \"eres un cabrón",
+    "sub_text": "",
+    "timestamp": "2026-10-16T13:04:14",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_top_connected_content_notes&65df982825850H1101c8da3dH65df9cc185b22H731|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "WhatsApp",
+    "text": "‎‎20 mensajes de 4 chats",
+    "sub_text": "",
+    "timestamp": "2026-10-17T20:03:49",
+    "key": "0|com.whatsapp|1|null|10357",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "‎Pdp (6 mensajes): Cuñada",
+    "text": "Sii we",
+    "sub_text": "",
+    "timestamp": "2026-10-17T20:03:49",
+    "key": "0|com.whatsapp|1|68vZmJGeXTuh6ixkuNj+/PLu5H6uPleLWWGEakazhS8=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "‎Grupo de taller 4tri (3 mensajes): ~ Uziel",
+    "text": "📄 no se si este bien",
+    "sub_text": "",
+    "timestamp": "2026-10-17T07:30:43",
+    "key": "0|com.whatsapp|1|QsNSO3VodKGn+uKfnGKY8yhIYeSqxhXK+TFxQlBA70o=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "‎SD01G Política (10 mensajes): majo 💥",
+    "text": "si viene spooky",
+    "sub_text": "",
+    "timestamp": "2026-10-16T11:55:06",
+    "key": "0|com.whatsapp|1|JcIgGOPRV28aA7EfG8Mpwi2HTsSwqe6KG+cLkwKxPRU=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "Cid Encarnación",
+    "text": "🔗 UAM en Instagram: \"¡Atención, comunidad UAM! 👀 Su … (www.instagram.com)",
+    "sub_text": "",
+    "timestamp": "2026-10-15T20:01:10",
+    "key": "0|com.whatsapp|1|YhvYuBwLnUg46cuCz8t1DyqIWXdiijd5tf/sz39xI2Q=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.app.smartcapture",
+    "title": "Captura de pantalla guardada",
+    "text": "Pulse aquí para ver su captura de pantalla.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T20:02:22",
+    "key": "0|com.samsung.android.app.smartcapture|5755|null|10227",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Fotos",
+    "text": "3 notificaciones nuevas",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-17T23:34:11",
+    "key": "0|com.google.android.apps.photos|0|-985675285::SUMMARY::3f81dbf39d9b62b2593cf1db0f0846be|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Creamos una animación de fotos para ti",
+    "text": "Se creó a partir de una ráfaga de fotos reciente",
+    "sub_text": "",
+    "timestamp": "2026-10-17T19:17:41",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:FEATURED_CREATION_MEMORY_AVAILABLE:249284e411326c5f|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Mimosos ronroneos",
+    "text": "Un nuevo recuerdo para ti",
+    "sub_text": "",
+    "timestamp": "2026-10-17T12:12:26",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:GUMBALL_MINER_MEMORY_AVAILABLE:ce55a1f0d38c10f4|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Mimosos ronroneos",
+    "text": "Un nuevo recuerdo para ti",
+    "sub_text": "",
+    "timestamp": "2026-10-16T13:17:28",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:GUMBALL_MINER_MEMORY_AVAILABLE:fa3dd23a4c3cc857|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.ubercab",
+    "title": "Ahorra hasta 45% en tu lista de compras",
+    "text": "Compra ahora: explora las secciones y ahorra hasta 45% en pedidos de $300 o más que cumplan con los requisitos. Se aplican Términos y condiciones.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T15:29:16",
+    "key": "0|com.ubercab|5|f19749ebf9bbefe7526266bf37831d12|10366",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "Regalo de un 20% de descuento en tu primer mes",
+    "text": "¿Todo listo para dar lo mejor de ti? Usa tu descuento en apps de productividad seleccionadas. Hay términos.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T13:27:42",
+    "key": "0|com.android.vending|-2051190648|null|10262",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "¿Quieres probar un juego nuevo?",
+    "text": "BALL x PIT es popular en Play y tiene una oferta especial que finaliza el 20 oct.",
+    "sub_text": "",
+    "timestamp": "2026-10-16T13:11:39",
+    "key": "0|com.android.vending|-1244577614|null|10262",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "8 mensajes nuevos",
+    "text": "",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-17T11:28:36",
+    "key": "0|com.google.android.gm|0|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Google Play",
+    "text": "SpannableString (El recibo de tu pedido de Google Play del 17 oct 2026",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-17T11:28:36",
+    "key": "0|com.google.android.gm|1581863243|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "DiDi para Mexico",
+    "text": "SpannableString (✈️ Tu viaje comienza antes de despegar",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-16T05:23:52",
+    "key": "0|com.google.android.gm|8626973|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Banco Azteca",
+    "text": "SpannableString (Notificación Banco Azteca",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-15T11:44:50",
+    "key": "0|com.google.android.gm|626429215|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "Drama | La Venganza de la Renacida 🔥",
+    "text": "Tras un final miserable por una ladrona de identidad, renace para reclamarlo todo.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T10:46:32",
+    "key": "0|com.zhiliaoapp.musically|23593002|app_notify_ame|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "26 mensajes nuevos",
+    "text": "",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-17T10:06:34",
+    "key": "0|com.google.android.gm|0|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Canva",
+    "text": "SpannableString (Te recomendamos plantillas de Documento",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-17T10:06:34",
+    "key": "0|com.google.android.gm|-2089201373|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Jornada de Salud : Vacunas, PAP´S, Métodos Anticonceptivos y mesas informativas",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T17:00:08",
+    "key": "0|com.google.android.gm|122924174|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Resultados de las Elecciones Extraordinarias del Consejo Divisional 2026-2027",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T12:30:01",
+    "key": "0|com.google.android.gm|-18893321|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Sesión 11.26 del Consejo Académico",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T12:15:06",
+    "key": "0|com.google.android.gm|-614188803|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (BECAS Y CONVOCATORIAS DE OTRAS INSTITUCIONES",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T08:05:14",
+    "key": "0|com.google.android.gm|-444851405|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Resultados de las Elecciones Extraordinarias del Consejo Académico 2025-2027.",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T19:42:57",
+    "key": "0|com.google.android.gm|-1825755839|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Lentes gratuitos. Hoy 15 de octubre",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T13:46:21",
+    "key": "0|com.google.android.gm|-840445529|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Comunicado  del Dr. Luis Amado Ayala Pérez",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T09:59:58",
+    "key": "0|com.google.android.gm|1247724817|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (BECAS Y CONVOCATORIAS DE LA UAM-X",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T07:59:52",
+    "key": "0|com.google.android.gm|-349634332|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Thais Indira Vega Chapar.",
+    "text": "SpannableString (Anuncio nuevo: \"Hola, buenas noches. Estuve revisando…\"",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T19:52:22",
+    "key": "0|com.google.android.gm|-1640714703|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Modalidades de auscultación para el proceso de designación de la persona titular de la Jefatura del Departamento de Relaciones Sociales, periodo 2026-2030",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T14:59:43",
+    "key": "0|com.google.android.gm|-2083991218|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Licenc.",
+    "text": "SpannableString (¿Quieres hacer tu servicio social? Consulta estas oportunidades",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T14:44:40",
+    "key": "0|com.google.android.gm|489511784|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Gemini Academy en la UAM Xochimilco  Mentes Digitales: IA, creatividad y vida universitaria",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T12:35:41",
+    "key": "0|com.google.android.gm|568129331|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (EVENTOS DEL 14 AL 18 DE OCTUBRE",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T08:05:17",
+    "key": "0|com.google.android.gm|-100364306|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "𝑻𝒂𝒎🍒",
+    "text": "String (Nueva historia: \"Es que yo amo mucho",
+    "sub_text": "",
+    "timestamp": "2026-10-17T07:49:02",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_story_suite_organic_campaign&65e07f319609cH1101c8da3dH65e083caf636eH22d|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.bashsoftware.boycott",
+    "title": "📢 Join NoThanks Live on Instagram",
+    "text": "We're sharing more about the fun day for orphaned children in Gaza today at 3 PM Gaza time. Come watch! 💚",
+    "sub_text": "",
+    "timestamp": "2026-10-16T02:15:34",
+    "key": "0|com.bashsoftware.boycott|0|campaign_collapse_key_256099296317183356|10385",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "Telcel: Paquetes - Recargas",
+    "text": "Imagen",
+    "sub_text": "",
+    "timestamp": "2026-10-13T14:22:30",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:18|10261",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "Telcel",
+    "text": "REMEDIOS ⚽ ¡Que se escuche el \"Goya\" y el \"Cómo no te voy a querer\" de la afición auriazul! Gana pases dobles en Experiencias Telcel para apoyar a los Pumas... Participa 👉 https://bit.ly/4gsE62B",
+    "sub_text": "",
+    "timestamp": "2026-10-13T14:21:54",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:6|10261",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "Trucos y consejos para Angry Birds 2",
+    "text": "Todo lo que necesitas saber",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:23:33",
+    "key": "0|com.android.vending|87363148|null|10262",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.googlequicksearchbox",
+    "title": "20° en Ciudad Nezahualcóyotl",
+    "text": "Sensación térmica de 24° · Nublado · Consultar el pronóstico por hora",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:21:53",
+    "key": "0|com.google.android.googlequicksearchbox|0|-985675285::a:snotification:[0x394,wx.f,NOTIFICATION]|10265",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Fotos",
+    "text": "4 notificaciones nuevas",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-18T13:23:50",
+    "key": "0|com.google.android.apps.photos|0|-985675285::SUMMARY::3f81dbf39d9b62b2593cf1db0f0846be|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "El Recap de septiembre",
+    "text": "Adivina quién pasó la prueba",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:23:29",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:BEST_OF_MONTH_MEMORY_AVAILABLE:dc627cdbdda2057a|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "Trucos y consejos para Angry Birds 2",
+    "text": "Todo lo que necesitas saber",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:23:33",
+    "key": "0|com.android.vending|87363148|null|10262",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "Regalo de un 20% de descuento en tu primer mes",
+    "text": "¿Todo listo para dar lo mejor de ti? Usa tu descuento en apps de productividad seleccionadas. Hay términos.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T13:27:42",
+    "key": "0|com.android.vending|-2051190648|null|10262",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "¿Quieres probar un juego nuevo?",
+    "text": "BALL x PIT es popular en Play y tiene una oferta especial que finaliza el 20 oct.",
+    "sub_text": "",
+    "timestamp": "2026-10-16T13:11:39",
+    "key": "0|com.android.vending|-1244577614|null|10262",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Fotos",
+    "text": "4 notificaciones nuevas",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-18T13:23:50",
+    "key": "0|com.google.android.apps.photos|0|-985675285::SUMMARY::3f81dbf39d9b62b2593cf1db0f0846be|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "El Recap de septiembre",
+    "text": "Adivina quién pasó la prueba",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:23:29",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:BEST_OF_MONTH_MEMORY_AVAILABLE:dc627cdbdda2057a|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Creamos una animación de fotos para ti",
+    "text": "Se creó a partir de una ráfaga de fotos reciente",
+    "sub_text": "",
+    "timestamp": "2026-10-17T19:17:41",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:FEATURED_CREATION_MEMORY_AVAILABLE:249284e411326c5f|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Mimosos ronroneos",
+    "text": "Un nuevo recuerdo para ti",
+    "sub_text": "",
+    "timestamp": "2026-10-17T12:12:26",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:GUMBALL_MINER_MEMORY_AVAILABLE:ce55a1f0d38c10f4|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Mimosos ronroneos",
+    "text": "Un nuevo recuerdo para ti",
+    "sub_text": "",
+    "timestamp": "2026-10-16T13:17:28",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:GUMBALL_MINER_MEMORY_AVAILABLE:fa3dd23a4c3cc857|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.googlequicksearchbox",
+    "title": "Google",
+    "text": "Tienes una notificación",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-18T13:23:33",
+    "key": "0|com.google.android.googlequicksearchbox|0|-985675285::SUMMARY::wx|10265",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.googlequicksearchbox",
+    "title": "20° en Ciudad Nezahualcóyotl",
+    "text": "Sensación térmica de 24° · Nublado · Consultar el pronóstico por hora",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:21:53",
+    "key": "0|com.google.android.googlequicksearchbox|0|-985675285::a:snotification:[0x394,wx.f,NOTIFICATION]|10265",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.sec.android.daemonapp",
+    "title": "Nezahualcóyotl | Lluvia",
+    "text": "Posible lluvia esta tarde",
+    "sub_text": "",
+    "timestamp": "2026-10-18T12:13:28",
+    "key": "0|com.sec.android.daemonapp|5|null|10221",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🍗 40% OFF en tus favs",
+    "text": "🔥 Elige strippers clásicos o boneless personales de Las Alitas y aprovecha el descuento. Ordena ahora. Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T12:11:54",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:118198910|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Shop：Botiquín al día",
+    "text": "Resurte tu botiquín con 30% OFF* en tus tiendas favoritas y ten lo esencial a la mano. ¡Pídelo ya! 💊 Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:29:43",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:117821616|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：☀️ El brunch del finde está aquí",
+    "text": "Despierta sin prisas. Pide tu platillo favorito desde $59 y empieza el fin de semana como se debe. ¡Pídelo ya! ☕",
+    "sub_text": "",
+    "timestamp": "2026-10-18T10:12:40",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:114552982|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi：¡Tienes un 10% en tu proximo viaje!🎉",
+    "text": "Tienes 10% de descuento en tu siguiente trayecto!💰",
+    "sub_text": "",
+    "timestamp": "2026-10-18T09:08:08",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:113402023|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🍕 Pizza de pepperoni $129",
+    "text": "🤤 Hazle caso al antojo con una pizza de pepperoni Deprizza por solo $129 m.n. Ordena ahora. Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T18:06:19",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:95190603|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi sigue funcionando aunque no estés en la app.",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-17T18:05:26",
+    "key": "0|com.didiglobal.passenger|0|null|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "Llegando pronto",
+    "text": "Te recomendamos revisar que no haya vehículos cercanos antes de bajar y que no olvides tus pertenencias. La grabación ha finalizado. ¡Esperamos verte pronto de nuevo!",
+    "sub_text": "",
+    "timestamp": "2026-10-17T18:03:44",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:95113509|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "",
+    "text": "Aviso：El conductor ha estado esperando un ...",
+    "sub_text": "",
+    "timestamp": "2026-10-17T17:45:25",
+    "key": "0|com.didiglobal.passenger|962934813|null|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🎬 ¿Ya tienes la peli? Falta el snack",
+    "text": "Que no se te olvide lo más importante. Elige tu platillo favorito desde $79. ¡Pídelo ya!",
+    "sub_text": "",
+    "timestamp": "2026-10-17T17:13:43",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:92758349|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Shop： 🎉 Día del Mezcal",
+    "text": "Celebra el día del mezcal con los mejores descuentos en Bodegas Alianza. ¡Pide Ya! Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T15:17:45",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:90273904|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Card：¡20% de CASHBACK* + 3 MSI solo este fin!",
+    "text": "Pide tu tarjeta sin anualidad hoy antes de las 9 p.m. y te regresamos el 20% de CASHBACK* en cualquier compra. Además disfruta de 3 MSI en la compra que elijas sin importar comercio ni monto.  *Sujeto a analisis crediticio. Consulta Términos y Condiciones  CAT promedio de 130.4% sin IVA",
+    "sub_text": "",
+    "timestamp": "2026-10-17T15:00:46",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:89795214|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：❤️🍲Hoy toca caldo tlalpeño",
+    "text": "Si se te antoja algo calientito, aquí está tu señal 🍲✨ Caldo Tlalpeño por solo $89 en Vips. Aplican TyC",
+    "sub_text": "",
+    "timestamp": "2026-10-17T12:06:50",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:85607060|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Shop：Botanea con Barcel 😋",
+    "text": "Dale gusto al antojo: encuentra productos Barcel con hasta 30% OFF* y disfruta tu botana favorita. Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T11:20:34",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:85297975|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🥞 Un buen día se comparte",
+    "text": "☀️ ¡El desayuno sabe mejor cuando se comparte! Pídelo ya y comiencen el día con todo! 🔥 🚨 Aplican TyC. LP: 3918440796",
+    "sub_text": "",
+    "timestamp": "2026-10-17T09:13:28",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:83323428|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi：Última oportunidad⚡",
+    "text": "🎁 Aprovecha hasta 10% OFF* y muevete por la ciudad sin vueltas antes del primer café 🚕☀️ Aplican TyC* https://d.didiglobal.com/y0c55Pq",
+    "sub_text": "",
+    "timestamp": "2026-10-17T09:08:06",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:83277011|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "TikTok",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:47:36",
+    "key": "0|com.zhiliaoapp.musically|19768|app_summary_tag|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "compartió un video",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:47:36",
+    "key": "0|com.zhiliaoapp.musically|977013113|app_notify_ame|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "compartió un video",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:23:34",
+    "key": "0|com.zhiliaoapp.musically|2133489972|app_notify_ame|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "alexa_valdes_",
+    "text": "Nueva historia",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:29:59",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_story_suite_organic_campaign&65e2075670504H1101c8da3dH65e20befd07d6H22d|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.forest",
+    "title": "Consulte su informe semanal",
+    "text": "Usó su teléfono 1 h 27 min más que la semana pasada.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T09:18:29",
+    "key": "0|com.samsung.android.forest|104|null|1000",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "UAM Xochimilco y 7 más",
+    "text": "8 fotos",
+    "sub_text": "",
+    "timestamp": "2026-10-18T08:55:05",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_follower_activity&65e1de972956bH1101c8da3dH65e1e3308983dH31|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.lool",
+    "title": "Cuidado del dispositivo",
+    "text": "Algunas aplicaciones se pusieron en modo de suspensión profunda porque enviaban alertas de anuncios con frecuencia y ralentizaban su teléfono.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T02:25:43",
+    "key": "0|com.samsung.android.lool|1002|null|1000",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.pinterest",
+    "title": "Guía de Peinados para la universidad",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-17T23:37:00",
+    "key": "0|com.pinterest|-204622728|null|10361",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "pumpk1n_w1tch",
+    "text": "Indicó que le gusta el reel de victoriacuadros.ec que reposteaste",
+    "sub_text": "",
+    "timestamp": "2026-10-17T21:20:15",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_mutual_liked_media_with_my_media_note&65e14962ede1cH1101c8da3dH65e14dfc4e0eeH5f7|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "Ferna SP y otras personas",
+    "text": "Instantáneas nuevas",
+    "sub_text": "",
+    "timestamp": "2026-10-17T19:59:12",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_ig_peek_sent&65e136d03b900H1101c8da3dH65e13b699bbd2H66c|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "_ferxxo_sp",
+    "text": "La nota caduca pronto: zzz",
+    "sub_text": "",
+    "timestamp": "2026-10-17T12:21:53",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_ig_expiring_notes_notif&65e0cfa5e77fdH1101c8da3dH65e0d43f47acfH72d|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "_ferxxo_sp",
+    "text": "String (Nueva nota: \"eres un cabrón",
+    "sub_text": "",
+    "timestamp": "2026-10-16T13:04:14",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_top_connected_content_notes&65df982825850H1101c8da3dH65df9cc185b22H731|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "WhatsApp",
+    "text": "‎‎20 mensajes de 4 chats",
+    "sub_text": "",
+    "timestamp": "2026-10-17T20:03:49",
+    "key": "0|com.whatsapp|1|null|10357",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "‎Pdp (6 mensajes): Cuñada",
+    "text": "Sii we",
+    "sub_text": "",
+    "timestamp": "2026-10-17T20:03:49",
+    "key": "0|com.whatsapp|1|68vZmJGeXTuh6ixkuNj+/PLu5H6uPleLWWGEakazhS8=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "‎Grupo de taller 4tri (3 mensajes): ~ Uziel",
+    "text": "📄 no se si este bien",
+    "sub_text": "",
+    "timestamp": "2026-10-17T07:30:43",
+    "key": "0|com.whatsapp|1|QsNSO3VodKGn+uKfnGKY8yhIYeSqxhXK+TFxQlBA70o=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "‎SD01G Política (10 mensajes): majo 💥",
+    "text": "si viene spooky",
+    "sub_text": "",
+    "timestamp": "2026-10-16T11:55:06",
+    "key": "0|com.whatsapp|1|JcIgGOPRV28aA7EfG8Mpwi2HTsSwqe6KG+cLkwKxPRU=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "Cid Encarnación",
+    "text": "🔗 UAM en Instagram: \"¡Atención, comunidad UAM! 👀 Su … (www.instagram.com)",
+    "sub_text": "",
+    "timestamp": "2026-10-15T20:01:10",
+    "key": "0|com.whatsapp|1|YhvYuBwLnUg46cuCz8t1DyqIWXdiijd5tf/sz39xI2Q=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.app.smartcapture",
+    "title": "Captura de pantalla guardada",
+    "text": "Pulse aquí para ver su captura de pantalla.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T20:02:22",
+    "key": "0|com.samsung.android.app.smartcapture|5755|null|10227",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.ubercab",
+    "title": "Ahorra hasta 45% en tu lista de compras",
+    "text": "Compra ahora: explora las secciones y ahorra hasta 45% en pedidos de $300 o más que cumplan con los requisitos. Se aplican Términos y condiciones.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T15:29:16",
+    "key": "0|com.ubercab|5|f19749ebf9bbefe7526266bf37831d12|10366",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "8 mensajes nuevos",
+    "text": "",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-17T11:28:36",
+    "key": "0|com.google.android.gm|0|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Google Play",
+    "text": "SpannableString (El recibo de tu pedido de Google Play del 17 oct 2026",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-17T11:28:36",
+    "key": "0|com.google.android.gm|1581863243|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "DiDi para Mexico",
+    "text": "SpannableString (✈️ Tu viaje comienza antes de despegar",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-16T05:23:52",
+    "key": "0|com.google.android.gm|8626973|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Banco Azteca",
+    "text": "SpannableString (Notificación Banco Azteca",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-15T11:44:50",
+    "key": "0|com.google.android.gm|626429215|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "Drama | La Venganza de la Renacida 🔥",
+    "text": "Tras un final miserable por una ladrona de identidad, renace para reclamarlo todo.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T10:46:32",
+    "key": "0|com.zhiliaoapp.musically|23593002|app_notify_ame|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "26 mensajes nuevos",
+    "text": "",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-17T10:06:34",
+    "key": "0|com.google.android.gm|0|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Canva",
+    "text": "SpannableString (Te recomendamos plantillas de Documento",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-17T10:06:34",
+    "key": "0|com.google.android.gm|-2089201373|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Jornada de Salud : Vacunas, PAP´S, Métodos Anticonceptivos y mesas informativas",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T17:00:08",
+    "key": "0|com.google.android.gm|122924174|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Resultados de las Elecciones Extraordinarias del Consejo Divisional 2026-2027",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T12:30:01",
+    "key": "0|com.google.android.gm|-18893321|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Sesión 11.26 del Consejo Académico",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T12:15:06",
+    "key": "0|com.google.android.gm|-614188803|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (BECAS Y CONVOCATORIAS DE OTRAS INSTITUCIONES",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T08:05:14",
+    "key": "0|com.google.android.gm|-444851405|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Resultados de las Elecciones Extraordinarias del Consejo Académico 2025-2027.",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T19:42:57",
+    "key": "0|com.google.android.gm|-1825755839|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Lentes gratuitos. Hoy 15 de octubre",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T13:46:21",
+    "key": "0|com.google.android.gm|-840445529|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Comunicado  del Dr. Luis Amado Ayala Pérez",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T09:59:58",
+    "key": "0|com.google.android.gm|1247724817|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (BECAS Y CONVOCATORIAS DE LA UAM-X",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T07:59:52",
+    "key": "0|com.google.android.gm|-349634332|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Thais Indira Vega Chapar.",
+    "text": "SpannableString (Anuncio nuevo: \"Hola, buenas noches. Estuve revisando…\"",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T19:52:22",
+    "key": "0|com.google.android.gm|-1640714703|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Modalidades de auscultación para el proceso de designación de la persona titular de la Jefatura del Departamento de Relaciones Sociales, periodo 2026-2030",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T14:59:43",
+    "key": "0|com.google.android.gm|-2083991218|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Licenc.",
+    "text": "SpannableString (¿Quieres hacer tu servicio social? Consulta estas oportunidades",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T14:44:40",
+    "key": "0|com.google.android.gm|489511784|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Gemini Academy en la UAM Xochimilco  Mentes Digitales: IA, creatividad y vida universitaria",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T12:35:41",
+    "key": "0|com.google.android.gm|568129331|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (EVENTOS DEL 14 AL 18 DE OCTUBRE",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T08:05:17",
+    "key": "0|com.google.android.gm|-100364306|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "𝑻𝒂𝒎🍒",
+    "text": "String (Nueva historia: \"Es que yo amo mucho",
+    "sub_text": "",
+    "timestamp": "2026-10-17T07:49:02",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_story_suite_organic_campaign&65e07f319609cH1101c8da3dH65e083caf636eH22d|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.bashsoftware.boycott",
+    "title": "📢 Join NoThanks Live on Instagram",
+    "text": "We're sharing more about the fun day for orphaned children in Gaza today at 3 PM Gaza time. Come watch! 💚",
+    "sub_text": "",
+    "timestamp": "2026-10-16T02:15:34",
+    "key": "0|com.bashsoftware.boycott|0|campaign_collapse_key_256099296317183356|10385",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "Telcel: Paquetes - Recargas",
+    "text": "Imagen",
+    "sub_text": "",
+    "timestamp": "2026-10-13T14:22:30",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:18|10261",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "Telcel",
+    "text": "REMEDIOS ⚽ ¡Que se escuche el \"Goya\" y el \"Cómo no te voy a querer\" de la afición auriazul! Gana pases dobles en Experiencias Telcel para apoyar a los Pumas... Participa 👉 https://bit.ly/4gsE62B",
+    "sub_text": "",
+    "timestamp": "2026-10-13T14:21:54",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:6|10261",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Thais Indira Vega Chapar.",
+    "text": "Anuncio nuevo: \"Hola, buenas noches. Estuve revisando…\"",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T19:52:22",
+    "key": "0|com.google.android.gm|-1640714703|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.systemui",
+    "title": "Edge lighting",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:32:01",
+    "key": "0|com.android.systemui|4096|null|10049",
+    "source": "dumpsys"
+  },
+  {
+    "package": "android",
+    "title": "Se conectó la depuración inalámbrica",
+    "text": "Presiona para desactivar la depuración inalámbrica",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:32:06",
+    "key": "-1|android|62|null|1000",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "Trucos y consejos para Angry Birds 2",
+    "text": "Todo lo que necesitas saber",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:23:33",
+    "key": "0|com.android.vending|87363148|null|10262",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "Regalo de un 20% de descuento en tu primer mes",
+    "text": "¿Todo listo para dar lo mejor de ti? Usa tu descuento en apps de productividad seleccionadas. Hay términos.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T13:27:42",
+    "key": "0|com.android.vending|-2051190648|null|10262",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "¿Quieres probar un juego nuevo?",
+    "text": "BALL x PIT es popular en Play y tiene una oferta especial que finaliza el 20 oct.",
+    "sub_text": "",
+    "timestamp": "2026-10-16T13:11:39",
+    "key": "0|com.android.vending|-1244577614|null|10262",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Fotos",
+    "text": "4 notificaciones nuevas",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-18T13:23:50",
+    "key": "0|com.google.android.apps.photos|0|-985675285::SUMMARY::3f81dbf39d9b62b2593cf1db0f0846be|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "El Recap de septiembre",
+    "text": "Adivina quién pasó la prueba",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:23:29",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:BEST_OF_MONTH_MEMORY_AVAILABLE:dc627cdbdda2057a|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Creamos una animación de fotos para ti",
+    "text": "Se creó a partir de una ráfaga de fotos reciente",
+    "sub_text": "",
+    "timestamp": "2026-10-17T19:17:41",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:FEATURED_CREATION_MEMORY_AVAILABLE:249284e411326c5f|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Mimosos ronroneos",
+    "text": "Un nuevo recuerdo para ti",
+    "sub_text": "",
+    "timestamp": "2026-10-17T12:12:26",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:GUMBALL_MINER_MEMORY_AVAILABLE:ce55a1f0d38c10f4|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.photos",
+    "title": "Mimosos ronroneos",
+    "text": "Un nuevo recuerdo para ti",
+    "sub_text": "",
+    "timestamp": "2026-10-16T13:17:28",
+    "key": "0|com.google.android.apps.photos|0|-985675285::a:GUMBALL_MINER_MEMORY_AVAILABLE:fa3dd23a4c3cc857|10276",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.googlequicksearchbox",
+    "title": "Google",
+    "text": "Tienes una notificación",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-18T13:23:33",
+    "key": "0|com.google.android.googlequicksearchbox|0|-985675285::SUMMARY::wx|10265",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.googlequicksearchbox",
+    "title": "20° en Ciudad Nezahualcóyotl",
+    "text": "Sensación térmica de 24° · Nublado · Consultar el pronóstico por hora",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:21:53",
+    "key": "0|com.google.android.googlequicksearchbox|0|-985675285::a:snotification:[0x394,wx.f,NOTIFICATION]|10265",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.sec.android.daemonapp",
+    "title": "Nezahualcóyotl | Lluvia",
+    "text": "Posible lluvia esta tarde",
+    "sub_text": "",
+    "timestamp": "2026-10-18T12:13:28",
+    "key": "0|com.sec.android.daemonapp|5|null|10221",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🍗 40% OFF en tus favs",
+    "text": "🔥 Elige strippers clásicos o boneless personales de Las Alitas y aprovecha el descuento. Ordena ahora. Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T12:11:54",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:118198910|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Shop：Botiquín al día",
+    "text": "Resurte tu botiquín con 30% OFF* en tus tiendas favoritas y ten lo esencial a la mano. ¡Pídelo ya! 💊 Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:29:43",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:117821616|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：☀️ El brunch del finde está aquí",
+    "text": "Despierta sin prisas. Pide tu platillo favorito desde $59 y empieza el fin de semana como se debe. ¡Pídelo ya! ☕",
+    "sub_text": "",
+    "timestamp": "2026-10-18T10:12:40",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:114552982|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi：¡Tienes un 10% en tu proximo viaje!🎉",
+    "text": "Tienes 10% de descuento en tu siguiente trayecto!💰",
+    "sub_text": "",
+    "timestamp": "2026-10-18T09:08:08",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:113402023|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🍕 Pizza de pepperoni $129",
+    "text": "🤤 Hazle caso al antojo con una pizza de pepperoni Deprizza por solo $129 m.n. Ordena ahora. Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T18:06:19",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:95190603|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi sigue funcionando aunque no estés en la app.",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-17T18:05:26",
+    "key": "0|com.didiglobal.passenger|0|null|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "Llegando pronto",
+    "text": "Te recomendamos revisar que no haya vehículos cercanos antes de bajar y que no olvides tus pertenencias. La grabación ha finalizado. ¡Esperamos verte pronto de nuevo!",
+    "sub_text": "",
+    "timestamp": "2026-10-17T18:03:44",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:95113509|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "",
+    "text": "Aviso：El conductor ha estado esperando un ...",
+    "sub_text": "",
+    "timestamp": "2026-10-17T17:45:25",
+    "key": "0|com.didiglobal.passenger|962934813|null|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🎬 ¿Ya tienes la peli? Falta el snack",
+    "text": "Que no se te olvide lo más importante. Elige tu platillo favorito desde $79. ¡Pídelo ya!",
+    "sub_text": "",
+    "timestamp": "2026-10-17T17:13:43",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:92758349|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Shop： 🎉 Día del Mezcal",
+    "text": "Celebra el día del mezcal con los mejores descuentos en Bodegas Alianza. ¡Pide Ya! Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T15:17:45",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:90273904|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Card：¡20% de CASHBACK* + 3 MSI solo este fin!",
+    "text": "Pide tu tarjeta sin anualidad hoy antes de las 9 p.m. y te regresamos el 20% de CASHBACK* en cualquier compra. Además disfruta de 3 MSI en la compra que elijas sin importar comercio ni monto.  *Sujeto a analisis crediticio. Consulta Términos y Condiciones  CAT promedio de 130.4% sin IVA",
+    "sub_text": "",
+    "timestamp": "2026-10-17T15:00:46",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:89795214|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：❤️🍲Hoy toca caldo tlalpeño",
+    "text": "Si se te antoja algo calientito, aquí está tu señal 🍲✨ Caldo Tlalpeño por solo $89 en Vips. Aplican TyC",
+    "sub_text": "",
+    "timestamp": "2026-10-17T12:06:50",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:85607060|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi Shop：Botanea con Barcel 😋",
+    "text": "Dale gusto al antojo: encuentra productos Barcel con hasta 30% OFF* y disfruta tu botana favorita. Aplican TyC.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T11:20:34",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:85297975|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDiFood：🥞 Un buen día se comparte",
+    "text": "☀️ ¡El desayuno sabe mejor cuando se comparte! Pídelo ya y comiencen el día con todo! 🔥 🚨 Aplican TyC. LP: 3918440796",
+    "sub_text": "",
+    "timestamp": "2026-10-17T09:13:28",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:83323428|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi：Última oportunidad⚡",
+    "text": "🎁 Aprovecha hasta 10% OFF* y muevete por la ciudad sin vueltas antes del primer café 🚕☀️ Aplican TyC* https://d.didiglobal.com/y0c55Pq",
+    "sub_text": "",
+    "timestamp": "2026-10-17T09:08:06",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:83277011|10362",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "TikTok",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:47:36",
+    "key": "0|com.zhiliaoapp.musically|19768|app_summary_tag|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "compartió un video",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:47:36",
+    "key": "0|com.zhiliaoapp.musically|977013113|app_notify_ame|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "compartió un video",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:23:34",
+    "key": "0|com.zhiliaoapp.musically|2133489972|app_notify_ame|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "alexa_valdes_",
+    "text": "Nueva historia",
+    "sub_text": "",
+    "timestamp": "2026-10-18T11:29:59",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_story_suite_organic_campaign&65e2075670504H1101c8da3dH65e20befd07d6H22d|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.forest",
+    "title": "Consulte su informe semanal",
+    "text": "Usó su teléfono 1 h 27 min más que la semana pasada.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T09:18:29",
+    "key": "0|com.samsung.android.forest|104|null|1000",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "UAM Xochimilco y 7 más",
+    "text": "8 fotos",
+    "sub_text": "",
+    "timestamp": "2026-10-18T08:55:05",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_follower_activity&65e1de972956bH1101c8da3dH65e1e3308983dH31|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.lool",
+    "title": "Cuidado del dispositivo",
+    "text": "Algunas aplicaciones se pusieron en modo de suspensión profunda porque enviaban alertas de anuncios con frecuencia y ralentizaban su teléfono.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T02:25:43",
+    "key": "0|com.samsung.android.lool|1002|null|1000",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.pinterest",
+    "title": "Guía de Peinados para la universidad",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-17T23:37:00",
+    "key": "0|com.pinterest|-204622728|null|10361",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "pumpk1n_w1tch",
+    "text": "Indicó que le gusta el reel de victoriacuadros.ec que reposteaste",
+    "sub_text": "",
+    "timestamp": "2026-10-17T21:20:15",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_mutual_liked_media_with_my_media_note&65e14962ede1cH1101c8da3dH65e14dfc4e0eeH5f7|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "Ferna SP y otras personas",
+    "text": "Instantáneas nuevas",
+    "sub_text": "",
+    "timestamp": "2026-10-17T19:59:12",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_ig_peek_sent&65e136d03b900H1101c8da3dH65e13b699bbd2H66c|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "_ferxxo_sp",
+    "text": "La nota caduca pronto: zzz",
+    "sub_text": "",
+    "timestamp": "2026-10-17T12:21:53",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_ig_expiring_notes_notif&65e0cfa5e77fdH1101c8da3dH65e0d43f47acfH72d|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "_ferxxo_sp",
+    "text": "String (Nueva nota: \"eres un cabrón",
+    "sub_text": "",
+    "timestamp": "2026-10-16T13:04:14",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_top_connected_content_notes&65df982825850H1101c8da3dH65df9cc185b22H731|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "WhatsApp",
+    "text": "‎‎20 mensajes de 4 chats",
+    "sub_text": "",
+    "timestamp": "2026-10-17T20:03:49",
+    "key": "0|com.whatsapp|1|null|10357",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "‎Pdp (6 mensajes): Cuñada",
+    "text": "Sii we",
+    "sub_text": "",
+    "timestamp": "2026-10-17T20:03:49",
+    "key": "0|com.whatsapp|1|68vZmJGeXTuh6ixkuNj+/PLu5H6uPleLWWGEakazhS8=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "‎Grupo de taller 4tri (3 mensajes): ~ Uziel",
+    "text": "📄 no se si este bien",
+    "sub_text": "",
+    "timestamp": "2026-10-17T07:30:43",
+    "key": "0|com.whatsapp|1|QsNSO3VodKGn+uKfnGKY8yhIYeSqxhXK+TFxQlBA70o=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "‎SD01G Política (10 mensajes): majo 💥",
+    "text": "si viene spooky",
+    "sub_text": "",
+    "timestamp": "2026-10-16T11:55:06",
+    "key": "0|com.whatsapp|1|JcIgGOPRV28aA7EfG8Mpwi2HTsSwqe6KG+cLkwKxPRU=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "Cid Encarnación",
+    "text": "🔗 UAM en Instagram: \"¡Atención, comunidad UAM! 👀 Su … (www.instagram.com)",
+    "sub_text": "",
+    "timestamp": "2026-10-15T20:01:10",
+    "key": "0|com.whatsapp|1|YhvYuBwLnUg46cuCz8t1DyqIWXdiijd5tf/sz39xI2Q=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.app.smartcapture",
+    "title": "Captura de pantalla guardada",
+    "text": "Pulse aquí para ver su captura de pantalla.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T20:02:22",
+    "key": "0|com.samsung.android.app.smartcapture|5755|null|10227",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.ubercab",
+    "title": "Ahorra hasta 45% en tu lista de compras",
+    "text": "Compra ahora: explora las secciones y ahorra hasta 45% en pedidos de $300 o más que cumplan con los requisitos. Se aplican Términos y condiciones.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T15:29:16",
+    "key": "0|com.ubercab|5|f19749ebf9bbefe7526266bf37831d12|10366",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "8 mensajes nuevos",
+    "text": "",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-17T11:28:36",
+    "key": "0|com.google.android.gm|0|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Google Play",
+    "text": "SpannableString (El recibo de tu pedido de Google Play del 17 oct 2026",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-17T11:28:36",
+    "key": "0|com.google.android.gm|1581863243|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "DiDi para Mexico",
+    "text": "SpannableString (✈️ Tu viaje comienza antes de despegar",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-16T05:23:52",
+    "key": "0|com.google.android.gm|8626973|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Banco Azteca",
+    "text": "SpannableString (Notificación Banco Azteca",
+    "sub_text": "cas.ceciliasoto@gmail.com",
+    "timestamp": "2026-10-15T11:44:50",
+    "key": "0|com.google.android.gm|626429215|gig:-985675285:^sq_ig_i_personal|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "Drama | La Venganza de la Renacida 🔥",
+    "text": "Tras un final miserable por una ladrona de identidad, renace para reclamarlo todo.",
+    "sub_text": "",
+    "timestamp": "2026-10-17T10:46:32",
+    "key": "0|com.zhiliaoapp.musically|23593002|app_notify_ame|10348",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "26 mensajes nuevos",
+    "text": "",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-17T10:06:34",
+    "key": "0|com.google.android.gm|0|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Canva",
+    "text": "SpannableString (Te recomendamos plantillas de Documento",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-17T10:06:34",
+    "key": "0|com.google.android.gm|-2089201373|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Jornada de Salud : Vacunas, PAP´S, Métodos Anticonceptivos y mesas informativas",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T17:00:08",
+    "key": "0|com.google.android.gm|122924174|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Resultados de las Elecciones Extraordinarias del Consejo Divisional 2026-2027",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T12:30:01",
+    "key": "0|com.google.android.gm|-18893321|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Sesión 11.26 del Consejo Académico",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T12:15:06",
+    "key": "0|com.google.android.gm|-614188803|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (BECAS Y CONVOCATORIAS DE OTRAS INSTITUCIONES",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-16T08:05:14",
+    "key": "0|com.google.android.gm|-444851405|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Resultados de las Elecciones Extraordinarias del Consejo Académico 2025-2027.",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T19:42:57",
+    "key": "0|com.google.android.gm|-1825755839|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Lentes gratuitos. Hoy 15 de octubre",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T13:46:21",
+    "key": "0|com.google.android.gm|-840445529|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Comunicado  del Dr. Luis Amado Ayala Pérez",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T09:59:58",
+    "key": "0|com.google.android.gm|1247724817|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (BECAS Y CONVOCATORIAS DE LA UAM-X",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T07:59:52",
+    "key": "0|com.google.android.gm|-349634332|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Thais Indira Vega Chapar.",
+    "text": "SpannableString (Anuncio nuevo: \"Hola, buenas noches. Estuve revisando…\"",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T19:52:22",
+    "key": "0|com.google.android.gm|-1640714703|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Alumno.",
+    "text": "SpannableString (Modalidades de auscultación para el proceso de designación de la persona titular de la Jefatura del Departamento de Relaciones Sociales, periodo 2026-2030",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T14:59:43",
+    "key": "0|com.google.android.gm|-2083991218|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Licenc.",
+    "text": "SpannableString (¿Quieres hacer tu servicio social? Consulta estas oportunidades",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T14:44:40",
+    "key": "0|com.google.android.gm|489511784|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (Gemini Academy en la UAM Xochimilco  Mentes Digitales: IA, creatividad y vida universitaria",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T12:35:41",
+    "key": "0|com.google.android.gm|568129331|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString (EVENTOS DEL 14 AL 18 DE OCTUBRE",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T08:05:17",
+    "key": "0|com.google.android.gm|-100364306|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "𝑻𝒂𝒎🍒",
+    "text": "String (Nueva historia: \"Es que yo amo mucho",
+    "sub_text": "",
+    "timestamp": "2026-10-17T07:49:02",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_story_suite_organic_campaign&65e07f319609cH1101c8da3dH65e083caf636eH22d|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.bashsoftware.boycott",
+    "title": "📢 Join NoThanks Live on Instagram",
+    "text": "We're sharing more about the fun day for orphaned children in Gaza today at 3 PM Gaza time. Come watch! 💚",
+    "sub_text": "",
+    "timestamp": "2026-10-16T02:15:34",
+    "key": "0|com.bashsoftware.boycott|0|campaign_collapse_key_256099296317183356|10385",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "Telcel: Paquetes - Recargas",
+    "text": "Imagen",
+    "sub_text": "",
+    "timestamp": "2026-10-13T14:22:30",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:18|10261",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "Telcel",
+    "text": "REMEDIOS ⚽ ¡Que se escuche el \"Goya\" y el \"Cómo no te voy a querer\" de la afición auriazul! Gana pases dobles en Experiencias Telcel para apoyar a los Pumas... Participa 👉 https://bit.ly/4gsE62B",
+    "sub_text": "",
+    "timestamp": "2026-10-13T14:21:54",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:6|10261",
+    "source": "dumpsys"
+  },
+  {
+    "package": "android",
+    "title": "Se conectó la depuración inalámbrica",
+    "text": "Presiona para desactivar la depuración inalámbrica",
+    "sub_text": "",
+    "timestamp": "2026-10-18T14:06:19",
+    "key": "-1|android|62|null|1000",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.bible.holy.bible.for.women",
+    "title": "El Viaje de Hoy",
+    "text": "¡Comience su viaje espiritual para hoy!",
+    "sub_text": "",
+    "timestamp": "2026-10-18T14:07:08",
+    "key": "0|com.bible.holy.bible.for.women|111|null|10386",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.bible.holy.bible.for.women",
+    "title": "Corazones Agradecidos Se Elevan 💓",
+    "text": "Su amor se renueva cada mañana.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T14:07:07",
+    "key": "0|com.bible.holy.bible.for.women|4103|null|10386",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "Telcel",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-13T14:21:54",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:6|10261",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.xiaomi.wearable",
+    "title": "Mi Fitness",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T14:10:13",
+    "key": "0|com.xiaomi.wearable|1001|null|10373",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "WhatsApp",
+    "text": "‎‎21 mensajes de 5 chats",
+    "sub_text": "",
+    "timestamp": "2026-10-18T14:12:33",
+    "key": "0|com.whatsapp|1|null|10357",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.whatsapp",
+    "title": "Mi Niño Hermoso 💕",
+    "text": "📷 Envió una foto.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T14:12:32",
+    "key": "0|com.whatsapp|1|uoBNgWyHwayy0W0GDiv6z/RVX35RpvKaNeQkRVnTWXc=",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Licenc.",
+    "text": "SpannableString (¿Quieres hacer tu servicio social? Consulta estas oportunida",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-14T14:44:40",
+    "key": "0|com.google.android.gm|489511784|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.instagram.android",
+    "title": "chismesitos_time_123",
+    "text": "Foto reciente",
+    "sub_text": "",
+    "timestamp": "2026-10-18T14:27:32",
+    "key": "0|com.instagram.android|64278|newstab|73044384317_feed_suite_organic_campaign&65e22f06e73b9H1101c8da3dH65e233a04768bH1f4|10343",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "Telcel: Paquetes - Recargas",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-13T14:22:30",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:18|10261",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.googlequicksearchbox",
+    "title": "21° en Ciudad Nezahualcóyotl",
+    "text": "Sensación térmica de 24° · Nublado · Consultar el pronóstico por hora",
+    "sub_text": "",
+    "timestamp": "2026-10-18T14:33:53",
+    "key": "0|com.google.android.googlequicksearchbox|0|-985675285::a:snotification:[0x394,wx.f,NOTIFICATION]|10265",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "'Buzón UAM-X' via Todo e.",
+    "text": "SpannableString",
+    "sub_text": "2252025373@alumnos.xoc.uam.mx",
+    "timestamp": "2026-10-15T09:59:58",
+    "key": "0|com.google.android.gm|1247724817|gig:-1788471264:CLASSIC_INBOX_ALL_MAIL|10270",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.systemui",
+    "title": "Revise la conexión del cargador (6 h 18 min para completar la carga)",
+    "text": "String (Asegúrese de que el cable y el cargador estén bien conectados. Si esto ocurre con frecuencia, pruebe a sustituir el cable de carga.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T23:06:46",
+    "key": "-1|com.android.systemui|2114586824|charging_state|10051",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.sec.android.daemonapp",
+    "title": "Nezahualcóyotl | Lluvia",
+    "text": "Se espera que las lluvias cesen pronto",
+    "sub_text": "",
+    "timestamp": "2026-10-18T22:29:18",
+    "key": "0|com.sec.android.daemonapp|5|null|10203",
+    "source": "dumpsys"
+  },
+  {
+    "package": "org.iggymedia.periodtracker",
+    "title": "Ronda de preguntas: sexo y embarazo 😅",
+    "text": "¿Es posible el embarazo durante el periodo? A ver quién detecta mejor los mitos sobre el sexo 👉",
+    "sub_text": "",
+    "timestamp": "2026-10-18T20:11:33",
+    "key": "0|org.iggymedia.periodtracker|3|null|10492",
+    "source": "dumpsys"
+  },
+  {
+    "package": "org.iggymedia.periodtracker",
+    "title": "String (18 de Oct: consejo del día 📅",
+    "text": "Pregúntale si quiere que veáis algo juntos. Te damos algunas sugerencias 👉",
+    "sub_text": "",
+    "timestamp": "2026-10-18T09:12:45",
+    "key": "0|org.iggymedia.periodtracker|2|null|10492",
+    "source": "dumpsys"
+  },
+  {
+    "package": "org.iggymedia.periodtracker",
+    "title": "¿Te espera un día ajetreado, FELIPE?",
+    "text": "Dedica un momento a contarnos cómo estás y mantendremos a tu pareja al día 👉",
+    "sub_text": "",
+    "timestamp": "2026-10-17T13:02:53",
+    "key": "0|org.iggymedia.periodtracker|1|null|10492",
+    "source": "dumpsys"
+  },
+  {
+    "package": "org.iggymedia.periodtracker",
+    "title": "String (17 de Oct: consejo del día 📅",
+    "text": "Hoy podría ser el día perfecto para probar algo nuevo: descubre por qué 👉",
+    "sub_text": "",
+    "timestamp": "2026-10-17T08:08:14",
+    "key": "0|org.iggymedia.periodtracker|0|null|10492",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "DiDi：🕹️✨ ¡Abre y juega!",
+    "text": "Con un rato basta para despejarte.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T19:14:54",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:139183158|10271",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.didiglobal.passenger",
+    "title": "Ayúdanos a brindarte un mejor servicio!",
+    "text": "Por favor, ayúdanos a contestar esta encuesta para mejorar el servicio de DiDi.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T19:00:58",
+    "key": "0|com.didiglobal.passenger|0|FCM-Notification:138346873|10271",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.mercadopago.wallet",
+    "title": "Compra por $ 1,700 fue aprobada",
+    "text": "Ve los detalles de tu compra en TITANIUM CIB aquí.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T15:45:18",
+    "key": "0|com.mercadopago.wallet|628015227|null|10315",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "hey",
+    "text": "HeyBanco: Su codigo de verificacion es: 0f0e9",
+    "sub_text": "",
+    "timestamp": "2026-10-18T15:40:58",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:51|10234",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "81800",
+    "text": "Tu recarga Bait ya vencio. Recarga HOY en btz.mx/rcgsalt BAurrera, Walmart, Sams, CASHI o Ptos Autorizados. Recuerda registra tu linea, hazlo en btz.mx/registra",
+    "sub_text": "",
+    "timestamp": "2026-10-18T14:14:43",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:2|10234",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.messaging",
+    "title": "10086",
+    "text": "Ya casi agotas tus gigas a maxima velocidad. ¡RECARGA AHORA! para seguir conectado btz.mx/rec",
+    "sub_text": "",
+    "timestamp": "2026-10-16T23:42:56",
+    "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:1|10234",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "Regalo de 20% de descuento en tu primer mes.",
+    "text": "Mejora tus habilidades y usa tu descuento en aplicaciones de aprendizaje seleccionadas. Hay condiciones.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:40:27",
+    "key": "0|com.android.vending|-1257837301|null|10235",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.vending",
+    "title": "Prueba otros juegos de disparos",
+    "text": "Aquí hay algunos que te pueden gustar",
+    "sub_text": "",
+    "timestamp": "2026-10-18T13:32:12",
+    "key": "0|com.android.vending|-1311347044|null|10235",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.app.smartcapture",
+    "title": "Captura de pantalla guardada",
+    "text": "Pulse aquí para ver su captura de pantalla.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T12:41:45",
+    "key": "0|com.samsung.android.app.smartcapture|5755|null|10208",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "title": "La ha compartido liaa, tu amigo/a",
+    "text": "«Quien más es así?😳»",
+    "sub_text": "",
+    "timestamp": "2026-10-18T09:50:48",
+    "key": "0|com.zhiliaoapp.musically|1630941030|app_notify_ame|10317",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Roxana Trinidad Cervantes",
+    "text": "\"Por eso te extraño tanto mamá. 🐣🐣🐣🐥🐥🐥\"",
+    "sub_text": "",
+    "timestamp": "2026-10-18T09:09:28",
+    "key": "0|com.facebook.katana|0|close_friend_activity|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.forest",
+    "title": "Consulte su informe semanal",
+    "text": "Consulte su informe semanal para averiguar en qué áreas puede mejorar.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T09:04:07",
+    "key": "0|com.samsung.android.forest|104|null|1000",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Facebook",
+    "text": "Felipe Ramos Velazquez, tienes una nueva sugerencia de amistad: Coxa Taxa",
+    "sub_text": "",
+    "timestamp": "2026-10-18T07:10:38",
+    "key": "0|com.facebook.katana|0|61594593495253|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Facebook",
+    "text": "Para ti: \"Ni 24 horas y alguien ha desarrollado el efecto del nuevo...\"",
+    "sub_text": "",
+    "timestamp": "2026-10-18T05:11:30",
+    "key": "0|com.facebook.katana|0|bm90aWZpY2F0aW9uOjEwMDAxMTcwMDM2MjY2NzoxNzkyMzIxODkwOTg1NzYwOjQ1MTc2MTcxMTUyNjY4NzpNQUlOX1NVUkZBQ0U=|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.samsung.android.app.routines",
+    "title": "Carga completa",
+    "text": "Batería totalmente cargada. Desconecte el cargador.",
+    "sub_text": "Notificación personalizada",
+    "timestamp": "2026-10-18T03:17:01",
+    "key": "0|com.samsung.android.app.routines|1|null|10051",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Felipe Ramos Velazquez",
+    "text": "",
+    "sub_text": "",
+    "timestamp": "2026-10-18T03:10:42",
+    "key": "0|com.facebook.katana|1103187521|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Felipe Ramos Velazquez",
+    "text": "💬 Tienes 10 mensajes, 2 comentarios y 37 novedades más de Marissa, Arisbet y otras personas.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T03:10:16",
+    "key": "0|com.facebook.katana|0|stale_notifications|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.microsoft.office.outlook",
+    "title": "Mensaje nuevo",
+    "text": "framosv2101@alumno.ipn.mx",
+    "sub_text": "framosv2101@alumno.ipn.mx",
+    "timestamp": "2026-10-18T00:46:47",
+    "key": "0|com.microsoft.office.outlook|1|notifGroup:AQADAACAAQAAADBmcmFtb3N2MjEwMUBhbHVtbm8uaXBuLm14X0FjdGl2ZVN5bmNFeGNoYW5nZV9IeFM=|10474",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.microsoft.office.outlook",
+    "title": "Microsoft Outlook",
+    "text": "String (Undeliverable: rgsgai",
+    "sub_text": "framosv2101@alumno.ipn.mx",
+    "timestamp": "2026-10-18T00:46:47",
+    "key": "0|com.microsoft.office.outlook|2|AQADAACAAQAAADBmcmFtb3N2MjEwMUBhbHVtbm8uaXBuLm14X0FjdGl2ZVN5bmNFeGNoYW5nZV9IeFM=:AQADAAAAMwAJAC4AAAAAAB2EAxGqZhHNm8gAqgAvxFoNAKyKQuW2IttOvUbB5pzALfEABNJoGq0AAA==|10474",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.microsoft.office.outlook",
+    "title": "SUPLEMENTO GUINDA",
+    "text": "String (Suplemento Guinda, el click que te conecta al IPN",
+    "sub_text": "framosv2101@alumno.ipn.mx",
+    "timestamp": "2026-10-17T09:37:01",
+    "key": "0|com.microsoft.office.outlook|2|AQADAACAAQAAADBmcmFtb3N2MjEwMUBhbHVtbm8uaXBuLm14X0FjdGl2ZVN5bmNFeGNoYW5nZV9IeFM=:AQADAAAAMwAJAC4AAAAAAB2EAxGqZhHNm8gAqgAvxFoNAKyKQuW2IttOvUbB5pzALfEABNDHByEAAA==|10474",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.microsoft.office.outlook",
+    "title": "Microsoft Outlook",
+    "text": "String (Undeliverable: aanivn",
+    "sub_text": "framosv2101@alumno.ipn.mx",
+    "timestamp": "2026-10-17T04:26:33",
+    "key": "0|com.microsoft.office.outlook|2|AQADAACAAQAAADBmcmFtb3N2MjEwMUBhbHVtbm8uaXBuLm14X0FjdGl2ZVN5bmNFeGNoYW5nZV9IeFM=:AQADAAAAMwAJAC4AAAAAAB2EAxGqZhHNm8gAqgAvxFoNAKyKQuW2IttOvUbB5pzALfEABNDG85UAAA==|10474",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gms",
+    "title": "Acceso obligatorio",
+    "text": "Accede a tu cuenta para seguir usando felipe.ramos@emtix.dev",
+    "sub_text": "",
+    "timestamp": "2026-10-17T23:30:20",
+    "key": "0|com.google.android.gms|0|com.google.android.gms.auth.TokenNotificationManager:0eebd3ca717284cbff969ad832fa53c5:com.google|10233",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Efe • Sugerencia de amistad",
+    "text": "👋 Tania Gaytan",
+    "sub_text": "",
+    "timestamp": "2026-10-17T22:33:09",
+    "key": "0|com.facebook.katana|-1322336029|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Efe • Sugerencia de amistad",
+    "text": "👋 Tania Gaytan",
+    "sub_text": "",
+    "timestamp": "2026-10-17T22:33:08",
+    "key": "0|com.facebook.katana|106251616|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Efe • Sugerencia de amistad",
+    "text": "👤 Melysa Molina",
+    "sub_text": "",
+    "timestamp": "2026-10-17T21:28:39",
+    "key": "0|com.facebook.katana|105266726|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Efe • Sugerencia de amistad",
+    "text": "👤 Selene Gallardo",
+    "sub_text": "",
+    "timestamp": "2026-10-17T20:25:17",
+    "key": "0|com.facebook.katana|104546467|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Efe • Sugerencia para ti",
+    "text": "👤 Rubí Moreno",
+    "sub_text": "",
+    "timestamp": "2026-10-17T19:29:10",
+    "key": "0|com.facebook.katana|102993147|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Efe • Sugerencia de amistad",
+    "text": "👤 Jossajhandy Mereles",
+    "sub_text": "",
+    "timestamp": "2026-10-17T19:10:00",
+    "key": "0|com.facebook.katana|102820829|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Efe • Sugerencia de amistad",
+    "text": "👋 Lopez Ivana",
+    "sub_text": "",
+    "timestamp": "2026-10-17T18:01:48",
+    "key": "0|com.facebook.katana|101555225|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Efe • Sugerencia de amistad",
+    "text": "👋 Rem LB",
+    "sub_text": "",
+    "timestamp": "2026-10-17T16:38:15",
+    "key": "0|com.facebook.katana|99163373|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Efe • Sugerencia de amistad",
+    "text": "👋 Maar Hernandez",
+    "sub_text": "",
+    "timestamp": "2026-10-17T15:24:43",
+    "key": "0|com.facebook.katana|97742814|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.facebook.katana",
+    "title": "Efe • Sugerencia de amistad para ti",
+    "text": "👋 Jessica Garcia",
+    "sub_text": "",
+    "timestamp": "2026-10-17T14:25:22",
+    "key": "0|com.facebook.katana|94701869|null|10513",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.walletnfcrel",
+    "title": "METROBUSL2PA",
+    "text": "MXN6.00 con Nu Mastercard Gold ••1374",
+    "sub_text": "",
+    "timestamp": "2026-10-17T07:50:23",
+    "key": "0|com.google.android.apps.walletnfcrel|1001|-931297842|10377",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.apps.walletnfcrel",
+    "title": "METROBUSL2PA",
+    "text": "MXN6.00 con Nu Mastercard Gold ••1374",
+    "sub_text": "",
+    "timestamp": "2026-10-17T02:25:34",
+    "key": "0|com.google.android.apps.walletnfcrel|1001|-2075441935|10377",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.osp.app.signin",
+    "title": "Samsung account",
+    "text": "Inicie sesión de nuevo para continuar usando los servicios de manera segura.",
+    "sub_text": "",
+    "timestamp": "2026-10-16T20:40:31",
+    "key": "0|com.osp.app.signin|20111236|null|10108",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.systemui",
+    "title": "Revise la conexión del cargador (6 h 17 min para completar la carga)",
+    "text": "String (Asegúrese de que el cable y el cargador estén bien conectados. Si esto ocurre con frecuencia, pruebe a sustituir el cable de carga.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T23:07:36",
+    "key": "-1|com.android.systemui|2114586824|charging_state|10051",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.systemui",
+    "title": "Revise la conexión del cargador (6 h 16 min para completar la carga)",
+    "text": "String (Asegúrese de que el cable y el cargador estén bien conectados. Si esto ocurre con frecuencia, pruebe a sustituir el cable de carga.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T23:13:29",
+    "key": "-1|com.android.systemui|2114586824|charging_state|10051",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.systemui",
+    "title": "Revise la conexión del cargador (6 h 15 min para completar la carga)",
+    "text": "String (Asegúrese de que el cable y el cargador estén bien conectados. Si esto ocurre con frecuencia, pruebe a sustituir el cable de carga.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T23:15:40",
+    "key": "-1|com.android.systemui|2114586824|charging_state|10051",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.android.systemui",
+    "title": "Revise la conexión del cargador (6 h 14 min para completar la carga)",
+    "text": "String (Asegúrese de que el cable y el cargador estén bien conectados. Si esto ocurre con frecuencia, pruebe a sustituir el cable de carga.",
+    "sub_text": "",
+    "timestamp": "2026-10-18T23:19:12",
+    "key": "-1|com.android.systemui|2114586824|charging_state|10051",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Google",
+    "text": "SpannableString (Has compartido algunos datos de tu cuenta de Google con Ollama",
+    "sub_text": "pipe645ramos@gmail.com",
+    "timestamp": "2026-10-14T19:48:17",
+    "key": "0|com.google.android.gm|0|gig:624989706:^sq_ig_i_personal|10255",
+    "source": "dumpsys"
+  },
+  {
+    "package": "com.google.android.gm",
+    "title": "Google",
+    "text": "SpannableString (Has compartido algunos datos de tu cuenta de Google con Ollama",
+    "sub_text": "pipe645ramos@gmail.com",
+    "timestamp": "2026-10-14T19:48:17",
+    "key": "0|com.google.android.gm|-917541267|gig:624989706:^sq_ig_i_personal|10255",
+    "source": "dumpsys"
+  }
+]

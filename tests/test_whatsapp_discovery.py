@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from ui.pages.whatsapp_page import select_discovered_chats
+from ui.pages.whatsapp_page import select_discovered_chats, split_chat_selection
 from ui_automation.whatsapp.chats import WhatsAppChatManager
 from ui_automation.whatsapp.client import WhatsAppAppState, WhatsAppClient
 
@@ -93,6 +93,11 @@ class TestChatSelection(unittest.TestCase):
     def test_out_of_range_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "1-2"):
             select_discovered_chats(["Uno", "Dos"], "3")
+
+    def test_number_in_name_field_is_treated_as_discovery_index(self):
+        names, number_selection = split_chat_selection("3, Miriam, 5-7")
+        self.assertEqual(names, ["Miriam"])
+        self.assertEqual(number_selection, "3,5-7")
 
 
 class TestWhatsAppDiscovery(unittest.TestCase):

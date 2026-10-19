@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -42,12 +43,18 @@ class BackupPage:
         self.page = page
         self._on_log = on_log
         self._job_queue = job_queue
+        self._active_job_id: Optional[str] = None
 
         self._categories: List[CategoryDef] = get_available_category_definitions()
         self._backup_service = BackupService(
             on_progress=self._on_backup_progress,
             on_log=self._on_service_log,
         )
+        if self._job_queue and hasattr(self._job_queue, "register_handler"):
+            # Los respaldos iniciados desde esta pagina se ejecutan en su worker
+            # visual; este handler permite reintentar trabajos fallidos desde
+            # el historial global de la cola.
+            self._job_queue.register_handler(JobType.BACKUP_CATEGORY, self._handle_queued_backup)
 
         # Destino por defecto
         self._dest_dir = get_default_backup_dir(self._device.serial or "Dispositivo")
@@ -133,13 +140,13 @@ class BackupPage:
                             ),
                             ft.Container(
                                 content=ft.Text(
-                                    "MULTIMEDIA" if cat.is_multimedia else "AVANZADO",
+                                    "ALMACENAMIENTO COMPLETO" if cat.is_full_storage else "MULTIMEDIA" if cat.is_multimedia else "AVANZADO",
                                     size=10,
                                     weight=ft.FontWeight.BOLD,
                                 ),
                                 padding=ft.Padding.symmetric(horizontal=8, vertical=4),
                                 border_radius=4,
-                                bgcolor=theme.ACCENT if cat.is_multimedia else theme.SURFACE_ALT,
+                                bgcolor=theme.WARN if cat.is_full_storage else theme.ACCENT if cat.is_multimedia else theme.SURFACE_ALT,
                             ),
                         ],
                     ),
@@ -334,9 +341,9 @@ class BackupPage:
 
     def _select_multimedia_only(self) -> None:
         for cat in self._categories:
-            cat.enabled = cat.is_multimedia
+            cat.enabled = cat.is_multimedia and not cat.is_full_storage
             if cat.id in self._cat_checkboxes:
-                self._cat_checkboxes[cat.id].value = cat.is_multimedia
+                self._cat_checkboxes[cat.id].value = cat.enabled
         try:
             self._categories_column.update()
         except Exception:
@@ -371,6 +378,48 @@ class BackupPage:
             self._btn_open_folder.update()
         except Exception:
             pass
+
+    def _handle_queued_backup(self, job: Any, update_progress: Callable[[float, str], None]) -> Dict[str, Any]:
+        """Ejecuta un respaldo reintentado desde el historial global."""
+        serial = getattr(job, "serial", None)
+        if not serial:
+            raise RuntimeError("El trabajo de backup no tiene dispositivo asociado.")
+        payload = getattr(job, "payload", {}) or {}
+        requested_ids = set(payload.get("categories") or [])
+        categories = [
+            category
+            for category in self._categories
+            if not requested_ids or category.id in requested_ids
+        ]
+        if not categories:
+            raise RuntimeError("El trabajo no contiene categorias de backup validas.")
+        destination = Path(payload.get("destination") or self._dest_dir)
+        try:
+            device_label = self._device.get_status().model or serial
+        except Exception:
+            device_label = serial
+        monitor_stop = threading.Event()
+
+        def monitor_cancel() -> None:
+            while not monitor_stop.wait(0.2):
+                if getattr(job, "stop_event", None) is not None and job.stop_event.is_set():
+                    self._backup_service.cancel()
+                    return
+
+        monitor = threading.Thread(target=monitor_cancel, name="backup-cancel-monitor", daemon=True)
+        monitor.start()
+        try:
+            summary = self._backup_service.run_backup(
+                serial=serial,
+                device_label=device_label,
+                destination_dir=destination,
+                categories=categories,
+            )
+        finally:
+            monitor_stop.set()
+            monitor.join(timeout=1.0)
+        update_progress(1.0, "Respaldo completado")
+        return {"summary": summary, "destination": str(destination)}
 
     def _on_start_clicked(self, _e: ft.ControlEvent) -> None:
         status = self._device.get_status()
@@ -432,23 +481,27 @@ class BackupPage:
                         title=f"Respaldo: {cat_names}",
                         serial=serial,
                         payload={"destination": str(target_path), "categories": [c.id for c in enabled_cats]},
+                        dispatch=True,
                     )
 
-                self._backup_service.run_backup(
-                    serial=serial,
-                    device_label=model,
-                    destination_dir=target_path,
-                    categories=self._categories,
-                )
-
                 if self._job_queue and jid:
-                    job = self._job_queue.get_job(jid)
-                    if job:
-                        job.status = JobStatus.COMPLETED
-                        job.progress_percent = 1.0
-                        job.current_step = "Respaldo y procesamiento finalizados con éxito"
-                        self._job_queue._notify(job)
-                        self._job_queue._persist_history()
+                    self._active_job_id = jid
+                    while True:
+                        job = self._job_queue.get_job(jid)
+                        if not job or job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+                            break
+                        time.sleep(0.25)
+                    if job and job.status == JobStatus.CANCELLED:
+                        return
+                    if job and job.status == JobStatus.FAILED:
+                        raise RuntimeError(job.error or "El respaldo fallo en la cola.")
+                else:
+                    self._backup_service.run_backup(
+                        serial=serial,
+                        device_label=model,
+                        destination_dir=target_path,
+                        categories=self._categories,
+                    )
 
             except Exception as exc:
                 logger.error("Error inesperado en backup worker: %s", exc)
@@ -469,6 +522,9 @@ class BackupPage:
                     self._btn_cancel.update()
                 except Exception:
                     pass
+            finally:
+                if self._active_job_id == jid:
+                    self._active_job_id = None
 
         threading.Thread(target=worker, name="backup-worker", daemon=True).start()
 
@@ -476,6 +532,8 @@ class BackupPage:
         self._status_text.value = "Cancelando respaldo... preservando archivos transferidos."
         self._status_text.color = theme.WARN
         self._status_text.update()
+        if self._job_queue and self._active_job_id:
+            self._job_queue.cancel(self._active_job_id)
         self._backup_service.cancel()
 
     def _on_open_folder_clicked(self, _e: ft.ControlEvent) -> None:

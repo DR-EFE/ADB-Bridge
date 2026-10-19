@@ -77,6 +77,7 @@ class CategoryDef:
     queries: List[QueryDef] = field(default_factory=list)
     folders: List[str] = field(default_factory=list)
     enabled: bool = True
+    is_full_storage: bool = False
 
 
 @dataclass
@@ -152,6 +153,53 @@ def get_available_category_definitions() -> List[CategoryDef]:
             is_multimedia=True,
             folders=["DCIM", "Download", "Documents", "Music", "Pictures"],
             enabled=True,
+        ),
+        CategoryDef(
+            id="messaging_media",
+            name="Medios de WhatsApp, Telegram y redes",
+            description="Im\u00e1genes, videos y audios de WhatsApp, WhatsApp Business, Telegram y carpetas multimedia de aplicaciones.",
+            sub_folder="MessagingMedia",
+            is_multimedia=True,
+            folders=[
+                "WhatsApp/Media",
+                "WhatsApp Business/Media",
+                "Android/media/com.whatsapp/WhatsApp/Media",
+                "Android/media/com.whatsapp.w4b/WhatsApp Business/Media",
+                "Telegram",
+                "Android/media/org.telegram.messenger",
+                "Android/media/com.instagram.android",
+                "Android/media/com.facebook.katana",
+                "Android/media/com.facebook.orca",
+                "Android/media/com.zhiliaoapp.musically",
+                "Pictures/Instagram",
+                "Movies/Instagram",
+            ],
+            enabled=True,
+        ),
+        CategoryDef(
+            id="screenshots",
+            name="Capturas de pantalla",
+            description="Copia capturas guardadas en las ubicaciones comunes de Android y Samsung.",
+            sub_folder="Screenshots",
+            is_multimedia=True,
+            folders=[
+                "Pictures/Screenshots",
+                "DCIM/Screenshots",
+                "Pictures/Screenshot",
+                "DCIM/Screenshot",
+                "Screenshots",
+            ],
+            enabled=True,
+        ),
+        CategoryDef(
+            id="internal_storage",
+            name="Almacenamiento interno completo (/sdcard)",
+            description="Copia todo el almacenamiento interno mediante adb pull /sdcard/.",
+            sub_folder="InternalStorage",
+            is_multimedia=True,
+            is_full_storage=True,
+            folders=["."],
+            enabled=False,
         ),
         CategoryDef(
             id="contacts",
@@ -554,14 +602,14 @@ class BackupService:
             progress.current_step = f"Copiando multimedia: {folder_name}..."
             self._notify_progress(progress)
 
-            remote_src = f"/sdcard/{folder_name}"
+            remote_src = "/sdcard/" if folder_name == "." else f"/sdcard/{folder_name}"
             local_target = cat_dir / folder_name
             local_target.mkdir(parents=True, exist_ok=True)
 
             ret, out, err = self._run_cmd(
                 adb_exe,
                 ["-s", serial, "pull", remote_src, str(local_target.resolve())],
-                timeout=300.0,
+                timeout=1800.0 if cat.is_full_storage else 300.0,
             )
 
             # Verificar contenido copiado

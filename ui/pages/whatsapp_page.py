@@ -58,6 +58,21 @@ def select_discovered_chats(chat_names: List[str], selection: str) -> List[str]:
     return [chat_names[index - 1] for index in dict.fromkeys(indexes)]
 
 
+def split_chat_selection(value: str) -> tuple[List[str], str]:
+    """Separa nombres directos de indices/rangos escritos en el mismo campo."""
+    names: List[str] = []
+    number_tokens: List[str] = []
+    for token in re.split(r"[,;\n]+", value or ""):
+        token = token.strip()
+        if not token:
+            continue
+        if re.fullmatch(r"\d+(?:\s*-\s*\d+)?", token):
+            number_tokens.append(token)
+        else:
+            names.append(token)
+    return names, ",".join(number_tokens)
+
+
 class WhatsAppPage:
     """Contenido de la pestaña. El control a insertar es ``.view``."""
 
@@ -85,6 +100,9 @@ class WhatsAppPage:
             width=330,
             tooltip="Si se llena, se exportan estos chats y se ignora la cantidad.",
         )
+        self._chat_selection.label = "Chats por nombre o n\u00famero"
+        self._chat_selection.hint_text = "Miriam, Familia o 1,3-5"
+        self._chat_selection.tooltip = "Acepta nombres y los n\u00fameros/rangos de Explorar chats."
         self._chat_numbers = ft.TextField(
             label="N\u00fameros o rangos",
             hint_text="1,3-5,8",
@@ -104,6 +122,11 @@ class WhatsAppPage:
         self._auto_process = ft.Switch(label="Auto-procesar chats", value=False)
         self._my_name = ft.TextField(label="Mi nombre en este grupo (opcional)", width=250)
         self._out_dir = ft.TextField(label="Carpeta de destino", value="./exports", width=260)
+        self._open_output_btn = ft.OutlinedButton(
+            "Abrir resultados",
+            icon=ft.Icons.FOLDER_OPEN,
+            on_click=lambda _e: self._open_path((self._out_dir.value or "./exports").strip()),
+        )
         self._export_btn = ft.FilledButton("Exportar", icon=ft.Icons.DOWNLOAD, on_click=self._on_export)
         self._process_folder_btn = ft.OutlinedButton("Procesar carpeta existente", icon=ft.Icons.FOLDER_OPEN, on_click=self._on_process_folder)
         self._cancel_btn = ft.OutlinedButton("Cancelar", icon=ft.Icons.CANCEL, disabled=True, on_click=self._on_cancel)
@@ -143,11 +166,12 @@ class WhatsAppPage:
                 self._discovery_gallery,
             ],
         )
-        self._log = LogView()
+        self._log = LogView(height=300)
 
         self.view = ft.Column(
             expand=True,
             spacing=14,
+            scroll=ft.ScrollMode.AUTO,
             controls=[
                 theme.card(
                     ft.Row(
@@ -155,7 +179,8 @@ class WhatsAppPage:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
                             self._count, self._chat_selection, self._chat_numbers, self._media, self._auto_process,
-                            self._my_name, self._out_dir, self._scan_scrolls, self._discover_btn, self._export_btn,
+                            self._my_name, self._out_dir, self._open_output_btn,
+                            self._scan_scrolls, self._discover_btn, self._export_btn,
                             self._process_folder_btn, self._cancel_btn,
                             self._retry_downloads_btn,
                             self._check_receiver_btn,
@@ -165,10 +190,10 @@ class WhatsAppPage:
                     )
                 ),
                 theme.card(ft.Column([self._progress, self._progress_text], spacing=8)),
-                theme.card(self._discovery_section),
                 ft.Text("Chats procesados", size=14, weight=ft.FontWeight.W_600),
                 ft.Row([self._search, self._filter_sender, self._only_media], wrap=True),
                 self._processed_cards,
+                theme.card(self._discovery_section),
                 ft.Text("Registro de estado", size=14, weight=ft.FontWeight.W_600),
                 self._log.view,
             ],
@@ -497,19 +522,19 @@ class WhatsAppPage:
 
         include_media = bool(self._media.value)
         out_dir = (self._out_dir.value or "./exports").strip()
-        selected_chats = [
-            value.strip()
-            for value in re.split(r"[,;\n]+", self._chat_selection.value or "")
-            if value.strip()
-        ]
-        if (self._chat_numbers.value or "").strip() and self._discovery_serial != serial:
+        selected_chats, inline_number_selection = split_chat_selection(self._chat_selection.value or "")
+        explicit_number_selection = (self._chat_numbers.value or "").strip()
+        combined_number_selection = ",".join(
+            value for value in (explicit_number_selection, inline_number_selection) if value
+        )
+        if combined_number_selection and self._discovery_serial != serial:
             self._chat_numbers.error_text = "La lista numerada pertenece a otro dispositivo; explora este dispositivo primero."
             self._chat_numbers.update()
             return
         try:
             numbered_chats = select_discovered_chats(
                 self._discovered_chat_names,
-                self._chat_numbers.value or "",
+                combined_number_selection,
             )
         except ValueError as exc:
             self._chat_numbers.error_text = str(exc)
@@ -520,6 +545,7 @@ class WhatsAppPage:
         self._last_serial, self._last_out_dir = serial, out_dir
 
         self._results = []
+        self._processed = []
         self._current_chat_idx = 0
         self._total_chats = len(selected_chats) if selected_chats else n
         self._log.clear()
@@ -697,6 +723,11 @@ class WhatsAppPage:
             self._set_busy(False, f"Falló el lote: {error}", progress=0)
         else:
             self._set_busy(False, f"Completado: {ok}/{total} chats exportados.", progress=1 if total else 0)
+            if not self._auto_process.value:
+                self._log.append(
+                    "Se guard\u00f3 la exportaci\u00f3n original. Activa 'Auto-procesar chats' para generar Excel, JSON y HTML.",
+                    theme.WARN,
+                )
             self._retry_downloads_btn.disabled = not any(
                 not item.get("success") and item.get("remote_path") and item.get("receipt_state") == "READY"
                 for item in self._results

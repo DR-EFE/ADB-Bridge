@@ -1,0 +1,282 @@
+[
+  {
+    "tipo": "OTP",
+    "codigo": "123456",
+    "detected_at": "2026-10-18T10:00:00"
+  },
+  {
+    "detected_at": "2026-10-18T23:07:43",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": null,
+    "fuente": "rules",
+    "notification": {
+      "package": "com.mercadopago.wallet",
+      "title": "Compra por $ 1,700 fue aprobada",
+      "text": "Ve los detalles de tu compra en TITANIUM CIB aquí.",
+      "sub_text": "",
+      "timestamp": "2026-10-18T15:45:18",
+      "key": "0|com.mercadopago.wallet|628015227|null|10315",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": null,
+      "razon": "Palabra clave relevante: 'compra'.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  },
+  {
+    "detected_at": "2026-10-18T23:07:43",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": null,
+    "fuente": "rules",
+    "notification": {
+      "package": "com.google.android.apps.messaging",
+      "title": "hey",
+      "text": "HeyBanco: Su codigo de verificacion es: 0f0e9",
+      "sub_text": "",
+      "timestamp": "2026-10-18T15:40:58",
+      "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:51|10234",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": null,
+      "razon": "Palabra clave relevante: 'banco'.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  },
+  {
+    "detected_at": "2026-10-18T23:07:44",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": "81800",
+    "fuente": "rules",
+    "notification": {
+      "package": "com.google.android.apps.messaging",
+      "title": "81800",
+      "text": "Tu recarga Bait ya vencio. Recarga HOY en btz.mx/rcgsalt BAurrera, Walmart, Sams, CASHI o Ptos Autorizados. Recuerda registra tu linea, hazlo en btz.mx/registra",
+      "sub_text": "",
+      "timestamp": "2026-10-18T14:14:43",
+      "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:2|10234",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": "81800",
+      "razon": "Código numérico de 4-8 dígitos sin contexto explícito.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  },
+  {
+    "detected_at": "2026-10-18T23:07:45",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": "10086",
+    "fuente": "rules",
+    "notification": {
+      "package": "com.google.android.apps.messaging",
+      "title": "10086",
+      "text": "Ya casi agotas tus gigas a maxima velocidad. ¡RECARGA AHORA! para seguir conectado btz.mx/rec",
+      "sub_text": "",
+      "timestamp": "2026-10-16T23:42:56",
+      "key": "0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:1|10234",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": "10086",
+      "razon": "Código numérico de 4-8 dígitos sin contexto explícito.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  },
+  {
+    "detected_at": "2026-10-18T23:07:46",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": "2101",
+    "fuente": "rules",
+    "notification": {
+      "package": "com.microsoft.office.outlook",
+      "title": "Mensaje nuevo",
+      "text": "framosv2101@alumno.ipn.mx",
+      "sub_text": "framosv2101@alumno.ipn.mx",
+      "timestamp": "2026-10-18T00:46:47",
+      "key": "0|com.microsoft.office.outlook|1|notifGroup:AQADAACAAQAAADBmcmFtb3N2MjEwMUBhbHVtbm8uaXBuLm14X0FjdGl2ZVN5bmNFeGNoYW5nZV9IeFM=|10474",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": "2101",
+      "razon": "Código numérico de 4-8 dígitos sin contexto explícito.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  },
+  {
+    "detected_at": "2026-10-18T23:07:47",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": "2101",
+    "fuente": "rules",
+    "notification": {
+      "package": "com.microsoft.office.outlook",
+      "title": "Microsoft Outlook",
+      "text": "String (Undeliverable: rgsgai",
+      "sub_text": "framosv2101@alumno.ipn.mx",
+      "timestamp": "2026-10-18T00:46:47",
+      "key": "0|com.microsoft.office.outlook|2|AQADAACAAQAAADBmcmFtb3N2MjEwMUBhbHVtbm8uaXBuLm14X0FjdGl2ZVN5bmNFeGNoYW5nZV9IeFM=:AQADAAAAMwAJAC4AAAAAAB2EAxGqZhHNm8gAqgAvxFoNAKyKQuW2IttOvUbB5pzALfEABNJoGq0AAA==|10474",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": "2101",
+      "razon": "Código numérico de 4-8 dígitos sin contexto explícito.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  },
+  {
+    "detected_at": "2026-10-18T23:07:47",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": "2101",
+    "fuente": "rules",
+    "notification": {
+      "package": "com.microsoft.office.outlook",
+      "title": "SUPLEMENTO GUINDA",
+      "text": "String (Suplemento Guinda, el click que te conecta al IPN",
+      "sub_text": "framosv2101@alumno.ipn.mx",
+      "timestamp": "2026-10-17T09:37:01",
+      "key": "0|com.microsoft.office.outlook|2|AQADAACAAQAAADBmcmFtb3N2MjEwMUBhbHVtbm8uaXBuLm14X0FjdGl2ZVN5bmNFeGNoYW5nZV9IeFM=:AQADAAAAMwAJAC4AAAAAAB2EAxGqZhHNm8gAqgAvxFoNAKyKQuW2IttOvUbB5pzALfEABNDHByEAAA==|10474",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": "2101",
+      "razon": "Código numérico de 4-8 dígitos sin contexto explícito.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  },
+  {
+    "detected_at": "2026-10-18T23:07:48",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": "2101",
+    "fuente": "rules",
+    "notification": {
+      "package": "com.microsoft.office.outlook",
+      "title": "Microsoft Outlook",
+      "text": "String (Undeliverable: aanivn",
+      "sub_text": "framosv2101@alumno.ipn.mx",
+      "timestamp": "2026-10-17T04:26:33",
+      "key": "0|com.microsoft.office.outlook|2|AQADAACAAQAAADBmcmFtb3N2MjEwMUBhbHVtbm8uaXBuLm14X0FjdGl2ZVN5bmNFeGNoYW5nZV9IeFM=:AQADAAAAMwAJAC4AAAAAAB2EAxGqZhHNm8gAqgAvxFoNAKyKQuW2IttOvUbB5pzALfEABNDG85UAAA==|10474",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": "2101",
+      "razon": "Código numérico de 4-8 dígitos sin contexto explícito.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  },
+  {
+    "detected_at": "2026-10-18T23:07:48",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": null,
+    "fuente": "rules",
+    "notification": {
+      "package": "com.google.android.gms",
+      "title": "Acceso obligatorio",
+      "text": "Accede a tu cuenta para seguir usando felipe.ramos@emtix.dev",
+      "sub_text": "",
+      "timestamp": "2026-10-17T23:30:20",
+      "key": "0|com.google.android.gms|0|com.google.android.gms.auth.TokenNotificationManager:0eebd3ca717284cbff969ad832fa53c5:com.google|10233",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": null,
+      "razon": "Palabra clave relevante: 'acceso'.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  },
+  {
+    "detected_at": "2026-10-18T23:07:50",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": "1374",
+    "fuente": "rules",
+    "notification": {
+      "package": "com.google.android.apps.walletnfcrel",
+      "title": "METROBUSL2PA",
+      "text": "MXN6.00 con Nu Mastercard Gold ••1374",
+      "sub_text": "",
+      "timestamp": "2026-10-17T07:50:23",
+      "key": "0|com.google.android.apps.walletnfcrel|1001|-931297842|10377",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": "1374",
+      "razon": "Código numérico de 4-8 dígitos sin contexto explícito.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  },
+  {
+    "detected_at": "2026-10-18T23:07:50",
+    "device_serial": "192.168.100.137:5555",
+    "tipo": "ALERTA",
+    "codigo": "1374",
+    "fuente": "rules",
+    "notification": {
+      "package": "com.google.android.apps.walletnfcrel",
+      "title": "METROBUSL2PA",
+      "text": "MXN6.00 con Nu Mastercard Gold ••1374",
+      "sub_text": "",
+      "timestamp": "2026-10-17T02:25:34",
+      "key": "0|com.google.android.apps.walletnfcrel|1001|-2075441935|10377",
+      "source": "dumpsys"
+    },
+    "classification": {
+      "importante": true,
+      "tipo": "ALERTA",
+      "codigo": "1374",
+      "razon": "Código numérico de 4-8 dígitos sin contexto explícito.",
+      "fuente": "rules",
+      "modelo": null,
+      "latencia_ms": null
+    }
+  }
+]

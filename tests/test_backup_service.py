@@ -53,10 +53,38 @@ class TestBackupService(unittest.TestCase):
         for req in required:
             self.assertIn(req, cat_ids)
 
+        self.assertIn("messaging_media", cat_ids)
+        self.assertIn("screenshots", cat_ids)
+        self.assertIn("internal_storage", cat_ids)
+
         multimedia_cat = next(c for c in cats if c.id == "multimedia")
         self.assertTrue(multimedia_cat.is_multimedia)
         for folder in ["DCIM", "Download", "Documents", "Music", "Pictures"]:
             self.assertIn(folder, multimedia_cat.folders)
+
+        messaging = next(c for c in cats if c.id == "messaging_media")
+        self.assertIn("Android/media/com.whatsapp/WhatsApp/Media", messaging.folders)
+        self.assertIn("Android/media/org.telegram.messenger", messaging.folders)
+        screenshots = next(c for c in cats if c.id == "screenshots")
+        self.assertIn("Pictures/Screenshots", screenshots.folders)
+        full_storage = next(c for c in cats if c.id == "internal_storage")
+        self.assertTrue(full_storage.is_full_storage)
+        self.assertFalse(full_storage.enabled)
+
+    def test_full_storage_uses_adb_pull_sdcard_root(self):
+        category = CategoryDef(
+            id="internal_storage",
+            name="Almacenamiento completo",
+            description="test",
+            sub_folder="InternalStorage",
+            is_multimedia=True,
+            is_full_storage=True,
+            folders=["."],
+        )
+        with patch.object(self.service, "_run_cmd", return_value=(0, "", "")) as run_cmd:
+            self.service.run_backup("TEST_SERIAL", "Device", self.test_dir, [category])
+        self.assertEqual(run_cmd.call_args.args[1][2], "pull")
+        self.assertEqual(run_cmd.call_args.args[1][3], "/sdcard/")
 
     def test_run_backup_generates_manifests_and_summary(self):
         """Verifica que el respaldo genere MANIFEST.json y RESUMEN_BACKUP.json con estados."""
