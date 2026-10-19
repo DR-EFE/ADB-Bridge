@@ -317,9 +317,8 @@ class WhatsAppExporter:
                 prefer_zip, result
             )
 
-        # Etapa 3: Samsung y otros selectores compactos ocultan destinos en
-        # este carrusel inferior. Se recorre ANTES de pulsar "Más", ya que
-        # ese botón abre una lista vertical diferente.
+        # Etapa 3: Samsung OneUI y selectores compactos colocan las aplicaciones
+        # en un carrusel horizontal inferior antes de pulsar "Más", o como lista de apps.
         self._notify_stage("Buscando receptor en el carrusel de compartir...")
         swipes_done = 0
         max_swipes = 6
@@ -339,16 +338,24 @@ class WhatsAppExporter:
                 target_obj.click()
                 result.target_used = "AndroidTools Receiver"
                 result.method = "receiver"
-                return self._wait_and_detect_file(chat_name, timestamp_before, prefer_zip, result)
+                return self._wait_for_receiver_receipt(
+                    receipt_snapshot or set(), receipt_started_at_ms or int(time.time() * 1000),
+                    prefer_zip, result
+                )
+
+            # Si durante el carrusel horizontal aparece el botón 'Más', salir del bucle para pulsarlo
+            if self.d(textMatches=r"(?i)^M[áa]s$|^More$").exists or self.d(descriptionMatches=r"(?i)^M[áa]s$|^More$").exists:
+                break
 
             if not swiped:
                 break
 
-        # Etapa 4: La vista abierta con "Más" se desplaza verticalmente.
+        # Etapa 4: La vista abierta con "Más" (o menú expandido) se desplaza verticalmente y horizontalmente
         self._notify_stage("Abriendo Más...")
         if self.open_more_targets():
             time.sleep(1.0)
-            for vertical_swipes in range(0, max_swipes + 1):
+            # Primero intentar scrolls verticales
+            for v_swipes in range(0, max_swipes + 1):
                 target_obj, count = self.find_receiver_exact_matches()
                 if count > 1:
                     result.stage_failed = "receiver_conflict"
@@ -363,12 +370,29 @@ class WhatsAppExporter:
                         receipt_snapshot or set(), receipt_started_at_ms or int(time.time() * 1000),
                         prefer_zip, result
                     )
-                if vertical_swipes == max_swipes:
+                if v_swipes == max_swipes:
                     break
                 if not self.swipe_share_sheet(direction="vertical"):
                     break
                 result.scrolls_count += 1
                 time.sleep(0.8)
+
+            # Si aún no aparece, algunos dispositivos abren un segundo carrusel o cuadrícula horizontal
+            for h_swipes in range(1, 4):
+                if not self.swipe_share_sheet(direction="horizontal"):
+                    break
+                result.scrolls_count += 1
+                time.sleep(0.8)
+                target_obj, count = self.find_receiver_exact_matches()
+                if count == 1 and target_obj:
+                    logger.info("Seleccionando AndroidTools Receiver tras desplazamiento horizontal secundario.")
+                    target_obj.click()
+                    result.target_used = "AndroidTools Receiver"
+                    result.method = "receiver"
+                    return self._wait_for_receiver_receipt(
+                        receipt_snapshot or set(), receipt_started_at_ms or int(time.time() * 1000),
+                        prefer_zip, result
+                    )
 
         # Etapa 5: Fallback con administradores de archivos conocidos
         self._notify_stage("Probando administrador de archivos...")
@@ -476,34 +500,71 @@ class WhatsAppExporter:
     def swipe_share_sheet(self, direction: str = "horizontal") -> bool:
         """
         Realiza un desplazamiento en el selector. El selector compacto usa un
-        carrusel horizontal; la lista abierta mediante "Más" es vertical.
-        Prioriza selectores accesibles antes de usar coordenadas.
+        carrusel horizontal (especialmente en OneUI de Samsung); la lista abierta mediante "Más"
+        o lista expandida puede requerir scroll vertical o carrusel horizontal de apps.
+        Prioriza selectores accesibles antes de usar coordenadas calculadas.
         """
         if direction not in {"horizontal", "vertical"}:
             raise ValueError("direction debe ser 'horizontal' o 'vertical'")
 
-        # 1. Intentar scroll accesible sobre contenedor deslizable
+        # 1. Intentar scroll accesible sobre contenedor deslizable específico
         try:
-            scrollable = self.d(scrollable=True)
-            if scrollable.exists:
-                if direction == "horizontal":
-                    scrollable.scroll.horiz.forward(steps=40)
-                else:
+            # Buscar contenedores horizontales típicos de OneUI / Android Chooser
+            if direction == "horizontal":
+                horiz_containers = [
+                    self.d(scrollable=True, classNameMatches=r".*HorizontalScrollView.*|.*RecyclerView.*|.*ViewPager.*"),
+                    self.d(resourceIdMatches=r".*id/resolver_list.*|.*id/chooser.*|.*id/app_list.*|.*id/share_target.*", scrollable=True),
+                    self.d(scrollable=True),
+                ]
+                for c in horiz_containers:
+                    if c.exists:
+                        try:
+                            c.scroll.horiz.forward(steps=40)
+                            return True
+                        except Exception:
+                            continue
+            else:
+                scrollable = self.d(scrollable=True)
+                if scrollable.exists:
                     scrollable.scroll.vert.forward(steps=40)
-                return True
+                    return True
         except Exception as exc:
-            logger.debug("Scroll accesible no disponible: %s", exc)
+            logger.debug("Scroll accesible no disponible o falló: %s", exc)
 
-        # 2. Último recurso: gesto por coordenadas. El horizontal se realiza
-        # cerca del borde inferior, donde Samsung coloca el carrusel de apps.
+        # 2. Gesto adaptativo por coordenadas.
+        # En Samsung OneUI, el carrusel de aplicaciones en el Share Sheet se ubica
+        # en el tercio inferior (típicamente entre 70% y 92% de la pantalla).
         try:
             w, h = self.d.window_size()
             if direction == "horizontal":
-                y = int(h * 0.88)
-                self.d.swipe(int(w * 0.88), y, int(w * 0.12), y, 0.35)
+                # Si encontramos algún icono o texto de app en la hoja de compartir,
+                # usamos su coordenada Y para deslizar exactamente sobre la fila de apps
+                target_y = None
+                sample_apps = self.d(resourceIdMatches=r".*id/text1.*|.*id/title.*|.*id/icon.*")
+                if sample_apps.exists and sample_apps.count > 0:
+                    try:
+                        bounds = sample_apps[0].info.get("bounds")
+                        if bounds and "top" in bounds and "bottom" in bounds:
+                            target_y = (bounds["top"] + bounds["bottom"]) // 2
+                    except Exception:
+                        pass
+
+                # Fallback de altura Y si no se pudo determinar con precisión
+                if not target_y or target_y < int(h * 0.40):
+                    target_y = int(h * 0.82)
+
+                start_x = int(w * 0.88)
+                end_x = int(w * 0.12)
+                logger.info("Ejecutando swipe horizontal en ShareSheet: (%d, %d) -> (%d, %d)", start_x, target_y, end_x, target_y)
+                self.d.swipe(start_x, target_y, end_x, target_y, 0.25)
+                # Intento adicional con paso ligeramente diferente para asegurar arrastre
+                time.sleep(0.3)
             else:
                 x = int(w * 0.50)
-                self.d.swipe(x, int(h * 0.78), x, int(h * 0.32), 0.35)
+                start_y = int(h * 0.78)
+                end_y = int(h * 0.30)
+                logger.info("Ejecutando swipe vertical en ShareSheet: (%d, %d) -> (%d, %d)", x, start_y, x, end_y)
+                self.d.swipe(x, start_y, x, end_y, 0.30)
             return True
         except Exception as exc:
             logger.debug("Gesto swipe por coordenadas falló: %s", exc)
