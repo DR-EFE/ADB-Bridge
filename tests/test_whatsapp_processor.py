@@ -60,8 +60,13 @@ class TestProcessingAndExports(unittest.TestCase):
             json_path = exporter.to_json(output_dir / "chat.json")
             csv_path = exporter.to_csv(output_dir / "chat.csv")
             xlsx_path = exporter.to_excel(output_dir / "chat.xlsx")
+            html_path = exporter.to_html(output_dir / "chat.html")
             report_path = exporter.to_summary_report(output_dir / "chat.md")
             self.assertTrue(xlsx_path.is_file())
+            self.assertTrue(html_path.is_file())
+            html_content = html_path.read_text(encoding="utf-8")
+            self.assertIn("class=\"message outgoing\"", html_content)
+            self.assertIn("canci", html_content)
             self.assertTrue(report_path.is_file())
             self.assertEqual(json.loads(json_path.read_text(encoding="utf-8"))["messages"][0]["attachment_path"], conversation.messages[0].attachment_path)
             with csv_path.open(encoding="utf-8-sig", newline="") as input_file:

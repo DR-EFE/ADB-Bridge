@@ -9,6 +9,7 @@ progreso para poder usarse desde la CLI y la interfaz.
 from __future__ import annotations
 
 import csv
+import html
 import json
 import re
 import shutil
@@ -398,6 +399,53 @@ class ChatExporter:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
         return path
 
+    def to_html(self, output_path: str | Path) -> Path:
+        """Genera una vista local con burbujas de conversación tipo WhatsApp."""
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conversation = self.conversation
+        stats = conversation.analytics
+        title = html.escape(conversation.chat_name)
+        messages: list[str] = []
+        for item in conversation.messages:
+            timestamp = item.timestamp.strftime("%d/%m/%Y %H:%M") if item.timestamp else ""
+            body = html.escape(item.text or "").replace("\n", "<br>")
+            sender = html.escape(item.sender or "Sistema")
+            classes = "system" if item.is_system else ("outgoing" if item.is_outgoing else "incoming")
+            attachment = ""
+            if item.attachment_name:
+                label = html.escape(item.attachment_name)
+                if item.attachment_path and Path(item.attachment_path).exists():
+                    href = html.escape(Path(item.attachment_path).resolve().as_uri(), quote=True)
+                    attachment = f'<a class="attachment" href="{href}">📎 {label}</a>'
+                else:
+                    attachment = f'<span class="attachment">📎 {label}</span>'
+            messages.append(
+                f'<article class="message {classes}"><div class="sender">{sender}</div>'
+                f'<div class="body">{body or "&nbsp;"}</div>{attachment}'
+                f'<time>{html.escape(timestamp)}</time></article>'
+            )
+        first = stats.date_first_msg.strftime("%d/%m/%Y") if stats.date_first_msg else "—"
+        last = stats.date_last_msg.strftime("%d/%m/%Y") if stats.date_last_msg else "—"
+        document = f'''<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} · Android Tools</title><style>
+:root {{ color-scheme:dark; --bg:#0b141a; --panel:#202c33; --in:#202c33; --out:#005c4b; --muted:#aebac1; }}
+* {{ box-sizing:border-box }} body {{ margin:0; background:var(--bg); color:#e9edef; font:15px system-ui,-apple-system,Segoe UI,sans-serif }}
+.header {{ position:sticky;top:0;z-index:2;background:#202c33;padding:18px max(18px,calc((100% - 900px)/2));box-shadow:0 2px 8px #0008 }}
+h1 {{ margin:0 0 6px;font-size:21px }} .meta {{ color:var(--muted);font-size:12px }}
+.chat {{ max-width:900px;margin:0 auto;padding:24px 14px 48px;display:flex;flex-direction:column;gap:8px }}
+.message {{ max-width:min(78%,620px);padding:8px 10px 5px;border-radius:9px;background:var(--in);box-shadow:0 1px 1px #0004;align-self:flex-start;overflow-wrap:anywhere }}
+.message.outgoing {{ background:var(--out);align-self:flex-end }} .message.system {{ background:transparent;color:var(--muted);align-self:center;text-align:center;max-width:90%;font-size:12px }}
+.sender {{ color:#53bdeb;font-size:12px;font-weight:600;margin-bottom:3px }} .outgoing .sender {{ color:#d8f5b9 }}
+.system .sender {{ display:none }} .body {{ line-height:1.38;white-space:normal }} time {{ color:var(--muted);display:block;text-align:right;font-size:10px;margin-top:4px }}
+.attachment {{ display:block;color:#8bd5ff;margin-top:6px;text-decoration:none }} .summary {{ max-width:900px;margin:0 auto;padding:12px 14px;color:var(--muted);font-size:12px }}
+</style></head><body><header class="header"><h1>{title}</h1><div class="meta">{'Grupo' if stats.is_group else 'Chat individual'} · {stats.total_messages} mensajes · {first} — {last}</div></header>
+<div class="summary">Enviados: {stats.outgoing_count} · Recibidos: {stats.incoming_count} · Sistema: {stats.system_count}</div>
+<main class="chat">{"".join(messages)}</main></body></html>'''
+        path.write_text(document, encoding="utf-8")
+        return path
+
     def to_csv(self, output_path: str | Path) -> Path:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -518,7 +566,7 @@ def process_chat_file(
                             is_group, my_name, messages, media_files, analytics)
 
 
-def export_processed_chat(conversation: ChatConversation, output_dir: str | Path, formats: Sequence[str] = ("json", "csv", "xlsx"), report: bool = False) -> dict[str, str]:
+def export_processed_chat(conversation: ChatConversation, output_dir: str | Path, formats: Sequence[str] = ("json", "csv", "xlsx", "html"), report: bool = False) -> dict[str, str]:
     """Exporta una conversación. Cada invocación crea archivos de un solo chat."""
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -528,9 +576,9 @@ def export_processed_chat(conversation: ChatConversation, output_dir: str | Path
     aliases = {"excel": "xlsx", "all": "all"}
     selected = {aliases.get(item.casefold(), item.casefold()) for item in formats}
     if "all" in selected:
-        selected.update({"json", "csv", "xlsx"})
-    writers = {"json": (exporter.to_json, ".json"), "csv": (exporter.to_csv, ".csv"), "xlsx": (exporter.to_excel, ".xlsx")}
-    for fmt in ("json", "csv", "xlsx"):
+        selected.update({"json", "csv", "xlsx", "html"})
+    writers = {"json": (exporter.to_json, ".json"), "csv": (exporter.to_csv, ".csv"), "xlsx": (exporter.to_excel, ".xlsx"), "html": (exporter.to_html, ".html")}
+    for fmt in ("json", "csv", "xlsx", "html"):
         if fmt in selected:
             generated[fmt] = str(writers[fmt][0](directory / f"{safe_name}.{fmt}").resolve())
     if report:

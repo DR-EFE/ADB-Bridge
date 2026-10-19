@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import uiautomator2 as u2
 
@@ -54,6 +58,20 @@ CHAT_LIST_RESOURCE_IDS = [
 ]
 
 
+@dataclass(frozen=True)
+class WhatsAppAppState:
+    """Estado observable de Android antes de una tarea de WhatsApp."""
+
+    whatsapp_package: str
+    foreground_package: Optional[str]
+    foreground_activity: Optional[str]
+    was_running: bool
+    was_foreground: bool
+    was_on_chat_list: bool
+    was_in_conversation: bool
+    conversation_title: Optional[str] = None
+
+
 class WhatsAppClient:
     """Gestiona la apertura, navegación y detección de estados en WhatsApp."""
 
@@ -96,6 +114,15 @@ class WhatsAppClient:
         """Detecta cuál de las aplicaciones de WhatsApp está instalada en el dispositivo."""
         if self.preferred_package:
             return self.preferred_package
+
+        # Si hay WhatsApp normal y Business, usar el que el usuario ya tenia
+        # al frente evita cambiar accidentalmente de instalacion.
+        try:
+            foreground_pkg = (self.d.app_current() or {}).get("package")
+            if foreground_pkg in WHATSAPP_PACKAGES:
+                return foreground_pkg
+        except Exception:
+            pass
 
         try:
             installed = self.d.app_list()
@@ -149,6 +176,24 @@ class WhatsAppClient:
             logger.debug("Error evaluando is_on_chat_list: %s", exc)
 
         return False
+
+    def ensure_chat_list(self, timeout: float = 12.0) -> bool:
+        """Asegura que WhatsApp esté al frente antes de interactuar con la UI."""
+        pkg = self.detect_installed_package()
+        if not pkg:
+            return False
+        try:
+            current = self.d.app_current() or {}
+            foreground = current.get("package") in set(WHATSAPP_PACKAGES)
+        except Exception:
+            foreground = False
+        if not foreground:
+            return self.open_whatsapp(timeout=timeout)
+        if self.is_on_chat_list():
+            return True
+        if self._is_inside_conversation() and self.go_back_to_chat_list():
+            return True
+        return self.open_whatsapp(timeout=timeout)
 
     def open_whatsapp(self, timeout: float = 12.0) -> bool:
         """
@@ -266,6 +311,146 @@ class WhatsAppClient:
 
         return self.is_on_chat_list()
 
+    def _current_conversation_title(self) -> Optional[str]:
+        """Obtiene el titulo del chat abierto para poder restaurarlo despues."""
+        ignored = {item.lower() for item in CHAT_LIST_TEXTS}
+        for pattern in (
+            r".*id/conversation_contact_name.*",
+            r".*id/toolbar_title.*",
+            r".*id/action_bar_title.*",
+        ):
+            try:
+                element = self.d(resourceIdMatches=pattern)
+                if element.exists:
+                    value = (element.get_text() or "").strip()
+                    if value and value.lower() not in ignored:
+                        return value
+            except Exception:
+                continue
+
+        # Fallback para builds de WhatsApp que cambian el resource-id del
+        # titulo: tomar el primer TextView textual dentro de la barra superior.
+        try:
+            _width, height = self.d.window_size()
+            elements = self.d(className="android.widget.TextView")
+            for index in range(elements.count if elements.exists else 0):
+                element = elements[index]
+                info = element.info or {}
+                value = (info.get("text") or "").strip()
+                bounds = info.get("bounds") or {}
+                top = int(bounds.get("top", height))
+                bottom = int(bounds.get("bottom", height))
+                if (
+                    value
+                    and value.lower() not in ignored
+                    and 0.03 * height <= top
+                    and bottom <= 0.22 * height
+                    and not re.fullmatch(r"\d{1,2}:\d{2}", value)
+                ):
+                    return value
+        except Exception as exc:
+            logger.debug("No se pudo inferir el titulo del chat desde la barra superior: %s", exc)
+        return None
+
+    def capture_app_state(self) -> WhatsAppAppState:
+        """Captura primer plano, ejecucion y pantalla actual sin modificar el telefono."""
+        current: Dict[str, Any] = {}
+        try:
+            current = self.d.app_current() or {}
+        except Exception as exc:
+            logger.warning("No se pudo consultar la app en primer plano: %s", exc)
+
+        foreground_pkg = current.get("package")
+        pkg = foreground_pkg if foreground_pkg in WHATSAPP_PACKAGES else self.detect_installed_package()
+        if not pkg:
+            raise RuntimeError("No se detect\u00f3 una instalaci\u00f3n compatible de WhatsApp.")
+
+        running = foreground_pkg == pkg
+        try:
+            running = bool((self.d.shell(f"pidof {pkg}").output or "").strip())
+        except Exception as exc:
+            logger.debug("No se pudo consultar pidof para %s: %s", pkg, exc)
+
+        was_foreground = foreground_pkg == pkg
+        on_list = was_foreground and self.is_on_chat_list()
+        in_conversation = was_foreground and self._is_inside_conversation()
+        title = self._current_conversation_title() if in_conversation else None
+        if in_conversation and not title:
+            raise RuntimeError(
+                "WhatsApp esta abierto en un chat, pero no se pudo identificar su titulo; "
+                "la tarea no se iniciara para no perder la pantalla original."
+            )
+        state = WhatsAppAppState(
+            whatsapp_package=pkg,
+            foreground_package=foreground_pkg,
+            foreground_activity=current.get("activity"),
+            was_running=running,
+            was_foreground=was_foreground,
+            was_on_chat_list=on_list,
+            was_in_conversation=in_conversation,
+            conversation_title=title,
+        )
+        logger.info(
+            "Estado inicial de WhatsApp: running=%s foreground=%s vista=%s%s",
+            running,
+            was_foreground,
+            "chat" if in_conversation else "lista" if on_list else "segundo plano/cerrado",
+            f" ({title})" if title else "",
+        )
+        return state
+
+    def _restore_previous_foreground(self, state: WhatsAppAppState) -> None:
+        previous = state.foreground_package
+        if not previous or previous in WHATSAPP_PACKAGES or "launcher" in previous.lower():
+            self.d.press("home")
+            return
+        try:
+            self.d.app_start(previous, stop=False)
+        except Exception as exc:
+            logger.warning("No se pudo devolver '%s' al primer plano; se mostrar\u00e1 Inicio: %s", previous, exc)
+            self.d.press("home")
+
+    def restore_app_state(self, state: WhatsAppAppState) -> bool:
+        """Restaura WhatsApp aunque la tarea previa haya terminado con error."""
+        try:
+            self.preferred_package = state.whatsapp_package
+            if state.was_foreground:
+                self.d.app_start(state.whatsapp_package, stop=False)
+                if state.was_in_conversation and not state.conversation_title:
+                    raise RuntimeError("el chat original estaba abierto, pero no se pudo identificar su titulo")
+                if state.was_in_conversation and state.conversation_title:
+                    if not self.ensure_chat_list():
+                        raise RuntimeError("no fue posible regresar a la lista para reabrir el chat original")
+                    from .export import WhatsAppExporter
+                    if not WhatsAppExporter(self.d, watcher_mgr=self.watcher_mgr).open_chat_by_name(
+                        state.conversation_title
+                    ):
+                        raise RuntimeError(f"no fue posible reabrir '{state.conversation_title}'")
+                elif state.was_on_chat_list and not self.ensure_chat_list():
+                    raise RuntimeError("no fue posible restaurar la lista de chats")
+                logger.info("Estado original de WhatsApp restaurado en primer plano.")
+                return True
+
+            if not state.was_running:
+                self.d.app_stop(state.whatsapp_package)
+                logger.info("WhatsApp estaba cerrado; se detuvo nuevamente al finalizar la tarea.")
+            else:
+                logger.info("WhatsApp estaba en segundo plano; se conservar\u00e1 ejecut\u00e1ndose.")
+            self._restore_previous_foreground(state)
+            return True
+        except Exception as exc:
+            logger.error("No se pudo restaurar por completo el estado original de WhatsApp: %s", exc)
+            return False
+
+    @contextmanager
+    def preserve_app_state(self) -> Iterator[WhatsAppAppState]:
+        """Contexto transaccional que siempre intenta devolver el telefono a su estado inicial."""
+        state = self.capture_app_state()
+        try:
+            yield state
+        finally:
+            self.restore_app_state(state)
+
     def close(self) -> None:
         """Detiene los observadores asociados si estaban activos."""
         if self.watcher_mgr:
@@ -297,6 +482,8 @@ class WhatsAppClient:
         timeout: float = 30.0,
     ) -> Tuple[Optional[str], Any]:
         """Exporta el chat devolviendo la ruta remota y el ShareSheetResult estructurado."""
+        if not self.ensure_chat_list():
+            raise RuntimeError("WhatsApp no está en primer plano o no se pudo abrir la lista de chats.")
         from .export import WhatsAppExporter
         exporter = WhatsAppExporter(self.d, watcher_mgr=self.watcher_mgr)
         return exporter.export_chat_structured(chat_name=chat_name, include_media=include_media, timeout=timeout)
@@ -354,18 +541,28 @@ class WhatsAppClient:
         manager = WhatsAppChatManager(self)
         return manager.get_top_chat_names(limit=limit)
 
+    def discover_chats(
+        self,
+        local_dir: Union[str, Path] = "./exports",
+        scrolls: int = 3,
+    ) -> Dict[str, Any]:
+        """Captura y enumera chats visibles durante varios desplazamientos."""
+        from .chats import WhatsAppChatManager
+        return WhatsAppChatManager(self).discover_chats(local_dir=local_dir, scrolls=scrolls)
+
     def export_top_chats(
         self,
         n: int = 10,
         include_media: bool = False,
         local_dir: Union[str, Path] = "./exports",
+        chat_names: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Exporta y descarga los primeros N chats más recientes de WhatsApp.
         """
         from .chats import WhatsAppChatManager
         manager = WhatsAppChatManager(self)
-        return manager.export_top_chats(n=n, include_media=include_media, local_dir=local_dir)
+        return manager.export_top_chats(n=n, include_media=include_media, local_dir=local_dir, chat_names=chat_names)
 
     def process_chat(self, local_path: str, my_name: Optional[str] = None) -> "ChatConversation":
         """Procesa una exportación local (.txt o .zip) sin usar el dispositivo."""
@@ -373,7 +570,7 @@ class WhatsAppClient:
         return process_chat_file(local_path, my_name=my_name)
 
     def export_processed_chat(
-        self, conversation: "ChatConversation", output_dir: str, formats: Sequence[str] = ("json", "csv", "xlsx")
+        self, conversation: "ChatConversation", output_dir: str, formats: Sequence[str] = ("json", "csv", "xlsx", "html")
     ) -> Dict[str, str]:
         """Escribe los formatos analíticos solicitados para una conversación."""
         from .processor import export_processed_chat

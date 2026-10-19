@@ -1,7 +1,7 @@
 """Módulo de automatización y extracción de WhatsApp."""
 
 from .chats import ChatExportSummary, WhatsAppChatManager
-from .client import WhatsAppClient
+from .client import WhatsAppAppState, WhatsAppClient
 from .export import ChatExportError, ShareSheetResult, WhatsAppExporter
 from .receiver import (
     PACKAGE_NAME,
@@ -27,6 +27,7 @@ from .processor import (
 
 __all__ = [
     "WhatsAppClient",
+    "WhatsAppAppState",
     "WhatsAppExporter",
     "ChatExportError",
     "ShareSheetResult",

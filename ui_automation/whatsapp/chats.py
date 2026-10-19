@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
 
@@ -118,6 +120,87 @@ class WhatsAppChatManager:
 
         return found_names
 
+    def _swipe_chat_list(self, direction: str) -> None:
+        """Desplaza la lista con fallback para versiones distintas de uiautomator2."""
+        try:
+            self.d.swipe_ext(direction, scale=0.55 if direction == "up" else 0.7)
+        except Exception as scroll_err:
+            logger.debug("Fallback de scroll %s con swipe manual: %s", direction, scroll_err)
+            width, height = self.d.window_size()
+            if direction == "up":
+                self.d.swipe(width * 0.5, height * 0.78, width * 0.5, height * 0.30, 0.25)
+            else:
+                self.d.swipe(width * 0.5, height * 0.30, width * 0.5, height * 0.78, 0.25)
+
+    def discover_chats(
+        self,
+        local_dir: Union[str, Path] = "./exports",
+        scrolls: int = 3,
+    ) -> Dict[str, Any]:
+        """Guarda capturas de la lista y devuelve los chats enumerados en orden visual."""
+        scrolls = max(3, min(int(scrolls), 20))
+        if not self.client.ensure_chat_list():
+            raise RuntimeError("No se pudo abrir la lista principal de chats de WhatsApp.")
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        scan_dir = Path(local_dir).expanduser().resolve() / f"exploracion_whatsapp_{stamp}"
+        scan_dir.mkdir(parents=True, exist_ok=True)
+        names: List[str] = []
+        seen: Set[str] = set()
+        screenshots: List[str] = []
+        completed_scrolls = 0
+
+        logger.info("Explorando chats de WhatsApp con %d desplazamientos...", scrolls)
+        try:
+            # Captura inicial + una captura despues de cada scroll.
+            for position in range(scrolls + 1):
+                for name in self._extract_visible_chat_names():
+                    if name not in seen:
+                        seen.add(name)
+                        names.append(name)
+
+                screenshot_path = scan_dir / f"lista_{position + 1:02d}.png"
+                image = self.d.screenshot()
+                image.save(screenshot_path)
+                screenshots.append(str(screenshot_path))
+                logger.info(
+                    "Captura %d/%d guardada (%d chats acumulados): %s",
+                    position + 1,
+                    scrolls + 1,
+                    len(names),
+                    screenshot_path,
+                )
+                if position < scrolls:
+                    self._swipe_chat_list("up")
+                    completed_scrolls += 1
+                    time.sleep(0.8)
+        finally:
+            # Dejar nuevamente la lista cerca de su posicion inicial antes de que
+            # el cliente restaure primer plano/chat/segundo plano.
+            for _ in range(completed_scrolls):
+                try:
+                    self._swipe_chat_list("down")
+                    time.sleep(0.2)
+                except Exception:
+                    break
+
+        manifest = {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "scrolls": completed_scrolls,
+            "chats": [{"number": index, "name": name} for index, name in enumerate(names, 1)],
+            "screenshots": screenshots,
+        }
+        manifest_path = scan_dir / "chats_detectados.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("Exploraci\u00f3n terminada: %d chats; manifiesto %s", len(names), manifest_path)
+        return {
+            "directory": str(scan_dir),
+            "manifest": str(manifest_path),
+            "chat_names": names,
+            "screenshots": screenshots,
+            "scrolls": completed_scrolls,
+        }
+
     def get_top_chat_names(self, limit: int = 10, max_scrolls: int = 8) -> List[str]:
         """
         Extrae los primeros N nombres de chats más recientes de WhatsApp.
@@ -125,11 +208,9 @@ class WhatsAppChatManager:
         """
         logger.info("Obteniendo los primeros %d chats de WhatsApp...", limit)
 
-        if not self.client.is_on_chat_list():
-            logger.info("Navegando hacia la lista principal de chats...")
-            self.client.go_back_to_chat_list()
-            if not self.client.is_on_chat_list():
-                self.client.open_whatsapp()
+        if not self.client.ensure_chat_list():
+            logger.error("No se pudo llevar WhatsApp a la lista principal de chats.")
+            return []
 
         top_names: List[str] = []
         seen: Set[str] = set()
@@ -186,6 +267,7 @@ class WhatsAppChatManager:
         n: int = 10,
         include_media: bool = False,
         local_dir: Union[str, Path] = "./exports",
+        chat_names: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Obtiene los primeros N chats y exporta cada uno de ellos descargándolo al PC
@@ -221,10 +303,11 @@ class WhatsAppChatManager:
             )
 
         # 1. Asegurar WhatsApp abierto y obtener nombres
-        if not self.client.is_on_chat_list():
-            self.client.open_whatsapp()
+        if not self.client.ensure_chat_list():
+            raise RuntimeError("WhatsApp no está disponible en primer plano.")
 
-        chat_names = self.get_top_chat_names(limit=n)
+        requested_names = list(dict.fromkeys(name.strip() for name in (chat_names or []) if name and name.strip()))
+        chat_names = requested_names[:500] if requested_names else self.get_top_chat_names(limit=n)
         if not chat_names:
             logger.warning("No se encontraron chats disponibles para exportar.")
             print("[AVISO] No se detectaron chats en la lista.")

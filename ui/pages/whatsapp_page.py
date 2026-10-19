@@ -33,6 +33,31 @@ LOG_PREFIXES = ("ui_automation.whatsapp", "ui.whatsapp")
 _PROGRESS_RE = re.compile(r"\[(\d+)/(\d+)\] Iniciando exportación")
 
 
+def select_discovered_chats(chat_names: List[str], selection: str) -> List[str]:
+    """Convierte ``1,3-5`` en nombres de chats de la exploracion vigente."""
+    value = (selection or "").strip()
+    if not value:
+        return []
+    if not chat_names:
+        raise ValueError("Primero usa 'Explorar chats' para obtener la lista numerada.")
+
+    indexes: List[int] = []
+    for token in re.split(r"[,;\s]+", value):
+        if not token:
+            continue
+        match = re.fullmatch(r"(\d+)(?:\s*-\s*(\d+))?", token)
+        if not match:
+            raise ValueError(f"Selecci\u00f3n inv\u00e1lida: '{token}'. Usa por ejemplo 1,3-5.")
+        start = int(match.group(1))
+        end = int(match.group(2) or start)
+        if start > end:
+            raise ValueError(f"Rango inv\u00e1lido: '{token}'.")
+        if start < 1 or end > len(chat_names):
+            raise ValueError(f"'{token}' est\u00e1 fuera de la lista (1-{len(chat_names)}).")
+        indexes.extend(range(start, end + 1))
+    return [chat_names[index - 1] for index in dict.fromkeys(indexes)]
+
+
 class WhatsAppPage:
     """Contenido de la pestaña. El control a insertar es ``.view``."""
 
@@ -48,9 +73,33 @@ class WhatsAppPage:
         self._last_serial: Optional[str] = None
         self._last_out_dir: str = "./exports"
         self._processed: List[Dict[str, Any]] = []
+        self._discovered_chat_names: List[str] = []
+        self._discovery_result: Dict[str, Any] = {}
+        self._discovery_serial: Optional[str] = None
 
         self._count = ft.TextField(label="Cantidad de chats", value="10", width=170,
                                    keyboard_type=ft.KeyboardType.NUMBER)
+        self._chat_selection = ft.TextField(
+            label="Chats específicos (separados por coma)",
+            hint_text="Familia, +52 221 957 0759",
+            width=330,
+            tooltip="Si se llena, se exportan estos chats y se ignora la cantidad.",
+        )
+        self._chat_numbers = ft.TextField(
+            label="N\u00fameros o rangos",
+            hint_text="1,3-5,8",
+            width=190,
+            tooltip="Usa los n\u00fameros generados por Explorar chats.",
+        )
+        self._scan_scrolls = ft.TextField(
+            label="Scrolls de exploraci\u00f3n",
+            value="3",
+            width=170,
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        self._discover_btn = ft.OutlinedButton(
+            "Explorar chats", icon=ft.Icons.PHOTO_CAMERA, on_click=self._on_discover_chats
+        )
         self._media = ft.Switch(label="Incluir multimedia (.zip)", value=False)
         self._auto_process = ft.Switch(label="Auto-procesar chats", value=False)
         self._my_name = ft.TextField(label="Mi nombre en este grupo (opcional)", width=250)
@@ -77,6 +126,23 @@ class WhatsAppPage:
         self._filter_sender = ft.TextField(label="Filtrar remitente", width=210, on_change=self._refresh_processed_cards)
         self._only_media = ft.Switch(label="Solo con multimedia", value=False, on_change=self._refresh_processed_cards)
         self._processed_cards = ft.Column(spacing=8)
+        self._discovery_gallery = ft.Row(spacing=12, scroll=ft.ScrollMode.AUTO)
+        self._discovery_names = ft.Text("", selectable=True, color=theme.TEXT_MUTED)
+        self._discovery_section = ft.Column(
+            visible=False,
+            spacing=8,
+            controls=[
+                ft.Row(
+                    [
+                        ft.Text("Exploraci\u00f3n de chats", size=14, weight=ft.FontWeight.W_600),
+                        ft.TextButton("Abrir carpeta", on_click=self._open_discovery_folder),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                self._discovery_names,
+                self._discovery_gallery,
+            ],
+        )
         self._log = LogView()
 
         self.view = ft.Column(
@@ -88,7 +154,8 @@ class WhatsAppPage:
                         wrap=True, spacing=24, run_spacing=10,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            self._count, self._media, self._auto_process, self._my_name, self._out_dir, self._export_btn,
+                            self._count, self._chat_selection, self._chat_numbers, self._media, self._auto_process,
+                            self._my_name, self._out_dir, self._scan_scrolls, self._discover_btn, self._export_btn,
                             self._process_folder_btn, self._cancel_btn,
                             self._retry_downloads_btn,
                             self._check_receiver_btn,
@@ -98,6 +165,7 @@ class WhatsAppPage:
                     )
                 ),
                 theme.card(ft.Column([self._progress, self._progress_text], spacing=8)),
+                theme.card(self._discovery_section),
                 ft.Text("Chats procesados", size=14, weight=ft.FontWeight.W_600),
                 ft.Row([self._search, self._filter_sender, self._only_media], wrap=True),
                 self._processed_cards,
@@ -147,7 +215,7 @@ class WhatsAppPage:
                 self._progress_text.value = f"[{index}/{len(paths)}] Procesando {path.name}..."
                 try:
                     conversation = process_chat_file(path, my_name=(self._my_name.value or None), cancel_event=stop)
-                    files = export_processed_chat(conversation, path.parent, formats=("json", "csv", "xlsx"), report=True)
+                    files = export_processed_chat(conversation, path.parent, formats=("json", "csv", "xlsx", "html"), report=True)
                     self._processed.append({"conversation": conversation, "files": files})
                 except InterruptedError:
                     raise
@@ -184,6 +252,7 @@ class WhatsAppPage:
             actions = [
                 ft.TextButton("Abrir Excel", on_click=lambda _e, p=files.get("xlsx"): self._open_path(p)),
                 ft.TextButton("Abrir JSON", on_click=lambda _e, p=files.get("json"): self._open_path(p)),
+                ft.TextButton("Ver chat HTML", on_click=lambda _e, p=files.get("html"): self._open_path(p)),
                 ft.TextButton("Abrir carpeta", on_click=lambda _e, p=files.get("xlsx"): self._open_path(str(Path(p).parent) if p else None)),
             ]
             cards.append(theme.card(ft.Column([
@@ -201,6 +270,91 @@ class WhatsAppPage:
     def _open_path(path: Optional[str]) -> None:
         if path and Path(path).exists():
             os.startfile(path)  # type: ignore[attr-defined]  # UI solo se distribuye para Windows
+
+    def _open_discovery_folder(self, _e: Optional[ft.ControlEvent] = None) -> None:
+        self._open_path(self._discovery_result.get("directory"))
+
+    def _render_discovery(self) -> None:
+        names = self._discovered_chat_names
+        self._discovery_names.value = (
+            "Chats detectados (usa estos n\u00fameros en 'N\u00fameros o rangos'):\n"
+            + "\n".join(f"{index}. {name}" for index, name in enumerate(names, 1))
+            if names
+            else "No se detectaron nombres de chats en las capturas."
+        )
+        self._discovery_gallery.controls = [
+            ft.Container(
+                width=230,
+                content=ft.Column(
+                    [
+                        ft.Text(f"Vista {index}", weight=ft.FontWeight.W_600),
+                        ft.Image(src=path, width=220, height=390, fit=ft.BoxFit.CONTAIN),
+                        ft.TextButton("Abrir captura", on_click=lambda _e, p=path: self._open_path(p)),
+                    ],
+                    spacing=4,
+                ),
+            )
+            for index, path in enumerate(self._discovery_result.get("screenshots", []), 1)
+        ]
+        self._discovery_section.visible = True
+        try:
+            self._discovery_section.update()
+        except Exception:
+            pass
+
+    def _on_discover_chats(self, _e: ft.ControlEvent) -> None:
+        status = self._device.get_status()
+        serial = self._device.serial
+        if status.requires_selection or not serial or not status.connected:
+            self._progress_text.value = (
+                "Selecciona un dispositivo conectado antes de explorar chats."
+                if status.requires_selection
+                else f"No hay dispositivo listo: {status.error or 'sin conexi\u00f3n'}"
+            )
+            self._progress_text.color = theme.ERR
+            self._progress_text.update()
+            return
+        try:
+            scrolls = int(self._scan_scrolls.value or "3")
+            if not 3 <= scrolls <= 20:
+                raise ValueError
+        except (TypeError, ValueError):
+            self._scan_scrolls.error_text = "Entero entre 3 y 20"
+            self._scan_scrolls.update()
+            return
+        self._scan_scrolls.error_text = None
+
+        out_dir = (self._out_dir.value or "./exports").strip()
+        self._discovery_result = {}
+        self._log.clear()
+        self._attach_log_handler()
+        self._set_busy(True, f"Explorando chats en {serial}...", indeterminate=True)
+
+        def work(_stop) -> None:
+            client = WhatsAppClient(DeviceManager(serial=serial), auto_watchers=True)
+            try:
+                with client.preserve_app_state():
+                    self._discovery_result = client.discover_chats(local_dir=out_dir, scrolls=scrolls)
+            finally:
+                client.close()
+
+        def done(error: Optional[BaseException]) -> None:
+            self._detach_log_handler()
+            if error:
+                self._set_busy(False, f"No se pudo explorar WhatsApp: {error}", progress=0)
+                return
+            self._discovered_chat_names = list(self._discovery_result.get("chat_names", []))
+            self._discovery_serial = serial
+            self._render_discovery()
+            self._set_busy(
+                False,
+                f"Exploraci\u00f3n lista: {len(self._discovered_chat_names)} chats y "
+                f"{len(self._discovery_result.get('screenshots', []))} capturas.",
+                progress=1,
+            )
+
+        self._task = BackgroundTask("whatsapp-discovery", target=work, on_done=done)
+        self._task.start()
 
     def _on_install_receiver(self, _e: ft.ControlEvent) -> None:
         status = self._device.get_status()
@@ -343,11 +497,31 @@ class WhatsAppPage:
 
         include_media = bool(self._media.value)
         out_dir = (self._out_dir.value or "./exports").strip()
+        selected_chats = [
+            value.strip()
+            for value in re.split(r"[,;\n]+", self._chat_selection.value or "")
+            if value.strip()
+        ]
+        if (self._chat_numbers.value or "").strip() and self._discovery_serial != serial:
+            self._chat_numbers.error_text = "La lista numerada pertenece a otro dispositivo; explora este dispositivo primero."
+            self._chat_numbers.update()
+            return
+        try:
+            numbered_chats = select_discovered_chats(
+                self._discovered_chat_names,
+                self._chat_numbers.value or "",
+            )
+        except ValueError as exc:
+            self._chat_numbers.error_text = str(exc)
+            self._chat_numbers.update()
+            return
+        self._chat_numbers.error_text = None
+        selected_chats = list(dict.fromkeys(numbered_chats + selected_chats))
         self._last_serial, self._last_out_dir = serial, out_dir
 
         self._results = []
         self._current_chat_idx = 0
-        self._total_chats = n
+        self._total_chats = len(selected_chats) if selected_chats else n
         self._log.clear()
         self._attach_log_handler()
         self._set_busy(True, f"Conectando con el dispositivo seleccionado [{serial}]...", indeterminate=True)
@@ -384,7 +558,13 @@ class WhatsAppPage:
             client = WhatsAppClient(DeviceManager(serial=serial), auto_watchers=True)
             try:
                 # Si job_queue está disponible, registrar cada chat en el historial
-                self._results = client.export_top_chats(n=n, include_media=include_media, local_dir=out_dir)
+                with client.preserve_app_state():
+                    self._results = client.export_top_chats(
+                        n=n,
+                        include_media=include_media,
+                        local_dir=out_dir,
+                        chat_names=selected_chats or None,
+                    )
                 # Registrar historial en JobQueue si está disponible
                 if self._job_queue:
                     for r in self._results:
@@ -417,7 +597,7 @@ class WhatsAppPage:
                                 chat_name=c_name,
                                 cancel_event=_stop,
                             )
-                            files = export_processed_chat(conversation, out_dir, formats=("json", "csv", "xlsx"), report=True)
+                            files = export_processed_chat(conversation, out_dir, formats=("json", "csv", "xlsx", "html"), report=True)
                             self._processed.append({"conversation": conversation, "files": files})
             finally:
                 client.close()
@@ -588,9 +768,13 @@ class WhatsAppPage:
 
     def _set_busy(self, busy: bool, text: str, progress: Optional[float] = 0, indeterminate: bool = False) -> None:
         self._export_btn.disabled = busy
+        self._discover_btn.disabled = busy
         self._process_folder_btn.disabled = busy
         self._cancel_btn.disabled = not busy
         self._count.disabled = busy
+        self._chat_selection.disabled = busy
+        self._chat_numbers.disabled = busy
+        self._scan_scrolls.disabled = busy
         self._media.disabled = busy
         self._auto_process.disabled = busy
         self._my_name.disabled = busy
