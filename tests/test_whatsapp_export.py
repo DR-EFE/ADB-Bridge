@@ -204,6 +204,36 @@ class TestWhatsAppExporterShareSheet(unittest.TestCase):
         self.assertEqual(count, 2)
         self.assertIsNone(matched)  # Conflicto: no elige al azar
 
+    @patch.object(WhatsAppExporter, "_read_receipt")
+    @patch.object(WhatsAppExporter, "list_receipt_paths")
+    def test_receiver_receipt_final_reconciliation_accepts_ready_receipt(self, mock_paths, mock_read):
+        """Un comprobante publicado al límite no debe perder la exportación."""
+        receipt_path = "/sdcard/Download/AndroidTools/AndroidToolsReceipt_new.json"
+        remote_path = "/sdcard/Download/AndroidTools/chat.zip"
+        mock_paths.return_value = {receipt_path}
+        mock_read.return_value = {
+            "id": "new",
+            "state": "READY",
+            "fileName": "chat.zip",
+            "remotePath": remote_path,
+            "sizeBytes": 42,
+            "sha256": "a" * 64,
+            "createdAtEpochMs": 10_000,
+            "error": "",
+        }
+
+        result = self.exporter._wait_for_receiver_receipt(
+            known_receipts={receipt_path},
+            started_at_ms=9_000,
+            prefer_zip=True,
+            result=ShareSheetResult(method="receiver"),
+            timeout=0,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.detected_path, remote_path)
+        self.assertEqual(result.receipt_path, receipt_path)
+
     def test_open_more_targets(self):
         more_btn = MockUiElement(text="Más", exists=True)
 

@@ -22,6 +22,9 @@ logger = logging.getLogger("ui_automation.whatsapp.export")
 
 RECEIPT_DIRECTORY = "/sdcard/Download/AndroidTools"
 RECEIPT_PREFIX = "AndroidToolsReceipt_"
+# El auxiliar copia el contenido compartido y calcula SHA-256 antes de publicar
+# el comprobante. En dispositivos ocupados puede tardar más que el selector.
+RECEIVER_RECEIPT_TIMEOUT = 75.0
 
 # Rutas habituales de almacenamiento donde WhatsApp o el selector del sistema guardan/comparten archivos
 COMMON_WHATSAPP_SEARCH_PATHS = [
@@ -660,14 +663,15 @@ class WhatsAppExporter:
 
     def _wait_for_receiver_receipt(
         self, known_receipts: set[str], started_at_ms: int, prefer_zip: bool,
-        result: ShareSheetResult, timeout: float = 20.0,
+        result: ShareSheetResult, timeout: float = RECEIVER_RECEIPT_TIMEOUT,
     ) -> ShareSheetResult:
         """Espera el comprobante nuevo del auxiliar, sin buscar archivos ajenos."""
         self._notify_stage("Esperando confirmación del auxiliar...")
         extension = ".zip" if prefer_zip else ".txt"
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            for receipt_path in sorted(self.list_receipt_paths() - known_receipts):
+
+        def consume_receipt(paths: set[str]) -> bool:
+            """Actualiza ``result`` si alguno de los comprobantes es válido."""
+            for receipt_path in sorted(paths):
                 receipt = self._read_receipt(receipt_path)
                 if not receipt:
                     continue
@@ -686,19 +690,32 @@ class WhatsAppExporter:
                 if result.receipt_state == "FAILED":
                     result.stage_failed = "receiver_copy"
                     result.failure_reason = str(receipt.get("error") or "El auxiliar no pudo copiar el archivo compartido.")
-                    return result
+                    return True
                 if result.receipt_state != "READY":
                     continue
                 if size <= 0 or not re.fullmatch(r"[0-9a-fA-F]{64}", result.expected_sha256 or ""):
                     result.stage_failed = "receiver_receipt_invalid"
                     result.failure_reason = "El comprobante no contiene tamaño o hash válidos."
-                    return result
+                    return True
                 result.success, result.detected_path = True, remote_path
                 self._notify_stage("Archivo confirmado por AndroidTools Receiver.")
+                return True
+            return False
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if consume_receipt(self.list_receipt_paths() - known_receipts):
                 return result
             time.sleep(0.7)
+
+        # Algunos proveedores de almacenamiento publican el archivo y su
+        # entrada MediaStore con retraso. Antes de fallar, releer todos los
+        # comprobantes y filtrar estrictamente por hora y extensión; esto no
+        # puede aceptar un comprobante antiguo de otro chat.
+        if consume_receipt(self.list_receipt_paths()):
+            return result
         result.stage_failed = "wait_receiver_receipt"
-        result.failure_reason = "AndroidTools Receiver no publicó un comprobante dentro de 20 segundos."
+        result.failure_reason = f"AndroidTools Receiver no publicó un comprobante dentro de {int(timeout)} segundos."
         return result
 
     def find_exported_chat_file(
