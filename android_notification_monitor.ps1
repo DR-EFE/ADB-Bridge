@@ -8,7 +8,7 @@ param(
     [switch]$NoWatchers,
     [switch]$NoDeviceCopy,
     [string]$DeviceCopyPath,
-    [string]$LogsDir = "logs"
+    [string]$LogsDir = "notifications"
 )
 
 $ErrorActionPreference = 'Stop'

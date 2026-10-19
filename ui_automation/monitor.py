@@ -105,7 +105,7 @@ class NotificationMonitor:
     def __init__(
         self,
         serial: Optional[str] = None,
-        logs_dir: str = "logs",
+        logs_dir: str = "notifications",
         poll_interval: float = 3.0,
         enable_watchers: bool = True,
         on_notification_callback: Optional[Callable[[NotificationItem], None]] = None,
@@ -116,7 +116,7 @@ class NotificationMonitor:
     ):
         """
         :param serial: Serial USB o ``IP:PUERTO``. None = autodetección.
-        :param logs_dir: Carpeta local para los JSON.
+        :param logs_dir: Carpeta local para los JSON de notificaciones (por defecto ``notifications/``).
         :param poll_interval: Segundos entre lecturas (mínimo 0.5).
         :param enable_watchers: Activa el cierre automático de popups.
         :param on_notification_callback: Se invoca con cada notificación nueva (importante o no).
@@ -148,8 +148,33 @@ class NotificationMonitor:
         self.stats: Dict[str, int] = {"nuevas": 0, "importantes": 0, "ai": 0, "rules": 0, "copias_telefono": 0}
 
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_files_if_needed()
 
     # ------------------------------------------------------------------ rutas
+
+    def _migrate_legacy_files_if_needed(self) -> None:
+        """Copia archivos existentes desde logs/ si no existen aún en notifications/ para retrocompatibilidad."""
+        legacy_dir = Path("logs")
+        if not legacy_dir.exists():
+            return
+        # Migrar importantes
+        legacy_imp = legacy_dir / self.important_filename
+        target_imp = self.logs_dir / self.important_filename
+        if legacy_imp.exists() and not target_imp.exists():
+            try:
+                target_imp.write_text(legacy_imp.read_text(encoding="utf-8"), encoding="utf-8")
+                logger.info("Migrado historial de eventos importantes desde %s a %s", legacy_imp, target_imp)
+            except Exception as exc:
+                logger.debug("No se pudo migrar %s: %s", legacy_imp, exc)
+
+        # Migrar archivos diarios
+        for legacy_daily in legacy_dir.glob("notifications_*.json"):
+            target_daily = self.logs_dir / legacy_daily.name
+            if not target_daily.exists():
+                try:
+                    target_daily.write_text(legacy_daily.read_text(encoding="utf-8"), encoding="utf-8")
+                except Exception:
+                    pass
 
     @property
     def important_log_path(self) -> Path:

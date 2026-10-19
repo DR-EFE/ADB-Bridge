@@ -16,7 +16,7 @@ def main() -> int:
     parser.add_argument("--no-watchers", action="store_true", help="No activar cerradores de popups")
     parser.add_argument("--no-device-copy", action="store_true", help="No copiar alertas importantes al teléfono")
     parser.add_argument("--device-copy-path", default=None, help="Ruta de copia de alertas en Android")
-    parser.add_argument("--logs-dir", default="logs", help="Carpeta local para los registros JSON")
+    parser.add_argument("--logs-dir", default="notifications", help="Carpeta local para los registros JSON")
     args = parser.parse_args()
 
     logging.basicConfig(

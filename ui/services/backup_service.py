@@ -449,6 +449,15 @@ class BackupService:
         except Exception as exc:
             logger.error("Error al escribir RESUMEN_BACKUP.json: %s", exc)
 
+        # Procesamiento automático posterior al backup (genera JSON y XLSX procesados)
+        try:
+            from .backup_processor import BackupProcessor
+            processor = BackupProcessor(destination_dir)
+            processed_res = processor.process()
+            self._log(f"Backup procesado exitosamente: {processed_res.xlsx_path}", "INFO")
+        except Exception as proc_exc:
+            logger.warning("No se pudo procesar automáticamente el backup: %s", proc_exc)
+
         self._is_running = False
         progress.status = overall_status
         progress.categories_done = len(category_results)
