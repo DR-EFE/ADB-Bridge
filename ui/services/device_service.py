@@ -14,6 +14,8 @@ Funcionalidades:
 from __future__ import annotations
 
 import json
+import hashlib
+import ipaddress
 import logging
 import os
 import re
@@ -23,6 +25,7 @@ import subprocess
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +41,7 @@ from ui_automation.adb_manager import (
 )
 
 logger = logging.getLogger("ui.device_service")
+DEVICE_STORE_LOCK = threading.RLock()
 
 
 def get_canonical_devices_json_path() -> Path:
@@ -95,6 +99,8 @@ class EndpointRecord:
     connected_utc: str
     mdns_service_name: Optional[str] = None
     source: Optional[str] = None
+    status: str = "device"
+    network_bssid: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -102,6 +108,8 @@ class EndpointRecord:
             "ConnectedUtc": self.connected_utc,
             "MdnsServiceName": self.mdns_service_name,
             "Source": self.source,
+            "Status": self.status,
+            "NetworkBssid": self.network_bssid,
         }
 
     @classmethod
@@ -111,6 +119,8 @@ class EndpointRecord:
             connected_utc=data.get("ConnectedUtc") or data.get("connected_utc") or "",
             mdns_service_name=data.get("MdnsServiceName") or data.get("mdns_service_name"),
             source=data.get("Source") or data.get("source"),
+            status=data.get("Status") or data.get("status") or "device",
+            network_bssid=data.get("NetworkBssid") or data.get("network_bssid"),
         )
 
 
@@ -134,6 +144,8 @@ class DeviceRecord:
     is_paired: bool = False
     endpoints: List[Dict[str, Any]] = field(default_factory=list)
     network_profiles: List[Dict[str, Any]] = field(default_factory=list)
+    physical_id_hash: Optional[str] = None
+    last_successful_reconnect_method: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -153,6 +165,8 @@ class DeviceRecord:
             "IsPaired": self.is_paired,
             "Endpoints": self.endpoints[:10],
             "NetworkProfiles": self.network_profiles,
+            "PhysicalIdHash": self.physical_id_hash,
+            "LastSuccessfulReconnectMethod": self.last_successful_reconnect_method,
         }
 
     @classmethod
@@ -174,6 +188,8 @@ class DeviceRecord:
             is_paired=bool(data.get("IsPaired") or data.get("is_paired", False)),
             endpoints=list(data.get("Endpoints") or data.get("endpoints") or []),
             network_profiles=list(data.get("NetworkProfiles") or data.get("network_profiles") or []),
+            physical_id_hash=data.get("PhysicalIdHash") or data.get("physical_id_hash"),
+            last_successful_reconnect_method=data.get("LastSuccessfulReconnectMethod") or data.get("last_successful_reconnect_method"),
         )
 
 
@@ -198,6 +214,7 @@ class ConnectionResult:
     error: Optional[str] = None
     method: Optional[str] = None
     candidates: List[Dict[str, Any]] = field(default_factory=list)
+    provisional: bool = False
 
 
 @dataclass
@@ -246,6 +263,8 @@ class TechnicalDiagnosticsReport:
     adb_path: str = "No localizado"
     adb_server_status: str = "Detenido o sin respuesta"
     adb_server_port: int = 5037
+    adb_server_owner: Dict[str, Any] = field(default_factory=dict)
+    last_reconnect_issue: Dict[str, Any] = field(default_factory=dict)
     detected_devices: List[Dict[str, str]] = field(default_factory=list)
     selected_serial: Optional[str] = None
     authorization_status: str = "Sin dispositivo"
@@ -274,6 +293,8 @@ class TechnicalDiagnosticsReport:
             "adb_path": self.adb_path,
             "adb_server_status": self.adb_server_status,
             "adb_server_port": self.adb_server_port,
+            "adb_server_owner": self.adb_server_owner,
+            "last_reconnect_issue": self.last_reconnect_issue,
             "detected_devices": self.detected_devices,
             "selected_serial": self.selected_serial,
             "authorization_status": self.authorization_status,
@@ -313,11 +334,18 @@ def read_devices_store(path: Path = DEVICES_JSON) -> Dict[str, Any]:
 def save_devices_store(data: Dict[str, Any], path: Path = DEVICES_JSON) -> None:
     """Guarda en devices.json de forma segura."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data["UpdatedUtc"] = datetime.now(timezone.utc).isoformat()
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        with DEVICE_STORE_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data["UpdatedUtc"] = datetime.now(timezone.utc).isoformat()
+            temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
     except Exception as exc:
         logger.error("Error al guardar devices.json: %s", exc)
+        raise
 
 
 def resolve_serial_from_config(path: Path = DEVICES_JSON) -> Optional[str]:
@@ -336,16 +364,60 @@ def resolve_serial_from_config(path: Path = DEVICES_JSON) -> Optional[str]:
 class DeviceService:
     """Fachada de administración visual y ADB para la GUI y PowerShell."""
 
+    _device_locks: Dict[str, threading.RLock] = {}
+    _device_locks_guard = threading.Lock()
+
+    @classmethod
+    def _lock_for_device(cls, usb_serial: Optional[str], device_id: Optional[str], endpoint: Optional[str] = None) -> threading.RLock:
+        key = usb_serial or device_id or endpoint or "unknown"
+        with cls._device_locks_guard:
+            return cls._device_locks.setdefault(key, threading.RLock())
+
+    @staticmethod
+    @contextmanager
+    def _conversion_process_lock(serial: str):
+        if os.name != "nt":
+            yield
+            return
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel.CreateMutexW.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        digest = hashlib.sha256(serial.encode("utf-8")).hexdigest()[:16]
+        handle = kernel.CreateMutexW(None, False, f"Local\\AndroidAdbUsbWifi-{digest}")
+        if not handle:
+            raise OSError(ctypes.get_last_error(), "No se pudo abrir el bloqueo USB")
+        acquired = False
+        try:
+            result = kernel.WaitForSingleObject(handle, 30000)
+            acquired = result in (0, 0x80)
+            if not acquired:
+                raise TimeoutError("Conversión USB ocupada durante 30 segundos")
+            yield
+        finally:
+            if acquired:
+                kernel.ReleaseMutex(handle)
+            kernel.CloseHandle(handle)
+
     def __init__(self, serial: Optional[str] = None, devices_json_path: Path = DEVICES_JSON) -> None:
         self.devices_json = devices_json_path
         ensure_devices_store_migrated(canonical_path=self.devices_json)
         self.serial: Optional[str] = serial or resolve_serial_from_config(self.devices_json)
         self._explicitly_selected: bool = bool(serial)
         self._model_cache: Dict[str, str] = {}
+        self._provisional_endpoints: Dict[str, str] = {}
         self.auto_wifi_enabled: bool = True
         self.auto_reconnect_enabled: bool = True
         self._auto_converted_serials: Set[str] = set()
-        self._converting_lock = threading.Lock()
+        self._conversion_inflight: Set[str] = set()
+        self._conversion_last_attempt: Dict[str, float] = {}
+        self._usb_priority: Set[str] = set()
+        self._conversion_guard = threading.Lock()
         self._supervisor_stop_callbacks: Dict[str, Callable[[], None]] = {}
         self._supervisor_restart_callbacks: Dict[str, Callable[[], None]] = {}
         self._watchdog_stop = threading.Event()
@@ -413,7 +485,113 @@ class DeviceService:
                 return rec
         return None
 
-    def connect_device(self, device_id: str, *, activate: bool = True) -> ConnectionResult:
+    def connect_device(self, device_id: str, *, activate: bool = True, allow_cross_network: bool = False, deadline: Optional[float] = None) -> ConnectionResult:
+        stored = read_devices_store(self.devices_json)
+        target = next((d for d in stored.get("Devices", []) if d.get("Id") == device_id), None)
+        if target:
+            lock = self._lock_for_device(target.get("UsbSerial"), device_id, target.get("LastEndpoint"))
+            with lock:
+                return self._connect_device_locked(device_id, activate=activate, allow_cross_network=allow_cross_network, deadline=deadline)
+        return ConnectionResult(False, device_id=device_id, error="Dispositivo no registrado.")
+
+    @staticmethod
+    def _current_network_bssid() -> Optional[str]:
+        if os.name != "nt":
+            return None
+        try:
+            result = subprocess.run(["netsh", "wlan", "show", "interfaces"], capture_output=True,
+                                    text=True, timeout=3, check=False)
+            match = re.search(r"(?im)^\s*BSSID\s*:\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5})\s*$", result.stdout)
+            return match.group(1).lower() if match else None
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
+    def _endpoint_on_current_network(self, entry: Any) -> bool:
+        known = entry.get("NetworkBssid") if isinstance(entry, dict) else None
+        current = self._current_network_bssid()
+        if not known or not current:
+            return False
+        return str(known).lower() == current
+
+    @staticmethod
+    def _endpoint_ready(client: Any, endpoint: str) -> bool:
+        return any(d.serial == endpoint and d.state == "device" for d in client.list())
+
+    @staticmethod
+    def _physical_hash(identity: Optional[str]) -> Optional[str]:
+        canonical = (identity or "").strip().lower()
+        return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest() if canonical else None
+
+    def _connected_identity_hash(self, client: Any, endpoint: str) -> Optional[str]:
+        if not self._endpoint_ready(client, endpoint):
+            return None
+        try:
+            if self._run_adb_host("-s", endpoint, "get-serialno", timeout=5).strip() != endpoint:
+                return None
+            return self._physical_hash(self._physical_identity(client.device(endpoint)))
+        except Exception:
+            return None
+
+    def _verify_reconnect_identity(self, client: Any, endpoint: str, target: Dict[str, Any]) -> Tuple[str, Optional[str]]:
+        """Devuelve verified, provisional o rejected y la huella observada."""
+        if not self._endpoint_ready(client, endpoint):
+            return "OFFLINE", None
+        try:
+            transport = self._run_adb_host("-s", endpoint, "get-serialno", timeout=5).strip()
+            if transport != endpoint:
+                return "SERIAL_NO_COINCIDE", None
+            observed = self._physical_hash(self._physical_identity(client.device(endpoint)))
+        except Exception:
+            return "SERIAL_NO_COINCIDE", None
+        expected = target.get("PhysicalIdHash")
+        if expected:
+            return ("verified", observed) if observed == expected else ("SERIAL_NO_COINCIDE", observed)
+        usb_serial = target.get("UsbSerial")
+        if usb_serial and any(d.serial == usb_serial and d.state == "device" for d in client.list()):
+            try:
+                usb_hash = self._physical_hash(self._physical_identity(client.device(usb_serial)))
+            except Exception:
+                usb_hash = None
+            return ("verified", observed) if usb_hash and observed == usb_hash else ("SERIAL_NO_COINCIDE", observed)
+        return "provisional", observed
+
+    @staticmethod
+    def _reconnect_error(output: str) -> str:
+        value = output.lower()
+        if "authenticat" in value or "certificate" in value or "unauthorized" in value:
+            return "AUTH_FAILED"
+        if "no route" in value or "unreachable" in value or "network" in value and "unreachable" in value:
+            return "NO_ROUTE_VPN"
+        if "refused" in value:
+            return "CONNECT_RECHAZADO"
+        if "timed out" in value or "timeout" in value:
+            return "TIMEOUT"
+        return "CONNECT_RECHAZADO"
+
+    def _connect_recovery_candidate(self, client: Any, endpoint: str, timeout: float,
+                                    device_id: str = "unknown", stage: str = "connect") -> Tuple[bool, str]:
+        # adb reconnect offline afecta a todos los transportes; limpiar solo este endpoint.
+        started = time.monotonic()
+        try:
+            if any(d.serial == endpoint and d.state == "offline" for d in client.list()):
+                try:
+                    client.disconnect(endpoint)
+                except Exception:
+                    pass
+                self._conversion_log(device_id, "offline", "OFFLINE", endpoint)
+            output = str(client.connect(endpoint, timeout=timeout) or "")
+            if "connected to" in output.lower() or "already connected" in output.lower():
+                self._conversion_log(device_id, stage, "CONNECTED", endpoint, int((time.monotonic() - started) * 1000))
+                return True, "SUCCESS"
+            code = self._reconnect_error(output)
+            self._conversion_log(device_id, stage, code, endpoint, int((time.monotonic() - started) * 1000))
+            return False, code
+        except Exception as exc:
+            code = self._reconnect_error(str(exc))
+            self._conversion_log(device_id, stage, code, endpoint, int((time.monotonic() - started) * 1000))
+            return False, code
+
+    def _connect_device_locked(self, device_id: str, *, activate: bool, allow_cross_network: bool, deadline: Optional[float]) -> ConnectionResult:
         """
         Reconecta un dispositivo usando la prioridad inteligente:
         1. Endpoint mDNS actual.
@@ -435,6 +613,10 @@ class DeviceService:
             )
 
         client = get_adb_client()
+        last_failure = "CONNECT_RECHAZADO"
+
+        def timeout(limit: float) -> float:
+            return limit if deadline is None else max(0.5, min(limit, deadline - time.monotonic()))
 
         def activate_endpoint(endpoint: str) -> None:
             """Publica un cambio real de endpoint para las vistas consumidoras.
@@ -446,128 +628,156 @@ class DeviceService:
             if not activate:
                 return
             previous_serial = self.serial
-            previous_device_id = store.get("CurrentDeviceId")
+            latest_store = read_devices_store(self.devices_json)
+            previous_device_id = latest_store.get("CurrentDeviceId")
             self.serial = endpoint
             self._explicitly_selected = True
-            store["CurrentDeviceId"] = device_id
+            latest_store["CurrentDeviceId"] = device_id
             if previous_serial != endpoint or previous_device_id != device_id:
-                save_devices_store(store, self.devices_json)
+                save_devices_store(latest_store, self.devices_json)
                 self._notify_device_change()
+
+        def finish_candidate(endpoint: str, source: str, service_name: Optional[str] = None) -> Optional[ConnectionResult]:
+            nonlocal last_failure
+            stage_started = time.monotonic()
+            state, physical_hash = self._verify_reconnect_identity(client, endpoint, target)
+            self._conversion_log(device_id, source, state.upper() if state in ("verified", "provisional") else state,
+                                 endpoint, int((time.monotonic() - stage_started) * 1000))
+            logger.info("Reconexión %s de %s: %s (%.0f ms)", source, endpoint, state,
+                        (time.monotonic() - stage_started) * 1000)
+            if state not in ("verified", "provisional"):
+                last_failure = state
+                return None
+            if state == "provisional":
+                self._provisional_endpoints[device_id] = endpoint
+                activate_endpoint(endpoint)
+                return ConnectionResult(True, device_id=device_id, endpoint=endpoint, method=source,
+                                        provisional=True,
+                                        message=f"Conexión provisional a {endpoint}; identidad pendiente de verificar por USB o vinculación manual.")
+            self._provisional_endpoints.pop(device_id, None)
+            self._record_successful_endpoint(target, endpoint, source=source,
+                                             mdns_service_name=service_name, physical_id_hash=physical_hash)
+            save_devices_store(store, self.devices_json)
+            activate_endpoint(endpoint)
+            self.refresh_device_metadata(device_id)
+            return ConnectionResult(True, device_id=device_id, endpoint=endpoint, method=source,
+                                    message=f"Conexión verificada a {endpoint} ({source}).")
         raw_list = client.list()
 
         # Si el USB autorizado está presente, usarlo primero. Evita bloquear
         # la detección por varios endpoints Wi-Fi antiguos o fuera de la red.
         usb_serial = target.get("UsbSerial")
+        def usb_conversion_pending() -> bool:
+            return bool(usb_serial and usb_serial in self._usb_priority)
+
+        def yield_to_usb() -> ConnectionResult:
+            return ConnectionResult(False, device_id=device_id, error="USB_PRIORITY",
+                                    message="USB detectado; esperando conversión Wi-Fi.")
+
         usb_online = next((d for d in raw_list if d.serial == usb_serial and d.state == "device"), None) if usb_serial else None
         if usb_online:
-            activate_endpoint(usb_serial)
-            now_utc = datetime.now(timezone.utc).isoformat()
-            target["LastConnectedUtc"] = now_utc
-            target["LastSeenUtc"] = now_utc
-            save_devices_store(store, self.devices_json)
-            self.refresh_device_metadata(device_id)
-            return ConnectionResult(
-                success=True,
-                device_id=device_id,
-                endpoint=usb_serial,
-                method="usb",
-                message=f"Conectado por USB ({usb_serial}).",
-            )
+            if target.get("Mode") == "tcpip-5555":
+                converted, detail = self.convert_usb_to_wifi(usb_serial=usb_serial, activate=activate)
+                if converted:
+                    current_endpoint = read_devices_store(self.devices_json)
+                    converted_record = next((d for d in current_endpoint.get("Devices", []) if d.get("Id") == device_id), None)
+                    endpoint = (converted_record or {}).get("LastEndpoint")
+                    if endpoint:
+                        activate_endpoint(endpoint)
+                        return ConnectionResult(True, device_id=device_id, endpoint=endpoint,
+                                                method="usb-tcpip", message=detail)
+                logger.warning("Conversión USB pendiente para %s: %s", device_id, detail)
+            else:
+                try:
+                    usb_hash = self._physical_hash(self._physical_identity(client.device(usb_serial)))
+                except Exception:
+                    usb_hash = None
+                if target.get("PhysicalIdHash") and usb_hash != target["PhysicalIdHash"]:
+                    return ConnectionResult(False, device_id=device_id, error="SERIAL_NO_COINCIDE",
+                                            message="La identidad USB no coincide con el registro.")
+                if usb_hash:
+                    target["PhysicalIdHash"] = usb_hash
+                now_utc = datetime.now(timezone.utc).isoformat()
+                target["LastConnectedUtc"] = now_utc
+                target["LastSeenUtc"] = now_utc
+                save_devices_store(store, self.devices_json)
+                activate_endpoint(usb_serial)
+                self.refresh_device_metadata(device_id)
+                return ConnectionResult(True, device_id=device_id, endpoint=usb_serial,
+                                        method="usb", message=f"Conectado por USB ({usb_serial}).")
 
         # 1. Endpoint mDNS actual
+        if usb_conversion_pending():
+            return yield_to_usb()
         try:
-            services = self.find_wireless_devices()
+            if target.get("Mode") != "wireless-debugging-tls":
+                services = []
+            else:
+                services = self.find_wireless_devices()
             preferred_service = (target.get("MdnsServiceName") or "").lower()
-            last_ip = target.get("LastIp") or ""
             matched_svc = None
             if preferred_service:
                 matched_svc = next((s for s in services if s["service_name"].lower() == preferred_service), None)
-            if not matched_svc and last_ip:
-                matched_svc = next((s for s in services if s["host"].lower() == last_ip.lower()), None)
 
             if matched_svc:
                 ep = matched_svc["endpoint"]
                 logger.info("Probando reconexión mDNS a %s para %s...", ep, target.get("FriendlyName"))
-                conn_res = client.connect(ep, timeout=8.0).strip()
-                if "connected to" in conn_res.lower() or "already connected" in conn_res.lower():
-                    self._record_successful_endpoint(target, ep, source="mdns", mdns_service_name=matched_svc["service_name"])
-                    save_devices_store(store, self.devices_json)
-                    activate_endpoint(ep)
-                    self.refresh_device_metadata(device_id)
-                    return ConnectionResult(
-                        success=True,
-                        device_id=device_id,
-                        endpoint=ep,
-                        method="mdns",
-                        message=f"Conectado exitosamente vía mDNS a {ep}.",
-                    )
+                connected, code = self._connect_recovery_candidate(client, ep, timeout(5.0), device_id, "mdns")
+                if connected:
+                    result = finish_candidate(ep, "mdns", matched_svc["service_name"])
+                    if result:
+                        return result
+                else:
+                    last_failure = code
         except Exception as exc:
             logger.debug("Intento mDNS no disponible: %s", exc)
 
-        # 2. Endpoint guardado
+        # 2. Endpoints de la red actual; el método verificado previamente ordena
+        # solo estas alternativas seguras. mDNS actual siempre se intentó primero.
         saved_ep = target.get("LastEndpoint")
-        if saved_ep and is_network_serial(saved_ep):
-            try:
-                logger.info("Probando endpoint guardado %s...", saved_ep)
-                conn_res = client.connect(saved_ep, timeout=6.0).strip()
-                if "connected to" in conn_res.lower() or "already connected" in conn_res.lower():
-                    self._record_successful_endpoint(target, saved_ep, source="saved")
-                    save_devices_store(store, self.devices_json)
-                    activate_endpoint(saved_ep)
-                    self.refresh_device_metadata(device_id)
-                    return ConnectionResult(
-                        success=True,
-                        device_id=device_id,
-                        endpoint=saved_ep,
-                        method="saved",
-                        message=f"Conectado a endpoint guardado {saved_ep}.",
-                    )
-            except Exception as exc:
-                logger.debug("Fallo al conectar endpoint guardado %s: %s", saved_ep, exc)
-
-        # 3. Historial de endpoints
-        endpoints_history = target.get("Endpoints") or []
-        for ep_entry in endpoints_history:
+        saved_entry = next((entry for entry in target.get("Endpoints") or []
+                            if isinstance(entry, dict) and entry.get("Endpoint") == saved_ep), None)
+        local_candidates: List[Tuple[str, str]] = []
+        if saved_ep and is_network_serial(saved_ep) and (allow_cross_network or self._endpoint_on_current_network(saved_entry)):
+            local_candidates.append((saved_ep, "saved"))
+        for ep_entry in target.get("Endpoints") or []:
             ep = ep_entry.get("Endpoint") if isinstance(ep_entry, dict) else ep_entry
-            if ep and ep != saved_ep and is_network_serial(ep):
-                try:
-                    logger.info("Probando endpoint de historial %s...", ep)
-                    conn_res = client.connect(ep, timeout=5.0).strip()
-                    if "connected to" in conn_res.lower() or "already connected" in conn_res.lower():
-                        self._record_successful_endpoint(target, ep, source="history")
-                        save_devices_store(store, self.devices_json)
-                        activate_endpoint(ep)
-                        self.refresh_device_metadata(device_id)
-                        return ConnectionResult(
-                            success=True,
-                            device_id=device_id,
-                            endpoint=ep,
-                            method="history",
-                            message=f"Conectado mediante historial de endpoints a {ep}.",
-                        )
-                except Exception as exc:
-                    logger.debug("Fallo al probar historial %s: %s", ep, exc)
+            if ep and ep != saved_ep and is_network_serial(ep) and (allow_cross_network or self._endpoint_on_current_network(ep_entry)):
+                local_candidates.append((ep, "history"))
+        if target.get("LastSuccessfulReconnectMethod") == "history":
+            local_candidates.sort(key=lambda item: 0 if item[1] == "history" else 1)
+        for ep, source in local_candidates:
+            if usb_conversion_pending():
+                return yield_to_usb()
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            logger.info("Probando endpoint %s de %s...", ep, source)
+            connected, code = self._connect_recovery_candidate(client, ep, timeout(5.0 if source == "saved" else 3.0), device_id, source)
+            if connected:
+                result = finish_candidate(ep, source)
+                if result:
+                    return result
+            else:
+                last_failure = code
 
         # 4. Endpoint privado o VPN (NetworkProfiles)
         profiles = target.get("NetworkProfiles") or []
         for prof in profiles:
+            if usb_conversion_pending():
+                return yield_to_usb()
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             pep = prof.get("PreferredEndpoint")
-            if pep and is_network_serial(pep) and pep not in (saved_ep,):
+            if pep and is_network_serial(pep) and pep not in (saved_ep,) and allow_cross_network:
                 try:
                     logger.info("Probando endpoint de perfil VPN/Red %s...", pep)
-                    conn_res = client.connect(pep, timeout=5.0).strip()
-                    if "connected to" in conn_res.lower() or "already connected" in conn_res.lower():
-                        self._record_successful_endpoint(target, pep, source="profile")
-                        save_devices_store(store, self.devices_json)
-                        activate_endpoint(pep)
-                        self.refresh_device_metadata(device_id)
-                        return ConnectionResult(
-                            success=True,
-                            device_id=device_id,
-                            endpoint=pep,
-                            method="profile",
-                            message=f"Conectado mediante perfil de red a {pep}.",
-                        )
+                    connected, code = self._connect_recovery_candidate(client, pep, timeout(3.0), device_id, "profile")
+                    if connected:
+                        result = finish_candidate(pep, "profile")
+                        if result:
+                            return result
+                    else:
+                        last_failure = code
                 except Exception as exc:
                     logger.debug("Fallo al probar perfil %s: %s", pep, exc)
 
@@ -575,11 +785,20 @@ class DeviceService:
         if usb_serial:
             usb_online = next((d for d in raw_list if d.serial == usb_serial and d.state == "device"), None)
             if usb_online:
-                activate_endpoint(usb_serial)
+                try:
+                    usb_hash = self._physical_hash(self._physical_identity(client.device(usb_serial)))
+                except Exception:
+                    usb_hash = None
+                if target.get("PhysicalIdHash") and usb_hash != target["PhysicalIdHash"]:
+                    return ConnectionResult(False, device_id=device_id, error="SERIAL_NO_COINCIDE",
+                                            message="La identidad USB no coincide con el registro.")
+                if usb_hash:
+                    target["PhysicalIdHash"] = usb_hash
                 now_utc = datetime.now(timezone.utc).isoformat()
                 target["LastConnectedUtc"] = now_utc
                 target["LastSeenUtc"] = now_utc
                 save_devices_store(store, self.devices_json)
+                activate_endpoint(usb_serial)
                 self.refresh_device_metadata(device_id)
                 return ConnectionResult(
                     success=True,
@@ -589,10 +808,11 @@ class DeviceService:
                     message=f"Conectado por respaldo USB ({usb_serial}).",
                 )
 
+        self._conversion_log(device_id, "reconnect", last_failure)
         return ConnectionResult(
             success=False,
             device_id=device_id,
-            error="No fue posible conectar por mDNS, endpoint guardado, historial, VPN ni USB.",
+            error=f"{last_failure}: no fue posible conectar por mDNS, endpoint guardado, historial, VPN ni USB.",
             message="Dispositivo no localizable en red ni por USB.",
         )
 
@@ -634,6 +854,18 @@ class DeviceService:
             else:
                 logger.info("Dispositivo guardado no disponible todavía: %s", device.get("FriendlyName"))
         return results
+
+    def reconnect_with_retry(self, device_id: str, seconds: float = 30.0, allow_cross_network: bool = False) -> ConnectionResult:
+        """Reintenta fallos transitorios hasta agotar el presupuesto indicado."""
+        deadline = time.monotonic() + seconds
+        delay = 1.0
+        result = ConnectionResult(False, device_id=device_id, error="CONNECT_RECHAZADO")
+        while True:
+            result = self.connect_device(device_id, deadline=deadline, allow_cross_network=allow_cross_network)
+            if result.success or time.monotonic() >= deadline:
+                return result
+            time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+            delay = min(delay * 2, 4.0)
 
     def disconnect_device(self, device_id: str) -> OperationResult:
         """
@@ -1015,10 +1247,14 @@ class DeviceService:
         endpoint: str,
         source: str = "tcpip",
         mdns_service_name: Optional[str] = None,
+        physical_id_hash: Optional[str] = None,
     ) -> None:
         """Agrega un endpoint al historial (conservando hasta 10) y actualiza metadatos."""
         now_utc = datetime.now(timezone.utc).isoformat()
         record["LastEndpoint"] = endpoint
+        if physical_id_hash:
+            record["PhysicalIdHash"] = physical_id_hash
+        record["LastSuccessfulReconnectMethod"] = source
         record["LastConnectedUtc"] = now_utc
         record["LastSeenUtc"] = now_utc
         if ":" in endpoint:
@@ -1035,9 +1271,12 @@ class DeviceService:
                 "ConnectedUtc": now_utc,
                 "MdnsServiceName": mdns_service_name or record.get("MdnsServiceName"),
                 "Source": source,
+                "Status": "device",
+                "NetworkBssid": self._current_network_bssid(),
             },
         )
         del endpoints_list[10:]
+        self._conversion_log(str(record.get("Id") or "unknown"), source, "SUCCESS", endpoint)
 
     # -------------------------------------------------------------------------
     # Datos consolidados para la administración visual (Tarjetas)
@@ -1108,13 +1347,19 @@ class DeviceService:
             mode = s.get("Mode") or "tcpip-5555"
             last_conn = s.get("LastConnectedUtc") or "—"
 
-            ep_online = online_map.get(last_ep) if last_ep else None
+            provisional_ep = self._provisional_endpoints.get(device_id)
+            provisional_online = online_map.get(provisional_ep) if provisional_ep else None
+            ep_online = provisional_online or (online_map.get(last_ep) if last_ep else None)
             usb_online = online_map.get(usb) if usb else None
+            if ep_online and ep_online.state == "device" and not s.get("PhysicalIdHash") and not usb_online:
+                self._provisional_endpoints.setdefault(device_id, ep_online.serial)
+                provisional_ep = ep_online.serial
+                provisional_online = ep_online
 
             active_info = ep_online or usb_online
             if active_info:
                 if ep_online:
-                    matched_online_serials.add(last_ep)
+                    matched_online_serials.add(ep_online.serial)
                 if usb_online:
                     matched_online_serials.add(usb)
 
@@ -1137,7 +1382,7 @@ class DeviceService:
                 associated_endpoints.append(f"USB: {usb}")
 
             is_prim = (device_id == current_id)
-            is_active = (self.serial in (last_ep, usb) and bool(self.serial))
+            is_active = (self.serial in (last_ep, usb, provisional_ep) and bool(self.serial))
 
             cards.append({
                 "id": device_id,
@@ -1155,6 +1400,7 @@ class DeviceService:
                 "usb_serial": usb,
                 "associated_endpoints": associated_endpoints,
                 "endpoints_history": s.get("Endpoints") or [],
+                "provisional": bool(provisional_online and provisional_online.state == "device"),
             })
 
         for serial, info in online_map.items():
@@ -1197,9 +1443,9 @@ class DeviceService:
             return True, f"Dispositivo activo cambiado a '{match.get('FriendlyName')}' ({serial})."
         return True, f"Dispositivo activo cambiado a: {serial}."
 
-    def set_active_by_saved_id(self, device_id: str) -> Tuple[bool, str]:
+    def set_active_by_saved_id(self, device_id: str, retry_seconds: float = 30.0, allow_cross_network: bool = False) -> Tuple[bool, str]:
         """Activa un dispositivo guardado reconectándolo si es necesario."""
-        res = self.connect_device(device_id)
+        res = self.reconnect_with_retry(device_id, seconds=retry_seconds, allow_cross_network=allow_cross_network)
         if res.success:
             self.serial = res.endpoint
             self._explicitly_selected = True
@@ -1208,6 +1454,24 @@ class DeviceService:
             save_devices_store(store, self.devices_json)
             return True, res.message
         return False, res.error or res.message
+
+    def confirm_provisional_identity(self, device_id: str) -> OperationResult:
+        """Vincula explícitamente el endpoint provisional visible en esta sesión."""
+        endpoint = self._provisional_endpoints.get(device_id)
+        if not endpoint:
+            return OperationResult(False, device_id=device_id, error="No hay conexión provisional activa.")
+        store = read_devices_store(self.devices_json)
+        record = next((d for d in store.get("Devices", []) if d.get("Id") == device_id), None)
+        if not record:
+            return OperationResult(False, device_id=device_id, error="Dispositivo no registrado.")
+        client = get_adb_client()
+        state, observed_hash = self._verify_reconnect_identity(client, endpoint, record)
+        if state not in ("verified", "provisional") or not observed_hash:
+            return OperationResult(False, device_id=device_id, error=f"No se pudo verificar el endpoint: {state}.")
+        self._record_successful_endpoint(record, endpoint, source="manual-bind", physical_id_hash=observed_hash)
+        save_devices_store(store, self.devices_json)
+        self._provisional_endpoints.pop(device_id, None)
+        return OperationResult(True, device_id=device_id, message=f"Identidad de {endpoint} vinculada y guardada.")
 
     # -------------------------------------------------------------------------
     # Auto-conversión USB a Wi-Fi y utilidades
@@ -1259,162 +1523,250 @@ class DeviceService:
         self._usb_monitor_stop.set()
 
     def check_and_auto_convert_usb(self, on_result: Optional[Callable[[bool, str], None]] = None) -> None:
-        """Inspecciona si hay un dispositivo USB listo para auto-conversión a Wi-Fi."""
+        """Convierte cada USB legado listo sin bloquear la deteccion de otros telefonos."""
         if not self.auto_wifi_enabled:
             return
-
-        if not self._converting_lock.acquire(blocking=False):
-            return
-
-        launched_worker = False
         try:
-            client = get_adb_client()
-            available = client.list()
+            available = get_adb_client().list()
+            store = read_devices_store(self.devices_json)
+            saved = {
+                d.get("UsbSerial"): d for d in store.get("Devices", [])
+                if d.get("UsbSerial") and d.get("Mode") == "tcpip-5555"
+            }
+            current_usb = {d.serial for d in available if not is_network_serial(d.serial)}
+            self._auto_converted_serials.intersection_update(current_usb)
+            for device in available:
+                serial = device.serial
+                if (device.state != "device" or serial not in saved or serial in self._auto_converted_serials
+                        or time.monotonic() - self._conversion_last_attempt.get(serial, 0.0) < 30.0):
+                    continue
+                with self._conversion_guard:
+                    if serial in self._conversion_inflight:
+                        continue
+                    self._conversion_inflight.add(serial)
+                    self._usb_priority.add(serial)
+                    self._conversion_last_attempt[serial] = time.monotonic()
 
-            # Un serial deja de estar marcado en cuanto se desconecta. Al
-            # reconectarlo por USB podrá activar Wi-Fi ADB otra vez.
-            self._auto_converted_serials.intersection_update(
-                {d.serial for d in available if not is_network_serial(d.serial)}
-            )
+                def worker(usb_serial: str = serial) -> None:
+                    try:
+                        ok, message = self.convert_usb_to_wifi(usb_serial=usb_serial, activate=False)
+                        if ok:
+                            self._auto_converted_serials.add(usb_serial)
+                        if on_result:
+                            on_result(ok, message)
+                    except Exception as exc:
+                        logger.warning("Auto-conversion USB fallida para %s: %s", usb_serial, exc)
+                        self._conversion_log(str(saved[usb_serial].get("Id")), "conversion", "TCPIP_FALLO")
+                        if on_result:
+                            on_result(False, f"TCPIP_FALLO: {exc}")
+                    finally:
+                        with self._conversion_guard:
+                            self._conversion_inflight.discard(usb_serial)
+                            self._usb_priority.discard(usb_serial)
 
-            usb_candidates = [
-                d for d in available
-                if d.state == "device"
-                and not is_network_serial(d.serial)
-                and d.serial not in self._auto_converted_serials
-            ]
-
-            # Al desconectar se olvida el intento previo; si el mismo equipo
-            # vuelve por USB, se convierte de nuevo sin pedir confirmación.
-            current_usb_serials = {d.serial for d in available if not is_network_serial(d.serial)}
-            self._auto_converted_serials.intersection_update(current_usb_serials)
-
-            if not usb_candidates:
-                return
-
-            usb_target = usb_candidates[0].serial
-            # Un USB autorizado siempre tiene prioridad: aunque exista una
-            # sesión Wi-Fi o un perfil TLS previo, se renueva TCP/IP 5555 y se
-            # deja el endpoint actualizado sin pedir una acción al usuario.
-            logger.info("[Auto-WiFi] Dispositivo USB detectado (%s). Iniciando auto-conversión a Wi-Fi...", usb_target)
-            self._auto_converted_serials.add(usb_target)
-
-            def worker():
-                try:
-                    self.set_active_by_serial(usb_target)
-                    ok, msg = self.convert_usb_to_wifi(usb_serial=usb_target)
-                    if ok:
-                        logger.info("[Auto-WiFi] %s", msg)
-                    else:
-                        logger.warning("[Auto-WiFi] Auto-conversión a Wi-Fi no completada: %s", msg)
-                    if on_result:
-                        on_result(ok, msg)
-                finally:
-                    self._converting_lock.release()
-
-            launched_worker = True
-            threading.Thread(target=worker, name="auto-wifi-worker", daemon=True).start()
-
+                threading.Thread(target=worker, name=f"auto-wifi-{serial}", daemon=True).start()
         except Exception as exc:
-            logger.debug("Aviso en escáner de auto-wifi: %s", exc)
-        finally:
-            if not launched_worker:
-                self._converting_lock.release()
+            logger.warning("No se pudo revisar USB para auto-conversion: %s", exc)
 
-    def convert_usb_to_wifi(self, usb_serial: Optional[str] = None) -> Tuple[bool, str]:
-        """Convierte una conexión USB activa a Wi-Fi (tcpip 5555)."""
-        serial = usb_serial or self.serial
-        if not serial:
-            return False, "No se especificó dispositivo USB."
-        if is_network_serial(serial):
-            return False, f"{serial} ya es una conexión de red (Wi-Fi)."
-
+    def _conversion_log(self, device_id: str, stage: str, code: str, endpoint: Optional[str] = None,
+                        duration_ms: Optional[int] = None) -> None:
+        """Guarda un resumen pequeno y rotativo de los intentos."""
+        path = self.devices_json.parent / "reconnect-attempts.jsonl"
         try:
-            client = get_adb_client()
-            dev = client.device(serial)
-            state = dev.get_state()
-            if state == "unauthorized":
-                return False, "El celular requiere autorización en pantalla antes de activar Wi-Fi."
-            if state != "device":
-                return False, f"El dispositivo no está listo (estado: {state})."
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size > 1024 * 1024:
+                old = path.with_suffix(".jsonl.1")
+                old.unlink(missing_ok=True)
+                path.replace(old)
+            entry = {"timestamp": datetime.now(timezone.utc).isoformat(), "device_id": device_id,
+                     "stage": stage, "code": code, "endpoint": endpoint, "duration_ms": duration_ms}
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            logger.warning("No se pudo guardar el diagnostico de reconexion", exc_info=True)
 
-            logger.info("Obteniendo dirección IP Wi-Fi de %s sobre canal USB activo...", serial)
-            model = dev.getprop("ro.product.model") or "Android Phone"
-
-            ip = None
+    @staticmethod
+    def _physical_identity(device: Any) -> Optional[str]:
+        for key in ("ro.serialno", "ro.boot.serialno"):
             try:
-                ip = dev.wlan_ip()
+                value = str(device.getprop(key) or "").strip()
             except Exception:
-                pass
+                continue
+            if value and value.lower() not in ("unknown", "null", "none"):
+                return value
+        try:
+            android_id = str(device.shell("settings get secure android_id") or "").strip()
+            if re.fullmatch(r"[0-9a-fA-F]{16}", android_id):
+                return f"android-id:{android_id.lower()}"
+        except Exception:
+            pass
+        return None
 
-            if not ip or ip == "127.0.0.1":
-                out = dev.shell("ip -4 addr show wlan0") or ""
-                m = re.search(r"inet\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", out)
-                ip = m.group(1) if m else None
+    @staticmethod
+    def _usb_wifi_ip(device: Any) -> Optional[str]:
+        for command in ("ip route", "ip addr", "ip -4 addr show wlan0"):
+            try:
+                output = str(device.shell(command) or "")
+            except Exception:
+                continue
+            if command == "ip route":
+                output = "\n".join(line for line in output.splitlines() if "wlan" in line)
+            elif command == "ip addr":
+                blocks = re.split(r"(?m)^\d+: ", output)
+                output = "\n".join(block for block in blocks if block.startswith("wlan"))
+            matches = re.findall(r"(?:\bsrc\s+|\binet\s+)(\d{1,3}(?:\.\d{1,3}){3})", output)
+            for candidate in matches:
+                try:
+                    ip = ipaddress.ip_address(candidate)
+                except ValueError:
+                    continue
+                if isinstance(ip, ipaddress.IPv4Address) and not ip.is_loopback and not ip.is_link_local:
+                    return candidate
+        try:
+            candidate = str(device.wlan_ip() or "")
+            address = ipaddress.ip_address(candidate)
+            if isinstance(address, ipaddress.IPv4Address) and not address.is_loopback and not address.is_link_local:
+                return candidate
+        except (ValueError, AttributeError, OSError):
+            pass
+        return None
 
-            if not ip or ip == "127.0.0.1":
-                return False, "No se pudo obtener la IP Wi-Fi de 'wlan0'. Asegúrate de que el celular esté conectado a la misma red Wi-Fi."
-
+    def convert_usb_to_wifi(self, usb_serial: Optional[str] = None, *, activate: bool = True) -> Tuple[bool, str]:
+        """Convierte un USB legado y conserva su identidad fisica."""
+        serial = usb_serial or self.serial
+        if not serial or is_network_serial(serial):
+            return False, "USB_NO_DETECTADO: selecciona un dispositivo USB."
+        store = read_devices_store(self.devices_json)
+        target = next((d for d in store.get("Devices", []) if d.get("UsbSerial") == serial), None)
+        if not target or target.get("Mode") != "tcpip-5555":
+            return False, "USB_NO_DETECTADO: solo se convierten dispositivos TCP/IP legado registrados."
+        device_id = str(target["Id"])
+        endpoint_old = target.get("LastEndpoint")
+        lock = self._lock_for_device(serial, device_id, endpoint_old)
+        with lock, self._conversion_process_lock(serial):
+            client = get_adb_client()
+            raw = next((d for d in client.list() if d.serial == serial), None)
+            if not raw:
+                self._conversion_log(device_id, "precondition", "USB_NO_DETECTADO")
+                return False, "USB_NO_DETECTADO: el telefono ya no esta conectado."
+            if raw.state != "device":
+                code = "USB_UNAUTHORIZED" if raw.state == "unauthorized" else "OFFLINE"
+                self._conversion_log(device_id, "precondition", code)
+                return False, f"{code}: autoriza o reactiva el telefono."
+            dev = client.device(serial)
+            physical_id = self._physical_identity(dev)
+            physical_hash = self._physical_hash(physical_id)
+            try:
+                model = dev.getprop("ro.product.model") or "Android"
+            except Exception:
+                model = "Android"
+            if not physical_id:
+                self._conversion_log(device_id, "identity", "SERIAL_NO_COINCIDE")
+                return False, "SERIAL_NO_COINCIDE: no se pudo leer la identidad fisica por USB."
+            if target.get("PhysicalIdHash") and target["PhysicalIdHash"] != physical_hash:
+                return False, "SERIAL_NO_COINCIDE: la identidad USB no coincide con el registro."
+            for online in client.list():
+                if online.state != "device" or not is_network_serial(online.serial):
+                    continue
+                try:
+                    wifi_dev = client.device(online.serial)
+                    if self._physical_identity(wifi_dev) == physical_id:
+                        transport = self._run_adb_host("-s", online.serial, "get-serialno", timeout=5).strip()
+                        if transport != online.serial:
+                            continue
+                        self._save_wifi_device_to_store(model=model, usb_serial=serial,
+                                                        endpoint=online.serial, activate=activate,
+                                                        physical_id_hash=physical_hash)
+                        if activate or store.get("CurrentDeviceId") == device_id:
+                            self.serial = online.serial
+                            self._explicitly_selected = True
+                        self._conversion_log(device_id, "existing", "SUCCESS", online.serial)
+                        return True, f"Wi-Fi ya activo en {online.serial}."
+                except Exception:
+                    pass
+            ip = self._usb_wifi_ip(dev)
+            if not ip:
+                self._conversion_log(device_id, "ip", "IP_NO_ENCONTRADA")
+                return False, "IP_NO_ENCONTRADA: revisa el Wi-Fi del telefono."
             endpoint = f"{ip}:5555"
-            logger.info("IP Wi-Fi detectada: %s. Activando TCP/IP en puerto 5555...", ip)
-
+            self._conversion_log(device_id, "tcpip", "START", endpoint)
+            tcpip_failed = False
             try:
                 dev.tcpip(5555)
-            except Exception as tcp_exc:
-                logger.debug("Respuesta en comando tcpip: %s", tcp_exc)
+            except Exception as exc:
+                tcpip_failed = True
+                logger.warning("ADB reinicio o perdio USB durante tcpip: %s", exc)
+            deadline = time.monotonic() + 15
+            last_error = "TCPIP_FALLO" if tcpip_failed else "ADBD_NO_VOLVIO"
+            while time.monotonic() < deadline:
+                try:
+                    response = str(client.connect(endpoint, timeout=4.0) or "")
+                    if not any(word in response.lower() for word in ("connected to", "already connected")):
+                        last_error = "CONNECT_RECHAZADO"
+                    else:
+                        network = next((d for d in client.list() if d.serial == endpoint), None)
+                        if network and network.state == "device":
+                            transport_serial = self._run_adb_host("-s", endpoint, "get-serialno", timeout=5).strip()
+                            if transport_serial != endpoint:
+                                last_error = "SERIAL_NO_COINCIDE"
+                                break
+                            wifi_dev = client.device(endpoint)
+                            if self._physical_identity(wifi_dev) != physical_id:
+                                last_error = "SERIAL_NO_COINCIDE"
+                                break
+                            self._save_wifi_device_to_store(model=model,
+                                                            usb_serial=serial, endpoint=endpoint,
+                                                            activate=activate, physical_id_hash=physical_hash)
+                            if activate or store.get("CurrentDeviceId") == device_id:
+                                self.serial = endpoint
+                                self._explicitly_selected = True
+                            self._auto_converted_serials.add(serial)
+                            self._conversion_log(device_id, "verified", "SUCCESS", endpoint)
+                            self._notify_device_change()
+                            return True, f"Conexion Wi-Fi verificada en {endpoint}."
+                        last_error = "OFFLINE"
+                except Exception as exc:
+                    logger.debug("Conexion Wi-Fi pendiente: %s", exc)
+                time.sleep(1)
+            self._conversion_log(device_id, "verify", last_error, endpoint)
+            return False, f"{last_error}: no se verifico la conexion Wi-Fi de {serial}."
 
-            time.sleep(2.0)
-            conn_res = client.connect(endpoint, timeout=12.0)
-            if "connected to" not in conn_res.lower() and "already connected" not in conn_res.lower():
-                time.sleep(1.0)
-                conn_res = client.connect(endpoint, timeout=12.0)
-
-            self._save_wifi_device_to_store(model=model, usb_serial=serial, endpoint=endpoint)
-            self.serial = endpoint
-            self._explicitly_selected = True
-            self._auto_converted_serials.add(serial)
-            self._notify_device_change()
-            return True, f"¡Conexión Wi-Fi establecida con éxito a {endpoint}! Ya puedes desconectar el cable USB."
-        except Exception as exc:
-            logger.error("Error al convertir USB a Wi-Fi: %s", exc)
-            return False, f"Fallo al convertir a Wi-Fi: {exc}"
-
-    def _save_wifi_device_to_store(self, model: str, usb_serial: str, endpoint: str) -> None:
+    def _save_wifi_device_to_store(self, model: str, usb_serial: str, endpoint: str, activate: bool = True,
+                                   physical_id_hash: Optional[str] = None) -> None:
         """Persiste dispositivo Wi-Fi en devices.json."""
-        store = read_devices_store(self.devices_json)
-        devices = store.setdefault("Devices", [])
-        existing = next(
-            (d for d in devices if d.get("UsbSerial") == usb_serial or d.get("LastEndpoint") == endpoint),
-            None,
-        )
-        if existing:
-            self._record_successful_endpoint(existing, endpoint, source="tcpip")
-            existing["Mode"] = "tcpip-5555"
-            device_id = existing["Id"]
-        else:
-            device_id = uuid.uuid4().hex
-            new_dev = {
-                "Id": device_id,
-                "FriendlyName": f"{model} ({endpoint})",
-                "UsbSerial": usb_serial,
-                "LastEndpoint": endpoint,
-                "Mode": "tcpip-5555",
-                "LastConnectedUtc": datetime.now(timezone.utc).isoformat(),
-                "IsPaired": True,
-                "NetworkProfiles": [
-                    {
-                        "Id": uuid.uuid4().hex,
-                        "Name": "Wi-Fi Principal",
-                        "PreferredEndpoint": endpoint,
-                        "ForceUsbOnly": False,
-                    }
-                ],
-            }
-            self._record_successful_endpoint(new_dev, endpoint, source="tcpip")
-            devices.append(new_dev)
+        with DEVICE_STORE_LOCK:
+            store = read_devices_store(self.devices_json)
+            devices = store.setdefault("Devices", [])
+            existing = next((d for d in devices if d.get("UsbSerial") == usb_serial), None)
+            if existing:
+                self._record_successful_endpoint(existing, endpoint, source="tcpip", physical_id_hash=physical_id_hash)
+                existing["Mode"] = "tcpip-5555"
+                device_id = existing["Id"]
+            else:
+                device_id = uuid.uuid4().hex
+                new_dev = {
+                    "Id": device_id,
+                    "FriendlyName": f"{model} ({endpoint})",
+                    "UsbSerial": usb_serial,
+                    "LastEndpoint": endpoint,
+                    "Mode": "tcpip-5555",
+                    "LastConnectedUtc": datetime.now(timezone.utc).isoformat(),
+                    "IsPaired": True,
+                    "NetworkProfiles": [
+                        {
+                            "Id": uuid.uuid4().hex,
+                            "Name": "Wi-Fi Principal",
+                            "PreferredEndpoint": endpoint,
+                            "ForceUsbOnly": False,
+                        }
+                    ],
+                }
+                self._record_successful_endpoint(new_dev, endpoint, source="tcpip", physical_id_hash=physical_id_hash)
+                devices.append(new_dev)
 
-        store["CurrentDeviceId"] = device_id
-        save_devices_store(store, self.devices_json)
+            if activate or not store.get("CurrentDeviceId"):
+                store["CurrentDeviceId"] = device_id
+            save_devices_store(store, self.devices_json)
 
     @staticmethod
     def _run_adb_host(*arguments: str, timeout: float = 15.0) -> str:
@@ -1521,6 +1873,11 @@ class DeviceService:
             if selected is None:
                 return False, "Hay varios teléfonos mDNS; usa Buscar dispositivo WiFi para seleccionar uno."
 
+            client = get_adb_client()
+            res = client.connect(selected["endpoint"], timeout=12.0).strip()
+            physical_hash = self._connected_identity_hash(client, selected["endpoint"])
+            if not physical_hash:
+                return False, f"SERIAL_NO_COINCIDE: no se verificó el endpoint {selected['endpoint']} ({res})."
             store = read_devices_store(self.devices_json)
             devices = store.setdefault("Devices", [])
             dev_id = uuid.uuid4().hex
@@ -1533,13 +1890,11 @@ class DeviceService:
                 "IsPaired": True,
                 "NetworkProfiles": [],
             }
-            self._record_successful_endpoint(record, selected["endpoint"], source="mdns", mdns_service_name=selected["service_name"])
+            self._record_successful_endpoint(record, selected["endpoint"], source="mdns", mdns_service_name=selected["service_name"], physical_id_hash=physical_hash)
             devices.append(record)
             store["CurrentDeviceId"] = dev_id
             save_devices_store(store, self.devices_json)
 
-            client = get_adb_client()
-            res = client.connect(selected["endpoint"], timeout=12.0).strip()
             self.serial = selected["endpoint"]
             self._explicitly_selected = True
             return True, f"Conectado por Wireless Debugging a {selected['endpoint']} ({res})."
@@ -1573,6 +1928,11 @@ class DeviceService:
                 return False, "Emparejamiento correcto, pero no se encontró el endpoint de conexión mDNS."
             client = get_adb_client()
             connect_output = client.connect(endpoint, timeout=12.0).strip()
+            if not self._endpoint_ready(client, endpoint):
+                return False, f"OFFLINE: ADB no dejó {endpoint} en estado device ({connect_output})."
+            physical_hash = self._connected_identity_hash(client, endpoint)
+            if not physical_hash:
+                return False, f"SERIAL_NO_COINCIDE: no se verificó la identidad de {endpoint}."
             store = read_devices_store(self.devices_json)
             devices = store.setdefault("Devices", [])
             device_id = uuid.uuid4().hex
@@ -1585,7 +1945,8 @@ class DeviceService:
                 "IsPaired": True,
                 "NetworkProfiles": [],
             }
-            self._record_successful_endpoint(record, endpoint, source="mdns", mdns_service_name=result.service_name)
+            self._record_successful_endpoint(record, endpoint, source="mdns", mdns_service_name=result.service_name,
+                                             physical_id_hash=physical_hash)
             devices.append(record)
             store["CurrentDeviceId"] = device_id
             save_devices_store(store, self.devices_json)
@@ -1618,6 +1979,8 @@ class DeviceService:
             res = client.connect(ep, timeout=10.0).strip()
             if "failed" in res.lower() or "cannot" in res.lower() or "refused" in res.lower():
                 return False, f"Error al conectar: {res}"
+            if not self._endpoint_ready(client, ep):
+                return False, f"OFFLINE: ADB aceptó {ep}, pero no llegó a estado device."
 
             time.sleep(1.0)
             model = "Android Phone"
@@ -1628,7 +1991,11 @@ class DeviceService:
                 pass
 
             name = friendly_name.strip() or f"{model} ({ep})"
-            self._save_wifi_device_to_store(model=name, usb_serial="", endpoint=ep)
+            physical_hash = self._connected_identity_hash(client, ep)
+            if not physical_hash:
+                return False, f"SERIAL_NO_COINCIDE: no se verificó la identidad de {ep}."
+            self._save_wifi_device_to_store(model=name, usb_serial="", endpoint=ep,
+                                            physical_id_hash=physical_hash)
             self.serial = ep
             self._explicitly_selected = True
             return True, f"¡Conectado exitosamente a {ep}! Guardado como '{name}'."
@@ -1666,7 +2033,7 @@ class DeviceService:
         """
         store = read_devices_store(self.devices_json)
         current_id = store.get("CurrentDeviceId")
-        selected_id = current_id
+        selected_id = None if stale_serial else current_id
         if stale_serial:
             for record in store.get("Devices") or []:
                 endpoints = [record.get("LastEndpoint"), record.get("UsbSerial")]
@@ -1691,6 +2058,8 @@ class DeviceService:
                 res = client.connect(target_ep, timeout=10.0).strip()
                 if "connected to" not in res.lower() and "already connected" not in res.lower():
                     return ConnectionResult(False, endpoint=target_ep, message=f"ADB no pudo conectar a {target_ep}: {res}", error=res)
+                if not self._endpoint_ready(client, target_ep):
+                    return ConnectionResult(False, endpoint=target_ep, error="OFFLINE", message="ADB aceptó el endpoint, pero no quedó en estado device.")
                 self.serial = target_ep
                 self._explicitly_selected = True
                 self._notify_device_change()
@@ -1705,16 +2074,36 @@ class DeviceService:
 
             preferred_service = str((record or {}).get("MdnsServiceName") or "").lower()
             matching = [item for item in services if preferred_service and item["service_name"].lower() == preferred_service]
+            if record and not matching:
+                return ConnectionResult(False, error="SERIAL_NO_COINCIDE", message="mDNS no identificó el servicio guardado de este teléfono.")
             selected = matching[0] if matching else services[0]
 
             res = client.connect(selected["endpoint"], timeout=10.0).strip()
             if "connected to" not in res.lower() and "already connected" not in res.lower():
                 return ConnectionResult(False, endpoint=selected["endpoint"], message=f"ADB no pudo conectar a {selected['endpoint']}: {res}", error=res)
+            if not self._endpoint_ready(client, selected["endpoint"]):
+                return ConnectionResult(False, endpoint=selected["endpoint"], error="OFFLINE", message="ADB no dejó el endpoint en estado device.")
+            if record:
+                state, physical_hash = self._verify_reconnect_identity(client, selected["endpoint"], record)
+                if state not in ("verified", "provisional"):
+                    return ConnectionResult(False, endpoint=selected["endpoint"], error=state,
+                                            message="El endpoint mDNS no coincide con el teléfono guardado.")
+                if state == "verified":
+                    self._record_successful_endpoint(record, selected["endpoint"], source="mdns",
+                                                     mdns_service_name=selected["service_name"], physical_id_hash=physical_hash)
+                    save_devices_store(store, self.devices_json)
+                    self._provisional_endpoints.pop(str(record["Id"]), None)
+                else:
+                    self._provisional_endpoints[str(record["Id"])] = selected["endpoint"]
+                self.serial = selected["endpoint"]
+                self._explicitly_selected = True
+                self._notify_device_change()
+                return ConnectionResult(True, device_id=str(record["Id"]), endpoint=selected["endpoint"], method="mdns",
+                                        provisional=state == "provisional",
+                                        message=(f"Conexión provisional a {selected['endpoint']}; identidad pendiente de confirmar."
+                                                 if state == "provisional" else f"Conectado por Wireless Debugging a {selected['endpoint']}."))
             self.serial = selected["endpoint"]
             self._explicitly_selected = True
-            if record:
-                self._record_successful_endpoint(record, selected["endpoint"], source="mdns", mdns_service_name=selected["service_name"])
-                save_devices_store(store, self.devices_json)
             self._notify_device_change()
             return ConnectionResult(True, endpoint=selected["endpoint"], method="mdns", message=f"Conectado por Wireless Debugging a {selected['endpoint']}.")
         except Exception as exc:
@@ -1821,6 +2210,17 @@ class DeviceService:
         """
         report = TechnicalDiagnosticsReport()
         recs = report.recommendations
+        report.last_reconnect_issue = self._latest_reconnect_issue()
+        issue_code = report.last_reconnect_issue.get("code")
+        issue_advice = {
+            "AUTH_FAILED": "La autenticación ADB falló: vuelve a emparejar el teléfono.",
+            "NO_ROUTE_VPN": "No hay ruta al teléfono: revisa VPN, subred y aislamiento Wi-Fi.",
+            "CONNECT_RECHAZADO": "El puerto rechazó la conexión: comprueba el puerto actual de Wireless Debugging.",
+            "SERIAL_NO_COINCIDE": "El endpoint pertenece a otro teléfono o no puede verificarse; no lo asocies al registro.",
+            "OFFLINE": "El endpoint quedó offline: prueba reconexión dirigida o revisa la autorización.",
+        }
+        if issue_code in issue_advice:
+            recs.append(issue_advice[issue_code])
 
         # 1 & 2. Ruta y Versión de ADB
         try:
@@ -1846,6 +2246,10 @@ class DeviceService:
             open_code = s_sock.connect_ex(("127.0.0.1", 5037))
             s_sock.close()
             if open_code == 0:
+                report.adb_server_owner = self._adb_server_owner()
+                owner_path = str(report.adb_server_owner.get("path") or "")
+                if owner_path and report.adb_path not in ("No localizado en el sistema", "") and os.path.normcase(owner_path) != os.path.normcase(report.adb_path):
+                    recs.append(f"El puerto 5037 pertenece a otro ejecutable ({owner_path}); revisa un posible conflicto de versiones ADB.")
                 try:
                     s_ver = client.server_version()
                     report.adb_server_status = f"En ejecución (Versión de protocolo: {s_ver}, Puerto: 5037)"
@@ -1907,6 +2311,7 @@ class DeviceService:
                 report.mdns_status = f"Activo ({len(mdns_services)} servicio(s) detectado(s))"
             else:
                 report.mdns_status = "Sin servicios detectados"
+                recs.append("mDNS no anunció un endpoint TLS; comprueba Wireless Debugging, la red local o introduce el endpoint manualmente.")
         except Exception as exc:
             report.mdns_status = f"Error al consultar mDNS: {exc}"
 
@@ -2017,9 +2422,9 @@ class DeviceService:
                 "tcp_port_open": tcp_ok,
                 "tcp_error": tcp_err,
             }
-            if not ping_ok:
+            if not ping_ok and not tcp_ok:
                 recs.append(f"No hay respuesta de ping hacia {phone_ip}. Comprueba que la PC y el móvil estén en la misma red Wi-Fi o sin aislamiento de cliente (AP isolation).")
-            elif not tcp_ok and is_network_serial(target_serial or ""):
+            if not tcp_ok and is_network_serial(target_serial or ""):
                 recs.append(f"El puerto ADB {device_port} en {phone_ip} no responde. Revisa si la depuración inalámbrica cambió de puerto o se desactivó.")
         else:
             report.connectivity_test = {
@@ -2038,6 +2443,39 @@ class DeviceService:
             recs.append("Todos los servicios y diagnósticos básicos operan de forma correcta.")
 
         return report
+
+    @staticmethod
+    def _adb_server_owner() -> Dict[str, Any]:
+        """Consulta el proceso que escucha en 5037 sin alterar el servidor."""
+        if os.name != "nt":
+            return {}
+        command = (
+            "$c=Get-NetTCPConnection -LocalPort 5037 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; "
+            "if($c){$p=Get-CimInstance Win32_Process -Filter (\"ProcessId=\"+$c.OwningProcess) -ErrorAction SilentlyContinue; "
+            "[pscustomobject]@{pid=$c.OwningProcess;name=$p.Name;path=$p.ExecutablePath} | ConvertTo-Json -Compress}"
+        )
+        try:
+            result = subprocess.run(["powershell", "-NoProfile", "-Command", command],
+                                    capture_output=True, text=True, timeout=5, check=False)
+            return json.loads(result.stdout) if result.stdout.strip() else {}
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return {}
+
+    def _latest_reconnect_issue(self) -> Dict[str, Any]:
+        path = self.devices_json.parent / "reconnect-attempts.jsonl"
+        try:
+            current_id = read_devices_store(self.devices_json).get("CurrentDeviceId")
+            for line in reversed(path.read_text(encoding="utf-8").splitlines()[-100:]):
+                entry = json.loads(line)
+                if current_id and entry.get("device_id") != current_id:
+                    continue
+                if entry.get("code") in ("SUCCESS", "VERIFIED", "PROVISIONAL"):
+                    return {}
+                if entry.get("code") not in ("START", "CONNECTED"):
+                    return entry
+        except (OSError, ValueError):
+            pass
+        return {}
 
     def run_network_diagnostics(self) -> TechnicalDiagnosticsReport:
         """Alias retrocompatible para ejecutar diagnóstico técnico completo."""

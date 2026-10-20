@@ -34,6 +34,14 @@ Initialize-AdbLog -DisableDebug
 
 Los niveles disponibles son `INFO`, `WARN`, `ERROR`, `DEBUG` y `SUCCESS`. Se conservan automáticamente los logs de los últimos 15 días.
 
+### Reconexión mejorada
+
+El administrador intenta reconectar durante 30 segundos y ofrece otros 30 antes de pedir un endpoint manual. La GUI ofrece la misma ampliación y un botón **Convertir manualmente ahora** para USB registrado en modo TCP/IP legado.
+
+La conversión USB a Wi-Fi lee la IP y la identidad del teléfono antes de reiniciar `adbd`. Solo guarda `IP:5555` si el nuevo transporte queda en estado `device` y conserva la misma identidad física. Los dispositivos Wireless Debugging siguen usando TLS/mDNS.
+
+El historial conserva hasta diez endpoints con fecha, estado y BSSID de la red. Un endpoint histórico sin BSSID coincidente requiere confirmación antes de probarse. Los intentos de la GUI se registran en `%USERPROFILE%\AndroidTools\reconnect-attempts.jsonl` (rotación a 1 MB); PowerShell usa su log diario. No se guardan contraseñas Wi-Fi.
+
 ## 2. Wireless Debugging moderno
 
 En el teléfono activa **Depuración inalámbrica**, conecta ambos equipos a la misma Wi-Fi y abre **Vincular dispositivo con código de emparejamiento**.

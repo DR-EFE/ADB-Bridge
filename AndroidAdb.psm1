@@ -281,8 +281,33 @@ function Test-AdbDeviceReady {
         $stateOutput = @(Invoke-Adb -Serial $serial -Arguments @('get-state'))
         $state = (($stateOutput | ForEach-Object { [string]$_ }) -join ' ').Trim()
         if ($state -ceq 'device') {
-            Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message 'Dispositivo listo: get-state=device.'
-            return $true
+            $expectedHash = if($Device.PSObject.Properties['PhysicalIdHash']){[string]$Device.PhysicalIdHash}else{$null}
+            if (-not $expectedHash -and $Device.PSObject.Properties['Id'] -and $Device.Id) {
+                try {
+                    $savedIdentity = @(Get-SavedAdbDevices | Where-Object { $_.Id -ceq [string]$Device.Id })[0]
+                    if ($savedIdentity) { $expectedHash = [string]$savedIdentity.PhysicalIdHash }
+                } catch { }
+            }
+            if ($expectedHash -and $serial -match ':\d+$') {
+                $transport = ((@(Invoke-Adb -Serial $serial -Arguments @('get-serialno')) | ForEach-Object { [string]$_ }) -join '').Trim()
+                $physicalId = Get-AdbPhysicalId -Serial $serial
+                $observedHash = if($physicalId){Get-AdbPhysicalIdHash -PhysicalId $physicalId}else{$null}
+                if ($transport -cne $serial -or $observedHash -cne $expectedHash) {
+                    Write-AdbLog -Level ERROR -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message 'SERIAL_NO_COINCIDE: endpoint listo con identidad incorrecta.'
+                    if (-not $AutoReconnect) { return $false }
+                } else {
+                    Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message 'Dispositivo listo e identidad verificada.'
+                    return $true
+                }
+            } else {
+                if ($serial -match ':\d+$' -and -not $expectedHash) {
+                    Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message 'PROVISIONAL: endpoint activo sin identidad guardada.'
+                    Write-Warning "Conexion provisional a $serial`: verifica por USB o confirma la vinculacion."
+                } else {
+                    Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message 'Dispositivo listo: get-state=device.'
+                }
+                return $true
+            }
         }
         Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message ("Dispositivo no listo: get-state={0}." -f $state)
     } catch {
@@ -291,19 +316,45 @@ function Test-AdbDeviceReady {
 
     if (-not $AutoReconnect) { return $false }
 
+    if ($Device.PSObject.Properties['Id'] -and $Device.Id) {
+        try {
+            $savedCandidate = @(Get-SavedAdbDevices | Where-Object { $_.Id -ceq [string]$Device.Id })[0]
+            if ($savedCandidate) { $Device = $savedCandidate }
+        } catch { }
+    }
+
+    if ($Device.PSObject.Properties['Mode'] -and $Device.Mode -eq 'tcpip-5555' -and
+        $Device.PSObject.Properties['UsbSerial'] -and $Device.UsbSerial -and
+        $Device.PSObject.Properties['Id'] -and $Device.Id) {
+        try {
+            $usbRecord = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $Device.UsbSerial -and $_.Status -ceq 'device' })[0]
+            if ($usbRecord) {
+                $converted = Invoke-AdbUsbWifiConversion -Device $Device
+                Set-CurrentAdbDevice -Device ([pscustomobject]@{Id=$Device.Id;FriendlyName=$Device.FriendlyName;Mode=$Device.Mode;Serial=$converted.Serial;LastEndpoint=$converted.Serial}) | Out-Null
+                return $true
+            }
+        } catch {
+            Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $Device.UsbSerial -Message $_.Exception.Message
+        }
+    }
+
     $candidates = @()
     try {
         $lastEndpoint = if ($Device.PSObject.Properties['LastEndpoint']) { [string]$Device.LastEndpoint } else { $null }
-        $profiles = if($Device.PSObject.Properties['NetworkProfiles']){@($Device.NetworkProfiles | Sort-Object LastUsedUtc -Descending)}else{@()}
-        foreach($profile in $profiles){if(-not $profile.ForceUsbOnly -and -not [string]::IsNullOrWhiteSpace([string]$profile.PreferredEndpoint)){$candidates += [pscustomobject]@{Endpoint=$profile.PreferredEndpoint;ProfileId=$profile.Id}}}
-        if (-not [string]::IsNullOrWhiteSpace($lastEndpoint)) { $candidates += [pscustomobject]@{Endpoint=$lastEndpoint;ProfileId=$null} }
-
         $mode = if ($Device.PSObject.Properties['Mode']) { [string]$Device.Mode } else { $null }
         if ($mode -eq 'wireless-debugging-tls') {
             $preferredHost = $null
             if ($lastEndpoint) { $preferredHost = (ConvertTo-AdbEndpoint $lastEndpoint).Host }
-            $mdnsEndpoint = Get-AdbMdnsConnectionEndpoint -PreferredHost $preferredHost
-            if ($null -ne $mdnsEndpoint) { $candidates += [pscustomobject]@{Endpoint=$mdnsEndpoint.Endpoint;ProfileId=$null} }
+            $preferredService = if ($Device.PSObject.Properties['MdnsServiceName']) { [string]$Device.MdnsServiceName } else { $null }
+            $mdnsEndpoint = Get-AdbMdnsConnectionEndpoint -PreferredHost $preferredHost -PreferredServiceName $preferredService
+            if ($null -ne $mdnsEndpoint) { $candidates += [pscustomobject]@{Endpoint=$mdnsEndpoint.Endpoint;Source='mdns'} }
+        }
+        $currentBssid = Get-CurrentWifiBssid
+        $history = if($Device.PSObject.Properties['Endpoints']){@($Device.Endpoints)}else{@()}
+        foreach ($entry in $history) {
+            if ($entry.Endpoint -and $currentBssid -and $entry.NetworkBssid -and $entry.NetworkBssid -ieq $currentBssid) {
+                $candidates += [pscustomobject]@{Endpoint=$entry.Endpoint;Source='history'}
+            }
         }
     } catch {
         Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $serial -Message ("No se pudo descubrir un endpoint para reconexion: {0}" -f $_.Exception.Message)
@@ -317,9 +368,25 @@ function Test-AdbDeviceReady {
             $verified = @(Invoke-Adb -Serial $record.Serial -Arguments @('get-state'))
             $verifiedState = (($verified | ForEach-Object { [string]$_ }) -join ' ').Trim()
             if ($verifiedState -ceq 'device') {
-                if ($Device.PSObject.Properties['Id'] -and $Device.Id) {
-                    try { Update-SavedAdbDevice -Id ([string]$Device.Id) -LastEndpoint $record.Serial -LastConnectedUtc ([DateTime]::UtcNow.ToString('o')) | Out-Null } catch { }
-                    if($candidateInfo.ProfileId){try{Update-SavedAdbNetworkProfile -DeviceId ([string]$Device.Id) -ProfileId ([string]$candidateInfo.ProfileId) -PreferredEndpoint $record.Serial -LastUsedUtc ([DateTime]::UtcNow.ToString('o'))|Out-Null}catch{}}
+                $transport = ((@(Invoke-Adb -Serial $record.Serial -Arguments @('get-serialno')) | ForEach-Object { [string]$_ }) -join '').Trim()
+                $physicalId = Get-AdbPhysicalId -Serial $record.Serial
+                $physicalHash = if($physicalId){Get-AdbPhysicalIdHash -PhysicalId $physicalId}else{$null}
+                $expectedHash = if($Device.PSObject.Properties['PhysicalIdHash']){[string]$Device.PhysicalIdHash}else{$null}
+                if ($transport -cne $record.Serial -or -not $physicalHash -or ($expectedHash -and $expectedHash -cne $physicalHash)) {
+                    Write-AdbLog -Level ERROR -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $record.Serial -Message 'SERIAL_NO_COINCIDE: transporte o identidad incorrecta.'
+                    continue
+                }
+                if (-not $expectedHash -and $Device.UsbSerial) {
+                    $usb = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $Device.UsbSerial -and $_.Status -ceq 'device' })[0]
+                    if ($usb) {
+                        $usbId = Get-AdbPhysicalId -Serial $usb.Serial
+                        if (-not $usbId -or (Get-AdbPhysicalIdHash -PhysicalId $usbId) -cne $physicalHash) { continue }
+                        $expectedHash = $physicalHash
+                    }
+                }
+                $provisional = -not $expectedHash
+                if (-not $provisional -and $Device.PSObject.Properties['Id'] -and $Device.Id) {
+                    try { Add-AdbEndpointHistory -DeviceId ([string]$Device.Id) -Endpoint $record.Serial -Source ([string]$candidateInfo.Source) -PhysicalIdHash $physicalHash | Out-Null } catch { }
                 }
                 Set-CurrentAdbDevice -Device ([pscustomobject]@{
                     Id = if ($Device.PSObject.Properties['Id']) { $Device.Id } else { $null }
@@ -328,7 +395,8 @@ function Test-AdbDeviceReady {
                     NetworkProfiles = if ($Device.PSObject.Properties['NetworkProfiles']) { @($Device.NetworkProfiles) } else { @() }
                     Serial = $record.Serial
                 }) | Out-Null
-                Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $record.Serial -Message 'Reconexión automática verificada: get-state=device.'
+                Write-AdbLog -Level $(if($provisional){'WARN'}else{'SUCCESS'}) -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $record.Serial -Message $(if($provisional){'PROVISIONAL: identidad sin confirmar; historial intacto.'}else{'Reconexion verificada con identidad fisica.'})
+                if($provisional){Write-Warning "Conexion provisional a $($record.Serial): verifica por USB o confirma la vinculacion."}
                 return $true
             }
             Write-AdbLog -Level WARN -Source 'AndroidAdb.Test-AdbDeviceReady' -Serial $candidate -Message ("Reconexion no lista: get-state={0}." -f $verifiedState)
@@ -815,7 +883,7 @@ function Connect-AdbEndpoint {
 
 function Get-AdbMdnsConnectionEndpoint {
     [CmdletBinding()]
-    param([string]$PreferredHost)
+    param([string]$PreferredHost,[string]$PreferredServiceName)
 
     $lines = @(Invoke-AdbHost -Arguments @('mdns','services'))
     $candidates = @()
@@ -825,10 +893,15 @@ function Get-AdbMdnsConnectionEndpoint {
         $match = [regex]::Match($text, '(?<endpoint>\[[^\]]+\]:\d{1,5}|[A-Za-z0-9._-]+:\d{1,5})')
         if (-not $match.Success) { continue }
         try { $candidate = ConvertTo-AdbEndpoint $match.Groups['endpoint'].Value } catch { continue }
+        $serviceName = ($text.Trim() -split '\s+')[0]
+        if ($PreferredServiceName) {
+            if ($serviceName -ieq $PreferredServiceName) { return $candidate }
+            continue
+        }
         if (-not [string]::IsNullOrWhiteSpace($PreferredHost) -and $candidate.Host -ieq $PreferredHost) { return $candidate }
         $candidates += $candidate
     }
-    if ($candidates.Count -eq 1) { return $candidates[0] }
+    if (-not $PreferredHost -and -not $PreferredServiceName -and $candidates.Count -eq 1) { return $candidates[0] }
     return $null
 }
 
@@ -882,9 +955,12 @@ function ConvertTo-AdbBoolean {
 
 function ConvertTo-AdbNetworkProfile {
     param([object]$Profile)
-    foreach($field in @('Id','Name','PreferredEndpoint','ForceUsbOnly','LastUsedUtc','Notes')) { if($null -eq $Profile.PSObject.Properties[$field]) { throw "NetworkProfiles contiene un perfil sin el campo '$field'." } }
+    foreach($field in @('Id','Name','PreferredEndpoint')) { if($null -eq $Profile.PSObject.Properties[$field]) { throw "NetworkProfiles contiene un perfil sin el campo '$field'." } }
     $endpoint=if([string]::IsNullOrWhiteSpace([string]$Profile.PreferredEndpoint)){$null}else{(ConvertTo-AdbEndpoint ([string]$Profile.PreferredEndpoint)).Endpoint}
-    [pscustomobject][ordered]@{Id=[string]$Profile.Id;Name=(Assert-AdbFriendlyName ([string]$Profile.Name));PreferredEndpoint=$endpoint;ForceUsbOnly=(ConvertTo-AdbBoolean $Profile.ForceUsbOnly 'ForceUsbOnly');LastUsedUtc=ConvertTo-AdbUtcTimestamp ([string]$Profile.LastUsedUtc);Notes=if($null -eq $Profile.Notes){$null}else{[string]$Profile.Notes}}
+    $forceUsbOnly=if($null -eq $Profile.PSObject.Properties['ForceUsbOnly']){$false}else{ConvertTo-AdbBoolean $Profile.ForceUsbOnly 'ForceUsbOnly'}
+    $lastUsed=if($null -eq $Profile.PSObject.Properties['LastUsedUtc']){$null}else{ConvertTo-AdbUtcTimestamp ([string]$Profile.LastUsedUtc)}
+    $notes=if($null -eq $Profile.PSObject.Properties['Notes'] -or $null -eq $Profile.Notes){$null}else{[string]$Profile.Notes}
+    [pscustomobject][ordered]@{Id=[string]$Profile.Id;Name=(Assert-AdbFriendlyName ([string]$Profile.Name));PreferredEndpoint=$endpoint;ForceUsbOnly=$forceUsbOnly;LastUsedUtc=$lastUsed;Notes=$notes}
 }
 
 function ConvertTo-AdbStoredMode {
@@ -1250,13 +1326,137 @@ function Get-AdbMdnsServices {
 function Get-AdbDeviceIpv4 {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Serial)
-    foreach ($arguments in @(@('shell','ip','route'), @('shell','ip','addr'))) {
+    foreach ($arguments in @(@('shell','ip','-4','addr','show','wlan0'), @('shell','ip','route'), @('shell','ip','addr'))) {
         foreach ($line in @(Invoke-Adb -Serial $Serial -Arguments $arguments)) {
+            if ($arguments[2] -eq 'route' -and [string]$line -notmatch 'wlan') { continue }
             $match = [regex]::Match([string]$line, '(?:\bsrc\s+|\binet\s+)(?<ip>\d{1,3}(?:\.\d{1,3}){3})(?:/\d+)?')
-            if ($match.Success -and $match.Groups['ip'].Value -notlike '127.*') { return $match.Groups['ip'].Value }
+            if ($match.Success) {
+                $address = $null
+                if ([Net.IPAddress]::TryParse($match.Groups['ip'].Value,[ref]$address) -and
+                    $address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork -and
+                    $match.Groups['ip'].Value -notlike '127.*' -and $match.Groups['ip'].Value -notlike '169.254.*') {
+                    return $match.Groups['ip'].Value
+                }
+            }
         }
     }
     return $null
+}
+
+function Get-AdbPhysicalId {
+    [CmdletBinding()] param([Parameter(Mandatory=$true)][string]$Serial)
+    foreach ($property in @('ro.serialno','ro.boot.serialno')) {
+        try {
+            $value = ((@(Invoke-Adb -Serial $Serial -Arguments @('shell','getprop',$property)) | ForEach-Object { [string]$_ }) -join '').Trim()
+            if ($value -and $value -notin @('unknown','null','none')) { return $value }
+        } catch { }
+    }
+    try {
+        $androidId = ((@(Invoke-Adb -Serial $Serial -Arguments @('shell','settings','get','secure','android_id')) | ForEach-Object { [string]$_ }) -join '').Trim()
+        if ($androidId -match '^[0-9A-Fa-f]{16}$') { return ('android-id:' + $androidId.ToLowerInvariant()) }
+    } catch { }
+    return $null
+}
+
+function Get-AdbPhysicalIdHash {
+    [CmdletBinding()] param([Parameter(Mandatory=$true)][string]$PhysicalId)
+    $canonical = $PhysicalId.Trim().ToLowerInvariant()
+    if (-not $canonical) { return $null }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical))
+        return 'sha256:' + ([BitConverter]::ToString($bytes).Replace('-','').ToLowerInvariant())
+    } finally { $sha.Dispose() }
+}
+
+function Get-CurrentWifiBssid {
+    [CmdletBinding()] param()
+    try {
+        $output = @(& netsh wlan show interfaces 2>&1)
+        foreach ($line in $output) {
+            $match = [regex]::Match([string]$line,'(?i)^\s*BSSID\s*:\s*(?<mac>[0-9a-f]{2}(?::[0-9a-f]{2}){5})\s*$')
+            if ($match.Success) { return $match.Groups['mac'].Value.ToLowerInvariant() }
+        }
+    } catch { }
+    return $null
+}
+
+function Add-AdbEndpointHistory {
+    [CmdletBinding()] param([Parameter(Mandatory=$true)][string]$DeviceId,[Parameter(Mandatory=$true)][string]$Endpoint,[string]$Source='reconnect',[string]$PhysicalIdHash)
+    $store = Read-AdbDeviceStore
+    $device = @($store.Devices | Where-Object { $_.Id -ceq $DeviceId })[0]
+    if ($null -eq $device) { throw "No existe un dispositivo con Id '$DeviceId'." }
+    $endpoint = (ConvertTo-AdbEndpoint $Endpoint).Endpoint
+    $now = [DateTime]::UtcNow.ToString('o')
+    $history = if ($device.PSObject.Properties['Endpoints']) { @($device.Endpoints) } else { @() }
+    $history = @($history | Where-Object { $_.Endpoint -ine $endpoint })
+    $entry = [pscustomobject]@{Endpoint=$endpoint;ConnectedUtc=$now;Source=$Source;Status='device';NetworkBssid=(Get-CurrentWifiBssid)}
+    $device | Add-Member -NotePropertyName Endpoints -NotePropertyValue @((@($entry) + @($history)) | Select-Object -First 10) -Force
+    $device.LastEndpoint = $endpoint
+    $device.LastConnectedUtc = $now
+    if ($PhysicalIdHash) { $device | Add-Member -NotePropertyName PhysicalIdHash -NotePropertyValue $PhysicalIdHash -Force }
+    $device | Add-Member -NotePropertyName LastSuccessfulReconnectMethod -NotePropertyValue $Source -Force
+    Save-AdbDeviceStore -Store $store | Out-Null
+    return $device
+}
+
+function Invoke-AdbUsbWifiConversion {
+    [CmdletBinding()] param([Parameter(Mandatory=$true)][object]$Device)
+    $serial = [string]$Device.UsbSerial
+    if (-not $serial) { throw 'USB_NO_DETECTADO: falta serial USB.' }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $digest = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($serial))) -replace '-','').ToLowerInvariant().Substring(0,16) }
+    finally { $sha.Dispose() }
+    $mutex = New-Object System.Threading.Mutex($false,("Local\AndroidAdbUsbWifi-{0}" -f $digest))
+    $acquired = $false
+    try {
+        $acquired = $mutex.WaitOne(30000)
+        if (-not $acquired) { throw 'TCPIP_FALLO: conversion USB ocupada durante 30 segundos.' }
+        return Invoke-AdbUsbWifiConversionCore -Device $Device
+    } finally {
+        if ($acquired) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+}
+
+function Invoke-AdbUsbWifiConversionCore {
+    [CmdletBinding()] param([Parameter(Mandatory=$true)][object]$Device)
+    if ($Device.Mode -cne 'tcpip-5555' -or -not $Device.UsbSerial) { throw 'USB_NO_DETECTADO: el registro no es TCP/IP legado con serial USB.' }
+    $serial = [string]$Device.UsbSerial
+    $usb = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $serial })[0]
+    if ($null -eq $usb) { throw 'USB_NO_DETECTADO: el telefono no aparece en adb devices.' }
+    if ($usb.Status -cne 'device') {
+        $code = if ($usb.Status -ceq 'unauthorized') { 'USB_UNAUTHORIZED' } else { 'OFFLINE' }
+        throw "$code`: el USB esta en estado $($usb.Status)."
+    }
+    $physicalId = Get-AdbPhysicalId -Serial $serial
+    if (-not $physicalId) { throw 'SERIAL_NO_COINCIDE: no se pudo leer el ID fisico por USB.' }
+    $physicalHash = Get-AdbPhysicalIdHash -PhysicalId $physicalId
+    if ($Device.PhysicalIdHash -and $Device.PhysicalIdHash -cne $physicalHash) { throw 'SERIAL_NO_COINCIDE: la identidad USB no coincide con el registro.' }
+    foreach ($online in @(Get-AdbDevices | Where-Object { $_.Status -ceq 'device' -and $_.Serial -match ':\d+$' })) {
+        try {
+            $transport = ((@(Invoke-Adb -Serial $online.Serial -Arguments @('get-serialno')) | ForEach-Object { [string]$_ }) -join '').Trim()
+            if ($transport -ceq $online.Serial -and (Get-AdbPhysicalId -Serial $online.Serial) -ceq $physicalId) {
+                Add-AdbEndpointHistory -DeviceId ([string]$Device.Id) -Endpoint $online.Serial -Source 'existing-wifi' -PhysicalIdHash $physicalHash | Out-Null
+                return $online
+            }
+        } catch { }
+    }
+    $ip = Get-AdbDeviceIpv4 -Serial $serial
+    if (-not $ip) { throw 'IP_NO_ENCONTRADA: no se pudo leer la IP Wi-Fi por USB.' }
+    $endpoint = (ConvertTo-AdbEndpoint ("{0}:5555" -f $ip)).Endpoint
+    Write-AdbLog -Level INFO -Source 'AndroidAdb.Invoke-AdbUsbWifiConversion' -Serial $serial -Message ("tcpip 5555; endpoint=$endpoint; device=$($Device.Id)")
+    try { Invoke-AdbCommand -Serial $serial -Arguments @('tcpip','5555') | Out-Null }
+    catch { Write-AdbLog -Level WARN -Source 'AndroidAdb.Invoke-AdbUsbWifiConversion' -Serial $serial -Message ("ADBD_NO_VOLVIO: {0}" -f $_.Exception.Message) }
+    $record = $null
+    try { $record = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 15 }
+    catch { throw "CONNECT_RECHAZADO: $($_.Exception.Message)" }
+    $transportSerial = ((@(Invoke-Adb -Serial $endpoint -Arguments @('get-serialno')) | ForEach-Object { [string]$_ }) -join '').Trim()
+    $networkId = Get-AdbPhysicalId -Serial $endpoint
+    if ($transportSerial -cne $endpoint -or $networkId -cne $physicalId) { throw 'SERIAL_NO_COINCIDE: el endpoint no pertenece al USB original.' }
+    Add-AdbEndpointHistory -DeviceId ([string]$Device.Id) -Endpoint $endpoint -Source 'usb-tcpip' -PhysicalIdHash $physicalHash | Out-Null
+    Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Invoke-AdbUsbWifiConversion' -Serial $endpoint -Message ("Conexion verificada para $($Device.Id).")
+    return $record
 }
 
 function Get-AdbSyncProfilesPath {
@@ -1316,13 +1516,24 @@ function Invoke-AdbDiagnostics {
     [CmdletBinding()]
     param([switch]$NoPause)
     Initialize-AdbLog | Out-Null
-    $result=[ordered]@{Recommendations=@();AdbPath=$null;AdbVersion=$null;Devices=@();Mdns=@();SavedCount=0;Selected=$null;LocalFreeBytes=$null;PhoneFreeBytes=$null;LogErrors=@()}
+    $result=[ordered]@{Recommendations=@();AdbPath=$null;AdbVersion=$null;AdbServerOwner=$null;Devices=@();Mdns=@();SavedCount=0;Selected=$null;LocalFreeBytes=$null;PhoneFreeBytes=$null;LogErrors=@()}
     Write-Host '============================================================' -ForegroundColor Cyan
     Write-Host '                 DIAGNOSTICO ANDROID ADB' -ForegroundColor Yellow
     Write-Host '============================================================' -ForegroundColor Cyan
     Write-Host "`n[1] ADB" -ForegroundColor Cyan
     $adb=Get-Command adb -ErrorAction SilentlyContinue
     if($null -eq $adb){Write-Host 'ERROR: adb no esta disponible en PATH.' -ForegroundColor Red;$result.Recommendations+='Instala Android Platform-Tools y agrega adb al PATH.'}else{$result.AdbPath=$adb.Source;try{$result.AdbVersion=@(Invoke-AdbHost -Arguments @('version'));Write-Host ($result.AdbVersion -join ' ') -ForegroundColor Green;Write-Host ("Ruta: {0}"-f $adb.Source);$versionText=$result.AdbVersion -join ' ';if($versionText -match 'Android Debug Bridge version 1\.0\.(\d+)' -and [int]$Matches[1] -lt 41){$result.Recommendations+='Actualiza Android SDK Platform-Tools: la version de ADB parece antigua.'}}catch{Write-Host $_ -ForegroundColor Red;$result.Recommendations+='No se pudo ejecutar adb version.'}}
+    try {
+        $listener = Get-NetTCPConnection -LocalPort 5037 -State Listen -ErrorAction Stop | Select-Object -First 1
+        if ($listener) {
+            $owner = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $listener.OwningProcess) -ErrorAction SilentlyContinue
+            $result.AdbServerOwner = [pscustomobject]@{Pid=$listener.OwningProcess;Name=$owner.Name;Path=$owner.ExecutablePath}
+            Write-Host ("Servidor 5037: PID {0} | {1}" -f $listener.OwningProcess,$owner.ExecutablePath)
+            if ($owner.ExecutablePath -and $result.AdbPath -and $owner.ExecutablePath -ine $result.AdbPath) {
+                $result.Recommendations += 'Otro ejecutable ocupa el puerto 5037; revisa un posible conflicto de versiones ADB.'
+            }
+        }
+    } catch { Write-Host 'No se pudo identificar el proceso del servidor ADB.' -ForegroundColor DarkYellow }
     Write-Host "`n[2] Dispositivos adb devices -l" -ForegroundColor Cyan
     try{$result.Devices=@(Get-AdbDevices);if($result.Devices.Count){$result.Devices|Format-Table Serial,Status,TransportId -AutoSize|Out-Host}else{Write-Host 'No hay dispositivos detectados.' -ForegroundColor Yellow;$result.Recommendations+='Conecta o reconecta un dispositivo y verifica la autorizacion ADB.'}}catch{Write-Host ("ERROR: {0}"-f $_.Exception.Message)-ForegroundColor Red;$result.Recommendations+='No se pudo consultar adb devices.'}
     Write-Host "`n[3] mDNS" -ForegroundColor Cyan
@@ -1342,4 +1553,4 @@ function Invoke-AdbDiagnostics {
     if(-not $NoPause){Read-Host "`nPresiona Enter para continuar"|Out-Null};return [pscustomobject]$result
 }
 
-Export-ModuleMember -Function Initialize-AdbLog, Write-AdbLog, Get-AdbLogPath, Get-AdbDevices, Get-SingleReadyDevice, Get-CurrentAdbDevice, Set-CurrentAdbDevice, Clear-CurrentAdbDevice, Select-CurrentAdbDevice, Test-AdbDeviceReady, Resolve-AdbSerial, Invoke-AdbCommand, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, Get-SavedAdbNetworkProfiles, Add-SavedAdbNetworkProfile, Update-SavedAdbNetworkProfile, Remove-SavedAdbNetworkProfile, Get-AdbDeviceStoreBackupDirectory, Get-AdbDeviceStoreBackups, Backup-AdbDeviceStore, Restore-AdbDeviceStore, Capture-AdbScreenshot, Start-AdbScreenRecording, Test-ScrcpyAvailable, Start-AdbScrcpy, Get-AdbSyncProfilesPath, New-AdbSyncProfileStore, Read-AdbSyncProfiles, Save-AdbSyncProfiles, Get-AdbSyncProfiles, Add-AdbSyncProfile, Update-AdbSyncProfile, Remove-AdbSyncProfile, Invoke-AdbSyncProfile, Invoke-AdbDiagnostics, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory
+Export-ModuleMember -Function Initialize-AdbLog, Write-AdbLog, Get-AdbLogPath, Get-AdbDevices, Get-SingleReadyDevice, Get-CurrentAdbDevice, Set-CurrentAdbDevice, Clear-CurrentAdbDevice, Select-CurrentAdbDevice, Test-AdbDeviceReady, Resolve-AdbSerial, Invoke-AdbCommand, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbPhysicalId, Get-AdbPhysicalIdHash, Get-CurrentWifiBssid, Add-AdbEndpointHistory, Invoke-AdbUsbWifiConversion, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, Get-SavedAdbNetworkProfiles, Add-SavedAdbNetworkProfile, Update-SavedAdbNetworkProfile, Remove-SavedAdbNetworkProfile, Get-AdbDeviceStoreBackupDirectory, Get-AdbDeviceStoreBackups, Backup-AdbDeviceStore, Restore-AdbDeviceStore, Capture-AdbScreenshot, Start-AdbScreenRecording, Test-ScrcpyAvailable, Start-AdbScrcpy, Get-AdbSyncProfilesPath, New-AdbSyncProfileStore, Read-AdbSyncProfiles, Save-AdbSyncProfiles, Get-AdbSyncProfiles, Add-AdbSyncProfile, Update-AdbSyncProfile, Remove-AdbSyncProfile, Invoke-AdbSyncProfile, Invoke-AdbDiagnostics, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory

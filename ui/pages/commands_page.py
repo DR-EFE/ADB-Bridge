@@ -376,6 +376,9 @@ class CommandsPage:
                     f"  • Ruta ejecutable   : {data['adb_path']}",
                     f"  • Estado servidor   : {data['adb_server_status']}",
                     f"  • Puerto local      : {data['adb_server_port']}",
+                    f"  • Proceso propietario: {data['adb_server_owner'].get('name') or 'No identificado'} "
+                    f"(PID {data['adb_server_owner'].get('pid') or '—'})",
+                    f"  • Ruta propietario  : {data['adb_server_owner'].get('path') or 'No disponible'}",
                     "",
                     "[2] DISPOSITIVOS Y AUTORIZACIÓN",
                     f"  • Dispositivo actual: {data['selected_serial'] or 'Ninguno seleccionado'}",
@@ -392,6 +395,8 @@ class CommandsPage:
                     f"  • IP del dispositivo: {phone_ip_str}",
                     f"  • Puertos utilizados: ADB Local={data['ports_used'].get('adb_server_port')}, Dispositivo={data['ports_used'].get('device_port')} (TLS: {data['ports_used'].get('is_tls')})",
                     f"  • Estado de mDNS    : {data['mdns_status']}",
+                    f"  • Último intento    : {data['last_reconnect_issue'].get('stage') or '—'} / "
+                    f"{data['last_reconnect_issue'].get('code') or '—'}",
                 ])
                 if data["mdns_services"]:
                     for s in data["mdns_services"]:

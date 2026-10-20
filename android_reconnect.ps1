@@ -64,10 +64,15 @@ function Read-ManualEndpoint {
 }
 
 function Select-MdnsEndpoint {
-    param([object]$Device)
+    param([object]$Device,[switch]$NonInteractive)
     try { $services = @(Get-AdbMdnsServices) }
     catch { Write-Host ("mDNS no disponible: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow; return $null }
     if ($services.Count -eq 0) { Write-Host 'mDNS no encontro servicios adb-tls-connect.' -ForegroundColor Yellow; return $null }
+
+    if ($Device.PSObject.Properties['MdnsServiceName'] -and $Device.MdnsServiceName) {
+        $matching = @($services | Where-Object { $_.ServiceName -ieq [string]$Device.MdnsServiceName })
+        if ($matching.Count -eq 1) { return $matching[0].Endpoint }
+    }
 
     if ($Device.UsbSerial) {
         $matching = @($services | Where-Object {
@@ -80,8 +85,9 @@ function Select-MdnsEndpoint {
         $matching = @($services | Where-Object { $oldHost -and $_.Host -ieq $oldHost })
         if ($matching.Count -eq 1) { return $matching[0].Endpoint }
     }
-    if ($services.Count -eq 1) { return $services[0].Endpoint }
+    if ($services.Count -eq 1 -and -not $Device.LastEndpoint) { return $services[0].Endpoint }
 
+    if ($NonInteractive) { return $null }
     Write-Host 'mDNS encontro varios dispositivos:' -ForegroundColor Cyan
     for ($index=0; $index -lt $services.Count; $index++) {
         Write-Host ("[{0}] {1} ({2})" -f ($index+1),$services[$index].Endpoint,$services[$index].ServiceName)
@@ -97,15 +103,63 @@ function Select-MdnsEndpoint {
 }
 
 function Connect-And-RememberDevice {
-    param([object]$Device,[string]$Endpoint)
+    param([object]$Device,[string]$Endpoint,[int]$TimeoutSeconds=5,[string]$Source='reconnect',[switch]$BindIdentity)
+    $started = [DateTime]::UtcNow
     Write-AdbLog -Level INFO -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $Endpoint -Message ("Intento de conexion para {0}." -f $Device.FriendlyName)
     Write-Host ("Conectando {0} a {1}..." -f $Device.FriendlyName,$Endpoint) -ForegroundColor Cyan
-    try { $record = Connect-AdbEndpoint -Endpoint $Endpoint -TimeoutSeconds 10 }
-    catch { Write-AdbLog -Level ERROR -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $Endpoint -Message $_.Exception.Message; Write-Host ("Fallo: {0}" -f $_.Exception.Message) -ForegroundColor Yellow; return $null }
-    Update-SavedAdbDevice -Id $Device.Id -LastEndpoint $record.Serial -LastConnectedUtc ([DateTime]::UtcNow.ToString('o')) | Out-Null
-    Write-AdbLog -Level SUCCESS -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $record.Serial -Message ("Conexion exitosa para {0}." -f $Device.FriendlyName)
-    Write-Host ("OK: {0} conectado en estado device ({1})." -f $Device.FriendlyName,$record.Serial) -ForegroundColor Green
+    try { $record = Connect-AdbEndpoint -Endpoint $Endpoint -TimeoutSeconds $TimeoutSeconds }
+    catch {
+        $detail = $_.Exception.Message
+        $script:LastReconnectCause = if($detail -match '(?i)authenticat|certificate|unauthorized'){'AUTH_FAILED'}elseif($detail -match '(?i)no route|unreachable|vpn'){'NO_ROUTE_VPN'}elseif($detail -match '(?i)timed out|timeout'){'TIMEOUT'}else{'CONNECT_RECHAZADO'}
+        Write-AdbLog -Level ERROR -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $Endpoint -Message ("{0}: {1}; etapa={2}; duracionMs={3}" -f $script:LastReconnectCause,$detail,$Source,[int]([DateTime]::UtcNow-$started).TotalMilliseconds)
+        Write-Host ("Fallo: {0}" -f $detail) -ForegroundColor Yellow
+        return $null
+    }
+    try { $transport = ((@(Invoke-Adb -Serial $record.Serial -Arguments @('get-serialno')) | ForEach-Object { [string]$_ }) -join '').Trim() }
+    catch { $transport = $null }
+    if ($transport -cne $record.Serial) {
+        $script:LastReconnectCause = 'SERIAL_NO_COINCIDE'
+        Write-AdbLog -Level ERROR -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $Endpoint -Message ("SERIAL_NO_COINCIDE: transporte inesperado; etapa={0}; duracionMs={1}" -f $Source,[int]([DateTime]::UtcNow-$started).TotalMilliseconds)
+        return $null
+    }
+    $wifiId = Get-AdbPhysicalId -Serial $record.Serial
+    $wifiHash = if ($wifiId) { Get-AdbPhysicalIdHash -PhysicalId $wifiId } else { $null }
+    $expectedHash = [string]$Device.PhysicalIdHash
+    if ($expectedHash -and ($null -eq $wifiHash -or $expectedHash -cne $wifiHash)) {
+        $script:LastReconnectCause = 'SERIAL_NO_COINCIDE'
+        Write-AdbLog -Level ERROR -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $Endpoint -Message ("SERIAL_NO_COINCIDE: identidad fisica inesperada; etapa={0}; duracionMs={1}" -f $Source,[int]([DateTime]::UtcNow-$started).TotalMilliseconds)
+        return $null
+    }
+    if ($Device.UsbSerial) {
+        $usb = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $Device.UsbSerial -and $_.Status -ceq 'device' })[0]
+        if ($usb) {
+            $usbId = Get-AdbPhysicalId -Serial $usb.Serial
+            if (-not $usbId -or (Get-AdbPhysicalIdHash -PhysicalId $usbId) -cne $wifiHash) {
+                $script:LastReconnectCause = 'SERIAL_NO_COINCIDE'
+                Write-AdbLog -Level ERROR -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $Endpoint -Message ("SERIAL_NO_COINCIDE; etapa={0}; duracionMs={1}" -f $Source,[int]([DateTime]::UtcNow-$started).TotalMilliseconds)
+                return $null
+            }
+            $expectedHash = Get-AdbPhysicalIdHash -PhysicalId $usbId
+        }
+    }
+    if (-not $expectedHash -and -not $BindIdentity) {
+        $record | Add-Member -NotePropertyName Provisional -NotePropertyValue $true -Force
+        Write-AdbLog -Level WARN -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $record.Serial -Message ("PROVISIONAL: identidad sin confirmar; etapa=$Source; duracionMs=$([int]([DateTime]::UtcNow-$started).TotalMilliseconds)")
+        Write-Host ("Conexion provisional: {0} ({1}). Verifica por USB o confirma la vinculacion para guardarla." -f $Device.FriendlyName,$record.Serial) -ForegroundColor Yellow
+        return $record
+    }
+    if (-not $wifiHash) { return $null }
+    Add-AdbEndpointHistory -DeviceId $Device.Id -Endpoint $record.Serial -Source $Source -PhysicalIdHash $wifiHash | Out-Null
+    Write-AdbLog -Level SUCCESS -Source 'android_reconnect.ps1:Connect-And-RememberDevice' -Serial $record.Serial -Message ("Conexion verificada para {0}; etapa={1}; duracionMs={2}" -f $Device.FriendlyName,$Source,[int]([DateTime]::UtcNow-$started).TotalMilliseconds)
+    Write-Host ("OK: {0} verificado en estado device ({1})." -f $Device.FriendlyName,$record.Serial) -ForegroundColor Green
     return $record
+}
+
+function Test-EndpointCurrentNetwork {
+    param([object]$Entry)
+    if ($null -eq $Entry -or $null -eq $Entry.PSObject.Properties['NetworkBssid'] -or -not $Entry.NetworkBssid) { return $false }
+    $current = Get-CurrentWifiBssid
+    return ($current -and $current -ieq [string]$Entry.NetworkBssid)
 }
 
 function Invoke-SmartReconnect {
@@ -114,36 +168,93 @@ function Invoke-SmartReconnect {
 
     $device = if ($DeviceId) { @(Get-SavedAdbDevices | Where-Object { $_.Id -ceq $DeviceId })[0] } else { Select-SavedDevice }
     if ($null -eq $device) { throw 'No hay un dispositivo guardado para reconectar.' }
-
-    if ($device.LastEndpoint) {
-        $record = Connect-And-RememberDevice -Device $device -Endpoint $device.LastEndpoint
-        if ($null -ne $record) { return $record }
-    }
-    if ($device.Mode -eq 'wireless-debugging-tls') {
-        Write-Host 'Buscando el nuevo endpoint mediante mDNS...' -ForegroundColor Cyan
-        $mdnsEndpoint = Select-MdnsEndpoint -Device $device
-        if ($mdnsEndpoint) {
-            $record = Connect-And-RememberDevice -Device $device -Endpoint $mdnsEndpoint
-            if ($null -ne $record) { return $record }
+    $started = [DateTime]::UtcNow
+    $deadline = $started.AddSeconds(30)
+    $extended = $false
+    $attempt = 0
+    $lastCode = 'CONNECT_RECHAZADO'
+    $script:LastReconnectCause = $null
+    while ($true) {
+        $attempt++
+        $device = @(Get-SavedAdbDevices | Where-Object { $_.Id -ceq $device.Id })[0]
+        if ($device.Mode -eq 'tcpip-5555' -and $device.UsbSerial) {
+            $usb = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $device.UsbSerial })[0]
+            if ($usb -and $usb.Status -ceq 'device') {
+                try {
+                    $record = Invoke-AdbUsbWifiConversion -Device $device
+                    if ($record) { return $record }
+                } catch {
+                    $lastCode = ($_.Exception.Message -split ':')[0]
+                    Write-AdbLog -Level WARN -Source 'android_reconnect.ps1:Invoke-SmartReconnect' -Serial $device.UsbSerial -Message $_.Exception.Message
+                }
+            } elseif ($usb -and $usb.Status -ceq 'unauthorized') { $lastCode = 'USB_UNAUTHORIZED' }
+            elseif ($usb) { $lastCode = 'OFFLINE' }
+            else { $lastCode = 'USB_NO_DETECTADO' }
         }
-    } elseif ($device.Mode -eq 'tcpip-5555' -and $device.UsbSerial) {
-        $usbRecord = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $device.UsbSerial })[0]
-        if ($null -ne $usbRecord -and $usbRecord.Status -ceq 'device') {
-            Write-Host 'USB detectado; obteniendo la IP nueva automaticamente...' -ForegroundColor Cyan
-            $usbIp = Get-AdbDeviceIpv4 -Serial $device.UsbSerial
-            if ($usbIp) {
-                Invoke-AdbCommand -Serial $device.UsbSerial -Arguments @('tcpip','5555') | Out-Host
-                Start-Sleep -Seconds 2
-                $usbEndpoint = (ConvertTo-AdbEndpoint ("{0}:5555" -f $usbIp)).Endpoint
-                $record = Connect-And-RememberDevice -Device $device -Endpoint $usbEndpoint
-                if ($null -ne $record) { return $record }
+        $candidates = @()
+        if ($device.Mode -eq 'wireless-debugging-tls') {
+            $mdns = Select-MdnsEndpoint -Device $device -NonInteractive
+            if ($mdns) { $candidates = @($mdns) + $candidates }
+        }
+        $localCandidates = @()
+        $lastEntry = @($device.Endpoints | Where-Object { $_.Endpoint -ieq [string]$device.LastEndpoint })[0]
+        if ($device.LastEndpoint -and (Test-EndpointCurrentNetwork $lastEntry)) { $localCandidates += [string]$device.LastEndpoint }
+        if ($device.PSObject.Properties['Endpoints']) {
+            foreach ($entry in @($device.Endpoints)) {
+                $endpoint = [string]$entry.Endpoint
+                if ($endpoint -and (Test-EndpointCurrentNetwork $entry)) { $localCandidates += $endpoint }
             }
         }
+        $localCandidates = @($localCandidates | Select-Object -Unique)
+        if ($device.LastSuccessfulReconnectMethod -eq 'history' -and $localCandidates.Count -gt 1) { [array]::Reverse($localCandidates) }
+        $candidates += $localCandidates
+        $newUsb = $null
+        foreach ($endpoint in @($candidates | Select-Object -Unique)) {
+            if ([DateTime]::UtcNow -ge $deadline) { break }
+            if ($device.Mode -eq 'tcpip-5555' -and $device.UsbSerial) {
+                $newUsb = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $device.UsbSerial -and $_.Status -ceq 'device' })[0]
+                if ($newUsb) { break }
+            }
+            $state = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $endpoint })[0]
+            if ($state -and $state.Status -ceq 'offline') {
+                Write-AdbLog -Level INFO -Source 'android_reconnect.ps1:Invoke-SmartReconnect' -Serial $endpoint -Message 'OFFLINE: desconexion dirigida al endpoint'
+                try { Invoke-AdbHost -Arguments @('disconnect',$endpoint) | Out-Null } catch { }
+            }
+            $source = if ($mdns -and $endpoint -ceq $mdns) { 'mdns' } else { 'reconnect' }
+            $record = Connect-And-RememberDevice -Device $device -Endpoint $endpoint -TimeoutSeconds 4 -Source $source
+            if ($record) { return $record }
+            if ($script:LastReconnectCause) { $lastCode = $script:LastReconnectCause }
+        }
+        if ([DateTime]::UtcNow -ge $deadline) {
+            if (-not $extended) {
+                Write-Host ("Primer intento agotado. Ultima causa: {0}." -f $lastCode) -ForegroundColor Yellow
+                if ((Read-Host 'Continuar otros 30 segundos? [s/N]').Trim() -match '^(?i:s|si|s?|y|yes)$') {
+                    $deadline = $started.AddSeconds(60)
+                    if ([DateTime]::UtcNow -ge $deadline) { $deadline = [DateTime]::UtcNow.AddSeconds(30) }
+                    $extended = $true
+                    continue
+                }
+            }
+            break
+        }
+        if ($newUsb) { continue }
+        Start-Sleep -Seconds ([Math]::Min(4,[Math]::Pow(2,[Math]::Min($attempt-1,2))))
     }
-
-    Write-Host 'No fue posible reconectar automaticamente.' -ForegroundColor Yellow
+    Write-AdbLog -Level ERROR -Source 'android_reconnect.ps1:Invoke-SmartReconnect' -Serial $device.UsbSerial -Message ("Reconexion agotada; causa={0}" -f $lastCode)
+    Write-Host ("Reconexion automatica agotada. Diagnostico: {0}." -f $lastCode) -ForegroundColor Yellow
+    $foreign = @($device.Endpoints | Where-Object { $_.Endpoint -and -not (Test-EndpointCurrentNetwork $_) })
+    if ($device.LastEndpoint -and -not (Test-EndpointCurrentNetwork $lastEntry) -and @($foreign | Where-Object { $_.Endpoint -ieq $device.LastEndpoint }).Count -eq 0) {
+        $foreign += [pscustomobject]@{Endpoint=$device.LastEndpoint}
+    }
+    if ($foreign.Count -gt 0 -and (Read-Host 'Probar endpoints historicos de otra red? [s/N]').Trim() -match '^(?i:s|si|s?|y|yes)$') {
+        foreach ($entry in $foreign) {
+            $record = Connect-And-RememberDevice -Device $device -Endpoint ([string]$entry.Endpoint)
+            if ($record) { return $record }
+        }
+    }
     $manualEndpoint = Read-ManualEndpoint -Mode $device.Mode
-    $record = Connect-And-RememberDevice -Device $device -Endpoint $manualEndpoint
+    $bind = (Read-Host 'Confirmar que este endpoint pertenece al telefono y guardar su identidad? [s/N]').Trim() -match '^(?i:s|si|y|yes)$'
+    $record = Connect-And-RememberDevice -Device $device -Endpoint $manualEndpoint -Source 'manual' -BindIdentity:$bind
     if ($null -eq $record) { throw "No se pudo conectar '$($device.FriendlyName)' al nuevo endpoint." }
     return $record
 }
@@ -171,20 +282,29 @@ function Add-WirelessDevice {
     $endpoint = Select-MdnsEndpoint -Device $temporary
     if (-not $endpoint) { $endpoint = Read-ManualEndpoint -Mode 'wireless-debugging-tls' }
     $record = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 15
+    $transport = ((@(Invoke-Adb -Serial $record.Serial -Arguments @('get-serialno')) | ForEach-Object { [string]$_ }) -join '').Trim()
+    $physicalId = Get-AdbPhysicalId -Serial $record.Serial
+    if ($transport -cne $record.Serial -or -not $physicalId) { throw 'SERIAL_NO_COINCIDE: no se verifico el endpoint emparejado.' }
+    $physicalHash = Get-AdbPhysicalIdHash -PhysicalId $physicalId
     $device = Add-SavedAdbDevice -FriendlyName $name -Mode 'wireless-debugging-tls' -LastEndpoint $record.Serial -IsPaired $true -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+    try {
+        $matchedService = @(Get-AdbMdnsServices | Where-Object { $_.Endpoint -ieq $record.Serial })[0]
+        if ($matchedService) {
+            $store = Read-AdbDeviceStore
+            $saved = @($store.Devices | Where-Object { $_.Id -ceq $device.Id })[0]
+            $saved | Add-Member -NotePropertyName MdnsServiceName -NotePropertyValue $matchedService.ServiceName -Force
+            Save-AdbDeviceStore -Store $store | Out-Null
+        }
+    } catch { Write-AdbLog -Level WARN -Source 'android_reconnect.ps1:Add-WirelessDevice' -Message $_.Exception.Message }
+    Add-AdbEndpointHistory -DeviceId $device.Id -Endpoint $record.Serial -Source 'mdns' -PhysicalIdHash $physicalHash | Out-Null
     Write-Host ("Dispositivo guardado: {0} [{1}]" -f $device.FriendlyName,$device.Id) -ForegroundColor Green
 }
 
 function Add-LegacyUsbDevice {
     $usb = Select-ReadyUsbDevice
     $name = Read-RequiredText 'Nombre amigable'
-    $ip = Get-AdbDeviceIpv4 -Serial $usb.Serial
-    if (-not $ip) { $ip = Read-RequiredText 'IP actual del telefono' }
-    Invoke-AdbCommand -Serial $usb.Serial -Arguments @('tcpip','5555') | Out-Host
-    Start-Sleep -Seconds 2
-    $endpoint = (ConvertTo-AdbEndpoint ("{0}:5555" -f $ip)).Endpoint
-    $record = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds 15
-    $device = Add-SavedAdbDevice -FriendlyName $name -Mode 'tcpip-5555' -UsbSerial $usb.Serial -LastEndpoint $record.Serial -IsPaired $false -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
+    $device = Add-SavedAdbDevice -FriendlyName $name -Mode 'tcpip-5555' -UsbSerial $usb.Serial -IsPaired $false
+    $record = Invoke-AdbUsbWifiConversion -Device $device
     Write-Host ("Dispositivo guardado: {0} [{1}]" -f $device.FriendlyName,$device.Id) -ForegroundColor Green
 }
 

@@ -415,6 +415,7 @@ class DevicesPage:
                     "last_connected_utc": item.get("last_connected"),
                     "is_online": item.get("state") == "conectado",
                     "is_active": bool(item.get("is_active")),
+                    "provisional": bool(item.get("provisional")),
                 }
                 for item in cards if item.get("is_saved")
             ]
@@ -429,6 +430,7 @@ class DevicesPage:
                     "model": info.model or info.serial,
                     "friendly_name": info.friendly_name or info.serial,
                     "battery": info.battery,
+                    "mode": info.mode,
                 })
 
             # 1. Renderizar lista online
@@ -536,10 +538,10 @@ class DevicesPage:
                 )
             )
 
-        if not is_net and state == "device":
+        if not is_net and state == "device" and dev.get("mode") == "tcpip-5555":
             action_buttons.append(
                 ft.OutlinedButton(
-                    "Pasar a Wi-Fi",
+                    "Convertir manualmente ahora",
                     icon=ft.Icons.WIFI,
                     height=30,
                     on_click=lambda _, s=serial: self._action_convert_wifi(s),
@@ -657,6 +659,15 @@ class DevicesPage:
                 )
             )
 
+        if dev.get("provisional"):
+            badges.append(self._badge("PROVISIONAL", theme.WARN, is_bold=True))
+            actions.append(ft.OutlinedButton(
+                "Confirmar teléfono",
+                icon=ft.Icons.VERIFIED_OUTLINED,
+                height=30,
+                on_click=lambda _, i=dev_id: self._confirm_provisional(i),
+            ))
+
         if ep and ":" in ep:
             actions.append(
                 ft.OutlinedButton(
@@ -750,11 +761,11 @@ class DevicesPage:
 
         threading.Thread(target=worker, name="dev-set-active", daemon=True).start()
 
-    def _action_activate_saved(self, device_id: str) -> None:
+    def _action_activate_saved(self, device_id: str, *, extended: bool = False, allow_cross_network: bool = False) -> None:
         self._set_busy(True, "Reconectando y activando dispositivo guardado...")
 
         def worker():
-            ok, msg = self._device.set_active_by_saved_id(device_id)
+            ok, msg = self._device.set_active_by_saved_id(device_id, retry_seconds=30.0, allow_cross_network=allow_cross_network)
             self._log(msg, theme.OK if ok else theme.WARN)
             self._set_busy(False, msg, is_error=not ok)
             if ok and self._on_device_changed:
@@ -763,8 +774,44 @@ class DevicesPage:
                 except Exception:
                     pass
             self.refresh_devices()
+            if not ok:
+                page = self._page or getattr(self.view, "page", None)
+                if page:
+                    actions = [ft.TextButton("Endpoint manual", on_click=lambda _: page.pop_dialog())]
+                    if not extended:
+                        actions.extend([
+                            ft.TextButton("Probar historial de otra red", on_click=lambda _: (page.pop_dialog(), self._action_activate_saved(device_id, extended=True, allow_cross_network=True))),
+                            ft.FilledButton("Intentar 30 s más", on_click=lambda _: (page.pop_dialog(), self._action_activate_saved(device_id, extended=True))),
+                        ])
+                    dialog = ft.AlertDialog(
+                        modal=True,
+                        title=ft.Text("Reconexión pendiente"),
+                        content=ft.Text(f"{msg}\nPuedes introducir el endpoint manualmente."),
+                        actions=actions,
+                    )
+                    page.show_dialog(dialog)
 
         threading.Thread(target=worker, name="dev-activate-saved", daemon=True).start()
+
+    def _confirm_provisional(self, device_id: str) -> None:
+        page = self._page or getattr(self.view, "page", None)
+        if not page:
+            return
+
+        def confirm(_event):
+            page.pop_dialog()
+            result = self._device.confirm_provisional_identity(device_id)
+            self._log(result.message or result.error or "No se pudo vincular el teléfono.",
+                      theme.OK if result.success else theme.ERR)
+            self.refresh_devices()
+
+        page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Confirmar identidad"),
+            content=ft.Text("Confirma que el endpoint provisional pertenece a este teléfono. Se guardará su identidad para futuras reconexiones."),
+            actions=[ft.TextButton("Cancelar", on_click=lambda _: page.pop_dialog()),
+                     ft.FilledButton("Confirmar vínculo", on_click=confirm)],
+        ))
 
     def _action_convert_wifi(self, serial: str) -> None:
         self._set_busy(True, f"Convirtiendo conexión USB {serial} a Wi-Fi (puerto 5555)...")

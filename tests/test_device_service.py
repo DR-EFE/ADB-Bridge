@@ -1,4 +1,6 @@
 import json
+import hashlib
+import threading
 import shutil
 import sys
 import tempfile
@@ -20,6 +22,7 @@ from ui.services.device_service import (
     read_devices_store,
     save_devices_store,
 )
+from ui_automation.adb_manager import ensure_single_adb_server
 
 
 class TestDeviceService(unittest.TestCase):
@@ -30,6 +33,393 @@ class TestDeviceService(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_last_endpoint_requires_current_bssid_and_explicit_override(self, mock_get_client):
+        endpoint = "192.168.1.30:5555"
+        save_devices_store({"SchemaVersion": 1, "Devices": [{
+            "Id": "phone", "FriendlyName": "Phone", "Mode": "tcpip-5555", "LastEndpoint": endpoint,
+            "Endpoints": [{"Endpoint": endpoint, "NetworkBssid": "aa:aa:aa:aa:aa:aa"}],
+        }]}, self.canonical_json)
+        client = MagicMock()
+        connected = set()
+        client.list.side_effect = lambda: [type("Record", (), {"serial": ep, "state": "device"})() for ep in connected]
+        client.connect.side_effect = lambda ep, timeout: (connected.add(ep) or f"connected to {ep}")
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_current_network_bssid", return_value="bb:bb:bb:bb:bb:bb"), \
+             patch.object(service, "_run_adb_host", return_value=endpoint), \
+             patch.object(service, "_physical_identity", return_value="PHONE-ID"):
+            self.assertFalse(service.connect_device("phone").success)
+            client.connect.assert_not_called()
+            result = service.connect_device("phone", allow_cross_network=True)
+        self.assertTrue(result.provisional)
+        self.assertEqual(endpoint, read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"])
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_mismatched_physical_identity_never_updates_saved_endpoint(self, mock_get_client):
+        endpoint = "192.168.1.40:5555"
+        expected = "sha256:" + hashlib.sha256(b"phone-a").hexdigest()
+        save_devices_store({"SchemaVersion": 1, "Devices": [{
+            "Id": "phone", "FriendlyName": "Phone A", "Mode": "tcpip-5555", "LastEndpoint": endpoint,
+            "PhysicalIdHash": expected,
+            "Endpoints": [{"Endpoint": endpoint, "NetworkBssid": "aa:bb:cc:dd:ee:ff"}],
+        }]}, self.canonical_json)
+        client = MagicMock()
+        connected = set()
+        client.list.side_effect = lambda: [type("Record", (), {"serial": ep, "state": "device"})() for ep in connected]
+        client.connect.side_effect = lambda ep, timeout: (connected.add(ep) or f"connected to {ep}")
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_current_network_bssid", return_value="aa:bb:cc:dd:ee:ff"), \
+             patch.object(service, "_run_adb_host", return_value=endpoint), \
+             patch.object(service, "_physical_identity", return_value="PHONE-B"):
+            result = service.connect_device("phone")
+        self.assertFalse(result.success)
+        self.assertIn("SERIAL_NO_COINCIDE", result.error)
+        self.assertEqual(expected, read_devices_store(self.canonical_json)["Devices"][0]["PhysicalIdHash"])
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_connected_response_with_wrong_transport_serial_is_rejected(self, mock_get_client):
+        endpoint = "192.168.1.41:5555"
+        save_devices_store({"SchemaVersion": 1, "Devices": [{
+            "Id": "phone", "FriendlyName": "Phone", "Mode": "tcpip-5555", "LastEndpoint": endpoint,
+            "Endpoints": [{"Endpoint": endpoint, "NetworkBssid": "aa:bb:cc:dd:ee:ff"}],
+        }]}, self.canonical_json)
+        client = MagicMock()
+        connected = set()
+        client.list.side_effect = lambda: [type("Record", (), {"serial": ep, "state": "device"})() for ep in connected]
+        client.connect.side_effect = lambda ep, timeout: (connected.add(ep) or f"connected to {ep}")
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_current_network_bssid", return_value="aa:bb:cc:dd:ee:ff"), \
+             patch.object(service, "_run_adb_host", return_value="OTHER"), \
+             patch.object(service, "_physical_identity", return_value="PHONE-ID"):
+            result = service.connect_device("phone")
+        self.assertFalse(result.success)
+        self.assertIn("SERIAL_NO_COINCIDE", result.error)
+        self.assertEqual(endpoint, read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"])
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_provisional_requires_explicit_binding_before_history_changes(self, mock_get_client):
+        endpoint = "192.168.1.60:5555"
+        save_devices_store({"SchemaVersion": 1, "Devices": [{
+            "Id": "phone", "FriendlyName": "Phone", "Mode": "tcpip-5555", "LastEndpoint": None,
+            "Endpoints": [{"Endpoint": endpoint, "NetworkBssid": "aa:bb:cc:dd:ee:ff"}],
+        }]}, self.canonical_json)
+        client = MagicMock()
+        connected = set()
+        client.list.side_effect = lambda: [type("Record", (), {"serial": ep, "state": "device"})() for ep in connected]
+        client.connect.side_effect = lambda ep, timeout: (connected.add(ep) or f"connected to {ep}")
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_current_network_bssid", return_value="aa:bb:cc:dd:ee:ff"), \
+             patch.object(service, "_run_adb_host", return_value=endpoint), \
+             patch.object(service, "_physical_identity", return_value="PHONE-ID"):
+            result = service.connect_device("phone")
+            self.assertTrue(result.provisional)
+            self.assertIsNone(read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"])
+            self.assertTrue(service.confirm_provisional_identity("phone").success)
+        record = read_devices_store(self.canonical_json)["Devices"][0]
+        self.assertEqual(endpoint, record["LastEndpoint"])
+        self.assertEqual(DeviceService._physical_hash("PHONE-ID"), record["PhysicalIdHash"])
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_offline_recovery_disconnects_only_target_endpoint(self, mock_get_client):
+        endpoint = "192.168.1.70:5555"
+        other = "192.168.1.71:5555"
+        save_devices_store({"SchemaVersion": 1, "Devices": [{
+            "Id": "phone", "FriendlyName": "Phone", "Mode": "tcpip-5555", "LastEndpoint": endpoint,
+            "Endpoints": [{"Endpoint": endpoint, "NetworkBssid": "aa:bb:cc:dd:ee:ff"}],
+        }]}, self.canonical_json)
+        states = {endpoint: "offline", other: "device"}
+        client = MagicMock()
+        client.list.side_effect = lambda: [type("Record", (), {"serial": ep, "state": state})()
+                                           for ep, state in states.items()]
+        client.disconnect.side_effect = lambda ep: states.pop(ep, None)
+        client.connect.side_effect = lambda ep, timeout: (states.update({ep: "device"}) or f"connected to {ep}")
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_current_network_bssid", return_value="aa:bb:cc:dd:ee:ff"), \
+             patch.object(service, "_run_adb_host", return_value=endpoint), \
+             patch.object(service, "_physical_identity", return_value="PHONE-ID"):
+            result = service.connect_device("phone")
+        self.assertTrue(result.success)
+        client.disconnect.assert_called_once_with(endpoint)
+        self.assertEqual("device", states[other])
+
+    def test_automatic_server_start_does_not_kill_existing_adb(self):
+        client = MagicMock()
+        client.server_version.side_effect = [OSError("not started"), 41]
+        with patch("ui_automation.adb_manager.get_adb_client", return_value=client), \
+             patch("ui_automation.adb_manager.socket.create_connection", side_effect=OSError("closed")), \
+             patch("ui_automation.adb_manager.get_adb_executable", return_value="adb"), \
+             patch("ui_automation.adb_manager.subprocess.run") as run:
+            run.return_value.returncode = 0
+            ensure_single_adb_server(force=False)
+        self.assertEqual("start-server", run.call_args.args[0][1])
+
+    def test_unresponsive_occupied_adb_port_requires_manual_restart(self):
+        client = MagicMock()
+        client.server_version.side_effect = OSError("bad protocol")
+        with patch("ui_automation.adb_manager.get_adb_client", return_value=client), \
+             patch("ui_automation.adb_manager.socket.create_connection", return_value=MagicMock()), \
+             patch("ui_automation.adb_manager.subprocess.run") as run:
+            with self.assertRaises(RuntimeError):
+                ensure_single_adb_server(force=False)
+            run.assert_not_called()
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_usb_conversion_preserves_identity_after_transport_restart(self, mock_get_client):
+        endpoint = "192.168.1.50:5555"
+        save_devices_store({"SchemaVersion": 1, "CurrentDeviceId": "phone", "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "UsbSerial": "USB123", "Mode": "tcpip-5555", "LastEndpoint": None}
+        ]}, self.canonical_json)
+        client = MagicMock()
+        connected = set()
+        usb_visible = {"USB123"}
+        client.list.side_effect = lambda: [
+            type("Record", (), {"serial": serial, "state": "device"})() for serial in (usb_visible | connected)
+        ]
+        client.connect.side_effect = lambda ep, timeout: (connected.add(ep) or f"connected to {ep}")
+        usb = MagicMock()
+        usb.getprop.side_effect = lambda key: {"ro.serialno": "PHYSICAL123", "ro.product.model": "Pixel"}.get(key, "")
+        usb.shell.side_effect = lambda cmd: "default via 192.168.1.1 dev wlan0 src 192.168.1.50" if cmd == "ip route" else ""
+        def restart_adbd(_port):
+            usb_visible.clear()
+            raise OSError("USB transport closed during adbd restart")
+        usb.tcpip.side_effect = restart_adbd
+        wifi = MagicMock()
+        wifi.getprop.side_effect = lambda key: "PHYSICAL123" if key == "ro.serialno" else ""
+        client.device.side_effect = lambda serial: usb if serial == "USB123" else wifi
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_run_adb_host", return_value=endpoint):
+            ok, _ = service.convert_usb_to_wifi("USB123")
+        self.assertTrue(ok)
+        self.assertEqual(endpoint, read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"])
+        self.assertEqual("USB123", read_devices_store(self.canonical_json)["Devices"][0]["UsbSerial"])
+        usb.tcpip.assert_called_once_with(5555)
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_usb_conversion_rejects_wrong_transport_serial(self, mock_get_client):
+        endpoint = "192.168.1.50:5555"
+        save_devices_store({"SchemaVersion": 1, "CurrentDeviceId": "phone", "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "UsbSerial": "USB123", "Mode": "tcpip-5555", "LastEndpoint": None}
+        ]}, self.canonical_json)
+        client = MagicMock()
+        connected = set()
+        client.list.side_effect = lambda: [type("Record", (), {"serial": serial, "state": "device"})()
+                                           for serial in ({"USB123"} | connected)]
+        client.connect.side_effect = lambda ep, timeout: (connected.add(ep) or "connected to device")
+        usb = MagicMock()
+        usb.getprop.side_effect = lambda key: "PHYSICAL123" if key == "ro.serialno" else "Pixel"
+        usb.shell.return_value = "default via 192.168.1.1 dev wlan0 src 192.168.1.50"
+        wifi = MagicMock()
+        wifi.getprop.return_value = "PHYSICAL123"
+        client.device.side_effect = lambda serial: usb if serial == "USB123" else wifi
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_run_adb_host", return_value="OTHER"), patch("ui.services.device_service.time.sleep"):
+            ok, message = service.convert_usb_to_wifi("USB123")
+        self.assertFalse(ok)
+        self.assertIn("SERIAL_NO_COINCIDE", message)
+        self.assertIsNone(read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"])
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_usb_monitor_skips_tls_and_processes_two_legacy_phones(self, mock_get_client):
+        save_devices_store({"SchemaVersion": 1, "CurrentDeviceId": "a", "Devices": [
+            {"Id": "a", "FriendlyName": "A", "UsbSerial": "USB_A", "Mode": "tcpip-5555"},
+            {"Id": "b", "FriendlyName": "B", "UsbSerial": "USB_B", "Mode": "tcpip-5555"},
+            {"Id": "tls", "FriendlyName": "TLS", "UsbSerial": "USB_TLS", "Mode": "wireless-debugging-tls"},
+        ]}, self.canonical_json)
+        client = MagicMock()
+        client.list.return_value = [type("Record", (), {"serial": s, "state": "device"})()
+                                    for s in ("USB_A", "USB_B", "USB_TLS")]
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        completed = threading.Event()
+        calls = []
+        def convert(usb_serial, activate):
+            calls.append(usb_serial)
+            if len(calls) == 2:
+                completed.set()
+            return True, "ok"
+        with patch.object(service, "convert_usb_to_wifi", side_effect=convert):
+            service.check_and_auto_convert_usb()
+            self.assertTrue(completed.wait(2))
+        self.assertCountEqual(calls, ["USB_A", "USB_B"])
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_unauthorized_usb_does_not_restart_adbd(self, mock_get_client):
+        save_devices_store({"SchemaVersion": 1, "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "UsbSerial": "USB123", "Mode": "tcpip-5555"}
+        ]}, self.canonical_json)
+        client = MagicMock()
+        client.list.return_value = [type("Record", (), {"serial": "USB123", "state": "unauthorized"})()]
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        ok, message = service.convert_usb_to_wifi("USB123")
+        self.assertFalse(ok)
+        self.assertIn("USB_UNAUTHORIZED", message)
+        client.device.assert_not_called()
+
+    def test_ip_fallback_uses_wifi_interface(self):
+        device = MagicMock()
+        device.shell.side_effect = lambda command: {
+            "ip route": "default via 10.0.0.1 dev rmnet0 src 10.0.0.8",
+            "ip addr": "1: lo: <LOOPBACK>\n inet 127.0.0.1/8\n2: wlan0: <UP>\n inet 192.168.1.42/24",
+        }.get(command, "")
+        self.assertEqual(DeviceService._usb_wifi_ip(device), "192.168.1.42")
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_history_other_network_requires_explicit_permission(self, mock_get_client):
+        endpoint = "10.21.4.8:5555"
+        save_devices_store({"SchemaVersion": 1, "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "Mode": "tcpip-5555", "LastEndpoint": None,
+             "Endpoints": [{"Endpoint": endpoint}]}
+        ]}, self.canonical_json)
+        client = MagicMock()
+        client.list.return_value = []
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_endpoint_on_current_network", return_value=False):
+            result = service.connect_device("phone")
+        self.assertFalse(result.success)
+        client.connect.assert_not_called()
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_connect_reply_does_not_count_without_device_state(self, mock_get_client):
+        endpoint = "192.168.1.60:5555"
+        save_devices_store({"SchemaVersion": 1, "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "Mode": "tcpip-5555", "LastEndpoint": endpoint}
+        ]}, self.canonical_json)
+        client = MagicMock()
+        client.list.return_value = [type("Record", (), {"serial": endpoint, "state": "offline"})()]
+        client.connect.return_value = f"connected to {endpoint}"
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        result = service.connect_device("phone")
+        self.assertFalse(result.success)
+        self.assertFalse(read_devices_store(self.canonical_json)["Devices"][0].get("Endpoints"))
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_active_wifi_for_same_phone_skips_tcpip_restart(self, mock_get_client):
+        endpoint = "192.168.1.70:5555"
+        save_devices_store({"SchemaVersion": 1, "CurrentDeviceId": "phone", "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "UsbSerial": "USB123", "Mode": "tcpip-5555", "LastEndpoint": None}
+        ]}, self.canonical_json)
+        client = MagicMock()
+        client.list.return_value = [type("Record", (), {"serial": serial, "state": "device"})()
+                                    for serial in ("USB123", endpoint)]
+        usb = MagicMock()
+        wifi = MagicMock()
+        usb.getprop.side_effect = lambda key: "PHYSICAL123" if key == "ro.serialno" else "Pixel"
+        wifi.getprop.side_effect = lambda key: "PHYSICAL123" if key == "ro.serialno" else "Pixel"
+        client.device.side_effect = lambda serial: usb if serial == "USB123" else wifi
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_run_adb_host", return_value=endpoint):
+            ok, _ = service.convert_usb_to_wifi("USB123")
+        self.assertTrue(ok)
+        usb.tcpip.assert_not_called()
+        self.assertEqual(read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"], endpoint)
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_history_on_current_bssid_can_reconnect(self, mock_get_client):
+        endpoint = "192.168.1.80:5555"
+        bssid = "aa:bb:cc:dd:ee:ff"
+        save_devices_store({"SchemaVersion": 1, "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "Mode": "tcpip-5555", "LastEndpoint": None,
+             "Endpoints": [{"Endpoint": endpoint, "NetworkBssid": bssid}]}
+        ]}, self.canonical_json)
+        client = MagicMock()
+        connected = set()
+        client.list.side_effect = lambda: [type("Record", (), {"serial": ep, "state": "device"})() for ep in connected]
+        client.connect.side_effect = lambda ep, timeout: (connected.add(ep) or f"connected to {ep}")
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_current_network_bssid", return_value=bssid), patch.object(service, "refresh_device_metadata", return_value=None), \
+             patch.object(service, "_run_adb_host", return_value=endpoint), patch.object(service, "_physical_identity", return_value="PHONE-ID"):
+            result = service.connect_device("phone")
+        self.assertTrue(result.success)
+        self.assertTrue(result.provisional)
+        self.assertEqual(result.endpoint, endpoint)
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_same_usb_is_not_converted_twice_during_concurrent_scan(self, mock_get_client):
+        save_devices_store({"SchemaVersion": 1, "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "UsbSerial": "USB123", "Mode": "tcpip-5555"}
+        ]}, self.canonical_json)
+        client = MagicMock()
+        client.list.return_value = [type("Record", (), {"serial": "USB123", "state": "device"})()]
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+        def convert(usb_serial, activate):
+            calls.append(usb_serial)
+            started.set()
+            release.wait(2)
+            return True, "ok"
+        with patch.object(service, "convert_usb_to_wifi", side_effect=convert):
+            service.check_and_auto_convert_usb()
+            self.assertTrue(started.wait(2))
+            service.check_and_auto_convert_usb()
+            release.set()
+        self.assertEqual(calls, ["USB123"])
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_locked_phone_without_readable_identity_is_not_restarted(self, mock_get_client):
+        save_devices_store({"SchemaVersion": 1, "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "UsbSerial": "USB123", "Mode": "tcpip-5555"}
+        ]}, self.canonical_json)
+        client = MagicMock()
+        client.list.return_value = [type("Record", (), {"serial": "USB123", "state": "device"})()]
+        device = MagicMock()
+        device.getprop.side_effect = RuntimeError("locked")
+        device.shell.return_value = "null"
+        client.device.return_value = device
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        ok, message = service.convert_usb_to_wifi("USB123")
+        self.assertFalse(ok)
+        self.assertIn("SERIAL_NO_COINCIDE", message)
+        device.tcpip.assert_not_called()
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_legacy_record_ignores_unrelated_tls_mdns_advertisement(self, mock_get_client):
+        save_devices_store({"SchemaVersion": 1, "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "Mode": "tcpip-5555", "LastEndpoint": None}
+        ]}, self.canonical_json)
+        client = MagicMock()
+        client.list.return_value = []
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "find_wireless_devices", return_value=[
+            {"service_name": "other._adb-tls-connect._tcp", "host": "192.168.1.90", "endpoint": "192.168.1.90:41234"}
+        ]) as discover:
+            result = service.connect_device("phone")
+        self.assertFalse(result.success)
+        discover.assert_not_called()
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_wifi_search_yields_when_usb_conversion_is_requested(self, mock_get_client):
+        save_devices_store({"SchemaVersion": 1, "Devices": [
+            {"Id": "phone", "FriendlyName": "Phone", "UsbSerial": "USB123", "Mode": "tcpip-5555",
+             "LastEndpoint": "192.168.1.90:5555"}
+        ]}, self.canonical_json)
+        service = DeviceService(devices_json_path=self.canonical_json)
+        client = MagicMock()
+        def list_with_usb_event():
+            service._usb_priority.add("USB123")
+            return []
+        client.list.side_effect = list_with_usb_event
+        mock_get_client.return_value = client
+        result = service.connect_device("phone")
+        self.assertEqual(result.error, "USB_PRIORITY")
+        client.connect.assert_not_called()
 
     def test_migration_from_legacy_config(self):
         """Verifica la migración automática única desde config/devices.json al archivo canónico."""
@@ -317,15 +707,16 @@ class TestDeviceService(unittest.TestCase):
                 "SchemaVersion": 1,
                 "CurrentDeviceId": "primary",
                 "Devices": [
-                    {"Id": "primary", "FriendlyName": "Principal", "LastEndpoint": "192.168.1.10:5555", "LastIp": "192.168.1.10"},
-                    {"Id": "secondary", "FriendlyName": "Secundario", "LastEndpoint": "192.168.1.20:5555", "LastIp": "192.168.1.20"},
+                    {"Id": "primary", "FriendlyName": "Principal", "LastEndpoint": "192.168.1.10:5555", "LastIp": "192.168.1.10", "Mode": "wireless-debugging-tls", "MdnsServiceName": "primary"},
+                    {"Id": "secondary", "FriendlyName": "Secundario", "LastEndpoint": "192.168.1.20:5555", "LastIp": "192.168.1.20", "Mode": "wireless-debugging-tls", "MdnsServiceName": "secondary"},
                 ],
             },
             self.canonical_json,
         )
         client = MagicMock()
-        client.list.return_value = []
-        client.connect.return_value = "connected to device"
+        connected = set()
+        client.list.side_effect = lambda: [type("AdbRecord", (), {"serial": ep, "state": "device"})() for ep in connected]
+        client.connect.side_effect = lambda ep, timeout: (connected.add(ep) or "connected to device")
         mock_get_client.return_value = client
         service = DeviceService(serial="192.168.1.10:5555", devices_json_path=self.canonical_json)
         changed = []
@@ -338,13 +729,17 @@ class TestDeviceService(unittest.TestCase):
                 {"service_name": "primary", "host": "192.168.1.10", "endpoint": "192.168.1.10:46617"},
                 {"service_name": "secondary", "host": "192.168.1.20", "endpoint": "192.168.1.20:46618"},
             ],
-        ), patch.object(service, "refresh_device_metadata", return_value=None):
+        ), patch.object(service, "refresh_device_metadata", return_value=None), \
+             patch.object(service, "_run_adb_host", side_effect=lambda *args, **kwargs: args[1]), \
+             patch.object(service, "_physical_identity", return_value="PHONE-ID"):
             results = service.auto_reconnect_saved_devices()
 
         self.assertEqual(2, sum(result.success for result in results))
         self.assertEqual("192.168.1.10:46617", service.serial)
         self.assertEqual(["192.168.1.10:46617"], changed)
         self.assertEqual("primary", read_devices_store(self.canonical_json)["CurrentDeviceId"])
+        self.assertTrue(all(result.provisional for result in results))
+        self.assertEqual("192.168.1.10:5555", read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"])
 
     @patch("ui.services.device_service.get_adb_client")
     def test_reconnect_device_returns_new_endpoint_for_transfer(self, mock_get_client):
@@ -352,17 +747,21 @@ class TestDeviceService(unittest.TestCase):
             {
                 "SchemaVersion": 1,
                 "CurrentDeviceId": "phone",
-                "Devices": [{"Id": "phone", "FriendlyName": "Phone", "LastEndpoint": "192.168.1.50:43863", "LastIp": "192.168.1.50"}],
+                "Devices": [{"Id": "phone", "FriendlyName": "Phone", "LastEndpoint": "192.168.1.50:43863", "LastIp": "192.168.1.50", "Mode": "wireless-debugging-tls", "MdnsServiceName": "phone"}],
             },
             self.canonical_json,
         )
         client = MagicMock()
-        client.list.return_value = []
-        client.connect.return_value = "connected to device"
+        connected = set()
+        client.list.side_effect = lambda: [type("AdbRecord", (), {"serial": ep, "state": "device"})() for ep in connected]
+        client.connect.side_effect = lambda ep, timeout: (connected.add(ep) or "connected to device")
         mock_get_client.return_value = client
         service = DeviceService(serial="192.168.1.50:43863", devices_json_path=self.canonical_json)
 
-        with patch.object(service, "find_wireless_devices", return_value=[{"service_name": "phone", "host": "192.168.1.50", "endpoint": "192.168.1.50:46617"}]), patch.object(service, "refresh_device_metadata", return_value=None):
+        with patch.object(service, "find_wireless_devices", return_value=[{"service_name": "phone", "host": "192.168.1.50", "endpoint": "192.168.1.50:46617"}]), \
+             patch.object(service, "refresh_device_metadata", return_value=None), \
+             patch.object(service, "_run_adb_host", return_value="192.168.1.50:46617"), \
+             patch.object(service, "_physical_identity", return_value="PHONE-ID"):
             endpoint = service.reconnect_device("192.168.1.50:43863")
 
         self.assertEqual("192.168.1.50:46617", endpoint)

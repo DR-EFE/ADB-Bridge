@@ -159,6 +159,34 @@ Describe "AndroidAdb Module Unit Tests" {
         }
     }
 
+    Context "Historial compartido de endpoints" {
+        It "Conserva diez endpoints, el serial USB y el ultimo endpoint" {
+            $device = Add-SavedAdbDevice -FriendlyName ('Historial-' + [guid]::NewGuid().ToString('N')) -Mode 'tcpip-5555' -UsbSerial ('USB-' + [guid]::NewGuid().ToString('N'))
+            try {
+                for ($index = 1; $index -le 12; $index++) {
+                    Add-AdbEndpointHistory -DeviceId $device.Id -Endpoint ("192.168.1.{0}:5555" -f $index) | Out-Null
+                }
+                $saved = @(Get-SavedAdbDevices | Where-Object { $_.Id -ceq $device.Id })[0]
+                @($saved.Endpoints).Count | Should Be 10
+                $saved.LastEndpoint | Should Be '192.168.1.12:5555'
+                $saved.UsbSerial | Should Be $device.UsbSerial
+            } finally {
+                Remove-SavedAdbDevice -Id $device.Id | Out-Null
+            }
+        }
+    }
+
+    Context "Identidad fisica compartida con la GUI" {
+        It "Calcula la misma huella SHA256 normalizada que Python" {
+            $value = Get-AdbPhysicalIdHash -PhysicalId ' PHONE-ID '
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+                $expected = 'sha256:' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes('phone-id'))).Replace('-','').ToLowerInvariant())
+            } finally { $sha.Dispose() }
+            $value | Should Be $expected
+        }
+    }
+
     Context "Exportacion de Funciones del Modulo" {
         It "Exporta las funciones criticas requeridas por la interfaz" {
             $mod = Get-Module AndroidAdb

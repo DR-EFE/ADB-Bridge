@@ -128,6 +128,17 @@ function Connect-And-Save {
     Write-Host ("Conectando a {0}..." -f $endpoint) -ForegroundColor Green
     $connectTimeout = if ($Mode -eq 'LegacyTcpIp') { 30 } else { 15 }
     $record = Connect-AdbEndpoint -Endpoint $endpoint -TimeoutSeconds $connectTimeout
+    $transport = ((@(Invoke-Adb -Serial $record.Serial -Arguments @('get-serialno')) | ForEach-Object { [string]$_ }) -join '').Trim()
+    $physicalId = Get-AdbPhysicalId -Serial $record.Serial
+    if ($transport -cne $record.Serial -or -not $physicalId) { throw 'SERIAL_NO_COINCIDE: no se verifico el endpoint antes de guardarlo.' }
+    $physicalHash = Get-AdbPhysicalIdHash -PhysicalId $physicalId
+    if ($UsbSerial) {
+        $usb = @(Get-AdbDevices | Where-Object { $_.Serial -ceq $UsbSerial -and $_.Status -ceq 'device' })[0]
+        if ($usb) {
+            $usbId = Get-AdbPhysicalId -Serial $UsbSerial
+            if (-not $usbId -or (Get-AdbPhysicalIdHash -PhysicalId $usbId) -cne $physicalHash) { throw 'SERIAL_NO_COINCIDE: el endpoint no pertenece al USB indicado.' }
+        }
+    }
 
     $configPath = Save-AndroidConfig -HostName $HostName -Port $Port -Endpoint $endpoint -Mode $Mode -Serial $record.Serial
     $storedMode = if ($Mode -eq 'ModernPairing') { 'wireless-debugging-tls' } else { 'tcpip-5555' }
@@ -139,6 +150,9 @@ function Connect-And-Save {
         $sameName = @($savedDevices | Where-Object { $_.FriendlyName -ieq $FriendlyName })
         if ($sameName.Count -eq 1) { $existing = $sameName[0] }
     }
+    if ($existing -and $existing.PhysicalIdHash -and $existing.PhysicalIdHash -cne $physicalHash) {
+        throw 'SERIAL_NO_COINCIDE: el endpoint no coincide con la identidad del registro existente.'
+    }
     if ($null -eq $existing) {
         $saved = Add-SavedAdbDevice -FriendlyName $FriendlyName -Mode $storedMode -UsbSerial $UsbSerial -LastEndpoint $record.Serial -IsPaired $IsPaired -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
     } elseif ($UsbSerial) {
@@ -146,6 +160,18 @@ function Connect-And-Save {
     } else {
         $saved = Update-SavedAdbDevice -Id $existing.Id -FriendlyName $FriendlyName -LastEndpoint $record.Serial -Mode $storedMode -IsPaired $IsPaired -LastConnectedUtc ([DateTime]::UtcNow.ToString('o'))
     }
+    if ($storedMode -eq 'wireless-debugging-tls') {
+        try {
+            $service = @(Get-AdbMdnsServices | Where-Object { $_.Endpoint -ieq $record.Serial })[0]
+            if ($service) {
+                $store = Read-AdbDeviceStore
+                $entry = @($store.Devices | Where-Object { $_.Id -ceq $saved.Id })[0]
+                $entry | Add-Member -NotePropertyName MdnsServiceName -NotePropertyValue $service.ServiceName -Force
+                Save-AdbDeviceStore -Store $store | Out-Null
+            }
+        } catch { Write-AdbLog -Level WARN -Source 'android_setup_v2.ps1:Connect-And-Save' -Message $_.Exception.Message }
+    }
+    Add-AdbEndpointHistory -DeviceId $saved.Id -Endpoint $record.Serial -Source 'setup' -PhysicalIdHash $physicalHash | Out-Null
     Write-Host ("Conexion valida. Estado: {0}" -f $record.Status) -ForegroundColor Green
     Write-Host ("Configuracion JSON guardada en: {0}" -f $configPath) -ForegroundColor Green
     Write-Host ("Dispositivo guardado en devices.json: {0} [{1}]" -f $saved.FriendlyName,$saved.Id) -ForegroundColor Green

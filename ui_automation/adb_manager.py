@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -52,11 +53,13 @@ def ensure_single_adb_server(host: str = "127.0.0.1", port: int = 5037, force: b
     
     Si `force` es False y el daemon actual ya responde correctamente, se reutiliza
     para no interrumpir conexiones USB o Wi-Fi activas.
-    Si `force` es True o el daemon no responde:
+    Si `force` es True:
     1. Ejecuta `adb kill-server` para terminar daemons previos o huérfanos.
     2. Espera la liberación del puerto.
     3. Ejecuta `adb start-server` para arrancar un daemon limpio.
     4. Inicializa y devuelve la instancia singleton de `AdbClient`.
+    Sin `force`, solo inicia un servidor ausente; un servidor existente que no
+    responde se deja intacto para diagnóstico y reinicio manual.
 
     :param host: Dirección del host del servidor ADB (default: 127.0.0.1).
     :param port: Puerto TCP del servidor ADB (default: 5037).
@@ -72,7 +75,20 @@ def ensure_single_adb_server(host: str = "127.0.0.1", port: int = 5037, force: b
             logger.debug("Daemon ADB activo y respondiendo (puerto %d). No requiere reinicio.", port)
             return client
         except Exception:
-            logger.info("Daemon ADB no responde o no está iniciado. Se procederá a arrancarlo...")
+            try:
+                with socket.create_connection((host, port), timeout=0.5):
+                    raise RuntimeError(f"El puerto ADB {port} está ocupado pero no responde; usa el reinicio manual.")
+            except (OSError, TimeoutError):
+                pass
+            adb_bin = get_adb_executable()
+            cmd_kwargs = {"capture_output": True, "text": True, "timeout": 15, "check": False}
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                cmd_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            result = subprocess.run([adb_bin, "start-server"], **cmd_kwargs)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "No se pudo iniciar ADB.")
+            client.server_version()
+            return client
 
     adb_bin = get_adb_executable()
     logger.info("Deteniendo daemons ADB previos (kill-server) usando %s...", adb_bin)
@@ -196,35 +212,19 @@ def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event, max_
                 )
 
                 if is_network:
-                    logger.info("Watchdog ADB: Intentando reconexión Wi-Fi a %s (sin reiniciar daemon)...", serial)
                     try:
-                        res = client.connect(serial, timeout=10.0)
-                        if re.search(r"failed|cannot|refused|timed out|no route", res or "", re.IGNORECASE):
-                            raise RuntimeError(res.strip() or "adb connect falló")
-                        logger.info("Watchdog ADB: Reconexión para %s -> %s", serial, res.strip())
+                        # El servicio conoce BSSID, identidad y registro. Este
+                        # watchdog no debe elegir un mDNS de otro telefono.
+                        from ui.services.device_service import DeviceService
+                        endpoint = DeviceService().reconnect_device(serial)
+                        if endpoint:
+                            serial = endpoint
+                            failure_started_at = None
+                            logger.info("Watchdog ADB: endpoint recuperado %s", endpoint)
+                        else:
+                            logger.info("Watchdog ADB: esperando recuperacion segura de %s", serial)
                     except Exception as conn_exc:
-                        # Wireless Debugging moderno publica un puerto nuevo
-                        # cuando cambia la red. Probar mDNS evita pedir USB otra vez.
-                        reconnected = False
-                        for endpoint in _discover_mdns_endpoints():
-                            if endpoint == serial:
-                                continue
-                            try:
-                                mdns_res = client.connect(endpoint, timeout=8.0)
-                                mdns_info = next(
-                                    (item for item in client.list() if item.serial == endpoint and item.state == "device"),
-                                    None,
-                                )
-                                if mdns_info is not None:
-                                    serial = endpoint
-                                    failure_started_at = None
-                                    reconnected = True
-                                    logger.info("Watchdog ADB: ReconexiÃ³n mDNS exitosa a %s -> %s", endpoint, mdns_res.strip())
-                                    break
-                            except Exception as mdns_exc:
-                                logger.debug("Watchdog ADB: endpoint mDNS %s no disponible: %s", endpoint, mdns_exc)
-                        if not reconnected:
-                            logger.warning("Watchdog ADB: Falló el intento de reconexión a %s: %s", serial, conn_exc)
+                        logger.warning("Watchdog ADB: fallo de recuperacion segura de %s: %s", serial, conn_exc)
                 else:
                     if current_state == "unauthorized":
                         logger.warning("Watchdog ADB: Dispositivo USB %s requiere autorización en pantalla.", serial)
