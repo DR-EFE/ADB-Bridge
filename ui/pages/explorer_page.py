@@ -35,6 +35,8 @@ class ExplorerPage:
         self._current_path = "/sdcard"
         self._is_shutdown = False
         self._refresh_generation = 0
+        self._current_entries: List[Dict[str, str]] = []
+
         # La conexión Wi-Fi puede cambiar de puerto mientras esta pestaña está
         # abierta. Al recibir el evento se vuelve a listar usando el serial
         # actual, sin obligar al usuario a cerrar o reiniciar la aplicación.
@@ -57,157 +59,269 @@ class ExplorerPage:
         if self.page:
             self.page.services.extend([self._file_picker, self._folder_picker, self._download_dir_picker])
 
-        # Barra de navegación
+        # ---------------------------------------------------------------------
+        # Controles de navegación y rutas
+        # ---------------------------------------------------------------------
         self._path_field = ft.TextField(
             value=self._current_path,
-            label="Ruta remota (/sdcard)",
+            hint_text="Ruta remota (ej: /sdcard)",
             expand=True,
-            text_size=13,
+            text_size=12,
+            dense=True,
+            height=36,
+            content_padding=ft.Padding.symmetric(horizontal=10, vertical=0),
+            prefix_icon=ft.Icons.FOLDER_OPEN_OUTLINED,
             on_submit=self._on_navigate_submit,
         )
 
-        self._files_list = ft.ListView(expand=True, spacing=4)
-        self._status_text = ft.Text("Presiona 'Ir' o 'Refrescar' para explorar.", size=12, color=theme.TEXT_MUTED)
-        self._storage_text = ft.Text("Almacenamiento: pendiente de consulta", size=11, color=theme.TEXT_MUTED)
-        self._breadcrumbs = ft.Row(wrap=True, spacing=2)
+        self._files_list = ft.ListView(expand=True, spacing=2)
+        self._status_text = ft.Text("Presiona 'Ir' o 'Refrescar' para explorar.", size=11, color=theme.TEXT_MUTED)
+        self._storage_text = ft.Text("Almacenamiento: pendiente", size=11, color=theme.TEXT_MUTED)
+        self._breadcrumbs = ft.Row(wrap=False, scroll=ft.ScrollMode.ADAPTIVE, spacing=2)
+        self._quick_locations = ft.Row(wrap=False, scroll=ft.ScrollMode.ADAPTIVE, spacing=4)
 
-        # Accesos rápidos estándar
-        quick_buttons = [
-            ft.TextButton("/sdcard", icon=ft.Icons.HOME, on_click=lambda _: self._navigate_to("/sdcard")),
-            ft.TextButton("DCIM", icon=ft.Icons.CAMERA_ALT, on_click=lambda _: self._navigate_to("/sdcard/DCIM")),
-            ft.TextButton("Download", icon=ft.Icons.DOWNLOAD, on_click=lambda _: self._navigate_to("/sdcard/Download")),
-            ft.TextButton("Documents", icon=ft.Icons.DESCRIPTION, on_click=lambda _: self._navigate_to("/sdcard/Documents")),
-            ft.TextButton("Pictures", icon=ft.Icons.IMAGE, on_click=lambda _: self._navigate_to("/sdcard/Pictures")),
-            ft.TextButton("Music", icon=ft.Icons.MUSIC_NOTE, on_click=lambda _: self._navigate_to("/sdcard/Music")),
-        ]
-        self._quick_locations = ft.Row(wrap=True, spacing=4, controls=quick_buttons)
+        # Campo de filtro en tiempo real
+        self._filter_field = ft.TextField(
+            hint_text="Filtrar...",
+            prefix_icon=ft.Icons.SEARCH,
+            width=150,
+            dense=True,
+            height=30,
+            text_size=11,
+            content_padding=ft.Padding.symmetric(horizontal=8, vertical=0),
+            on_change=self._on_filter_changed,
+        )
 
-        # Zona visual "Agregar archivos o carpetas" (acceso claro a selectores nativos)
-        self._drop_zone = theme.card(
-            ft.Container(
-                content=ft.Column(
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=6,
-                    controls=[
-                        ft.Icon(ft.Icons.CLOUD_UPLOAD_OUTLINED, size=32, color=theme.ACCENT),
-                        ft.Text("Zona para agregar archivos o carpetas", weight=ft.FontWeight.BOLD, size=13),
-                        ft.Text(
-                            "Selecciona archivos individuales o carpetas completas del PC para subirlos a la ruta actual.",
-                            size=11,
-                            color=theme.TEXT_MUTED,
-                            text_align=ft.TextAlign.CENTER,
-                        ),
-                        ft.Row(
-                            alignment=ft.MainAxisAlignment.CENTER,
-                            spacing=10,
+        # Panel de Transferencias (lateral compacto y colapsable)
+        self._transfers_visible = False
+        self._transfers_column = ft.ListView(expand=True, spacing=6)
+        self._transfers_summary = ft.Text("0 transferencias activas", size=11, color=theme.TEXT_MUTED)
+        self._transfers_toggle_btn = ft.OutlinedButton(
+            "Transferencias",
+            icon=ft.Icons.SWAP_VERT,
+            height=34,
+            tooltip="Mostrar / ocultar panel de transferencias",
+            on_click=self._toggle_transfers_panel,
+        )
+
+        # Compatibilidad hacia atrás si algún script busca el atributo
+        self._drop_zone = ft.Container()
+
+        # ---------------------------------------------------------------------
+        # Tarjeta 1: Navegación y Rutas (compacta y unificada, ~95px)
+        # ---------------------------------------------------------------------
+        self._nav_card = theme.card(
+            ft.Column(
+                spacing=5,
+                controls=[
+                    # Fila 1: Barra de direcciones y acciones principales
+                    ft.Row(
+                        spacing=6,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.IconButton(
+                                ft.Icons.ARROW_UPWARD,
+                                icon_size=18,
+                                tooltip="Subir un nivel (Carpeta superior)",
+                                on_click=self._navigate_up,
+                            ),
+                            ft.IconButton(
+                                ft.Icons.REFRESH,
+                                icon_size=18,
+                                tooltip="Refrescar listado",
+                                on_click=lambda _: self._refresh(),
+                            ),
+                            self._path_field,
+                            ft.FilledButton(
+                                "Ir",
+                                icon=ft.Icons.ARROW_FORWARD,
+                                height=34,
+                                on_click=self._on_navigate_submit,
+                            ),
+                            ft.FilledButton(
+                                "Nueva Carpeta",
+                                icon=ft.Icons.CREATE_NEW_FOLDER,
+                                height=34,
+                                on_click=lambda _: self._show_create_folder_dialog(),
+                            ),
+                            ft.FilledButton(
+                                "Subir",
+                                icon=ft.Icons.UPLOAD_FILE,
+                                height=34,
+                                tooltip="Subir archivos desde el PC a la ruta remota actual",
+                                on_click=self._on_upload_files_click,
+                            ),
+                            ft.OutlinedButton(
+                                "Subir Carpeta",
+                                icon=ft.Icons.DRIVE_FOLDER_UPLOAD,
+                                height=34,
+                                tooltip="Subir carpeta completa del PC",
+                                on_click=self._on_upload_folder_click,
+                            ),
+                            ft.IconButton(
+                                ft.Icons.FOLDER_SPECIAL_OUTLINED,
+                                tooltip="Abrir carpeta de descargas en PC (exports/downloads)",
+                                on_click=self._open_downloads_folder,
+                            ),
+                            self._transfers_toggle_btn,
+                        ],
+                    ),
+                    # Fila 2: Accesos rápidos en pills y filtro
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Row(
+                                spacing=4,
+                                expand=True,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Icon(ft.Icons.BOOKMARK_BORDER, size=15, color=theme.ACCENT),
+                                    ft.Container(expand=True, content=self._quick_locations),
+                                ],
+                            ),
+                            self._filter_field,
+                        ],
+                    ),
+                    # Fila 3: Breadcrumbs interactivos y estado de almacenamiento
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Container(expand=True, content=self._breadcrumbs),
+                            ft.Row(
+                                spacing=6,
+                                controls=[
+                                    self._status_text,
+                                    ft.Text("•", color=theme.TEXT_MUTED, size=11),
+                                    self._storage_text,
+                                ],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+        )
+
+        # ---------------------------------------------------------------------
+        # Tarjeta 2: Listado de Archivos (expand=True, ocupa el máximo vertical)
+        # ---------------------------------------------------------------------
+        self._files_card = theme.card(
+            ft.Column(
+                expand=True,
+                spacing=0,
+                controls=[
+                    # Encabezado estilo tabla
+                    ft.Container(
+                        content=ft.Row(
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             controls=[
-                                ft.FilledButton(
-                                    "Subir Archivos",
-                                    icon=ft.Icons.ATTACH_FILE,
-                                    on_click=self._on_upload_files_click,
+                                ft.Row(
+                                    spacing=8,
+                                    controls=[
+                                        ft.Icon(ft.Icons.FOLDER_OPEN_OUTLINED, size=16, color=theme.ACCENT),
+                                        ft.Text("Nombre del elemento", size=12, weight=ft.FontWeight.BOLD, color=theme.TEXT_MUTED),
+                                    ],
                                 ),
-                                ft.OutlinedButton(
-                                    "Subir Carpeta",
-                                    icon=ft.Icons.DRIVE_FOLDER_UPLOAD,
-                                    on_click=self._on_upload_folder_click,
+                                ft.Row(
+                                    spacing=8,
+                                    controls=[
+                                        ft.Container(
+                                            content=ft.Text("Tamaño", size=12, weight=ft.FontWeight.BOLD, color=theme.TEXT_MUTED, text_align=ft.TextAlign.RIGHT),
+                                            width=80,
+                                        ),
+                                        ft.Container(
+                                            content=ft.Text("Acciones", size=12, weight=ft.FontWeight.BOLD, color=theme.TEXT_MUTED, text_align=ft.TextAlign.CENTER),
+                                            width=170,
+                                        ),
+                                    ],
                                 ),
                             ],
                         ),
-                    ],
-                ),
-                padding=12,
-            )
+                        padding=ft.Padding.symmetric(horizontal=12, vertical=6),
+                        border=ft.Border(bottom=ft.BorderSide(1, theme.BORDER)),
+                    ),
+                    # Lista de archivos con scroll
+                    ft.Container(
+                        expand=True,
+                        content=self._files_list,
+                        padding=ft.Padding.symmetric(horizontal=4, vertical=4),
+                    ),
+                ],
+            ),
+            padding=4,
+            expand=True,
         )
 
-        # Panel de Transferencias
-        self._transfers_column = ft.ListView(expand=True, spacing=6)
-        self._transfers_summary = ft.Text("0 transferencias activas", size=12, color=theme.TEXT_MUTED)
-
-        # Ensamblar vista
-        self.view = ft.Row(
-            expand=True,
-            spacing=10,
-            controls=[
-                # Columna Izquierda: Explorador de Archivos
-                ft.Column(
-                    expand=3,
-                    spacing=8,
-                    controls=[
-                        theme.card(
-                            ft.Column(
-                                spacing=6,
-                                controls=[
-                                    ft.Row(
-                                        spacing=6,
-                                        controls=[
-                                            self._path_field,
-                                            ft.FilledButton("Ir", icon=ft.Icons.ARROW_FORWARD, on_click=self._on_navigate_submit),
-                                            ft.OutlinedButton("Arriba", icon=ft.Icons.ARROW_UPWARD, on_click=self._navigate_up),
-                                            ft.OutlinedButton("Refrescar", icon=ft.Icons.REFRESH, tooltip="Refrescar", on_click=lambda _: self._refresh()),
-                                            ft.FilledButton(
-                                                "Nueva Carpeta",
-                                                icon=ft.Icons.CREATE_NEW_FOLDER,
-                                                on_click=lambda _: self._show_create_folder_dialog(),
-                                            ),
-                                        ],
-                                    ),
-                                    self._breadcrumbs,
-                                    self._quick_locations,
-                                ],
-                            ),
-                            padding=8,
-                        ),
-                        self._drop_zone,
-                        theme.card(
-                            ft.Row(
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                controls=[
-                                    ft.Column(spacing=2, expand=True, controls=[self._status_text, self._storage_text]),
-                                    ft.OutlinedButton(
-                                        "Abrir Descargas Locales",
-                                        icon=ft.Icons.FOLDER_OPEN,
-                                        on_click=self._open_downloads_folder,
-                                    ),
-                                ],
-                            ),
-                            padding=6,
-                        ),
-                        theme.card(self._files_list, expand=True),
-                    ],
-                ),
-                # Columna Derecha: Panel de Transferencias
-                theme.card(
-                    ft.Column(
-                        expand=True,
-                        spacing=8,
+        # ---------------------------------------------------------------------
+        # Panel Lateral de Transferencias (colapsable, width=320)
+        # ---------------------------------------------------------------------
+        self._transfers_card = theme.card(
+            ft.Column(
+                expand=True,
+                spacing=6,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         controls=[
                             ft.Row(
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                spacing=6,
                                 controls=[
-                                    ft.Row(
-                                        spacing=6,
-                                        controls=[
-                                            ft.Icon(ft.Icons.SWAP_VERT_ROUNDED, color=theme.ACCENT, size=20),
-                                            ft.Text("Transferencias", weight=ft.FontWeight.BOLD, size=14),
-                                        ],
-                                    ),
+                                    ft.Icon(ft.Icons.SWAP_VERT_ROUNDED, color=theme.ACCENT, size=18),
+                                    ft.Text("Transferencias", weight=ft.FontWeight.BOLD, size=13),
+                                ],
+                            ),
+                            ft.Row(
+                                spacing=0,
+                                controls=[
                                     ft.TextButton(
-                                        "Limpiar terminadas",
+                                        "Limpiar",
                                         on_click=lambda _: self._clear_completed_transfers(),
+                                    ),
+                                    ft.IconButton(
+                                        ft.Icons.CLOSE,
+                                        icon_size=16,
+                                        tooltip="Ocultar panel",
+                                        on_click=self._toggle_transfers_panel,
                                     ),
                                 ],
                             ),
-                            self._transfers_summary,
-                            ft.Divider(height=1, color=theme.BORDER),
-                            self._transfers_column,
                         ],
                     ),
-                    padding=10,
-                    expand=2,
+                    self._transfers_summary,
+                    ft.Divider(height=1, color=theme.BORDER),
+                    self._transfers_column,
+                ],
+            ),
+            padding=8,
+            expand=False,
+        )
+        self._transfers_card.width = 320
+        self._transfers_card.visible = False
+
+        # ---------------------------------------------------------------------
+        # Ensamblar vista global
+        # ---------------------------------------------------------------------
+        self.view = ft.Row(
+            expand=True,
+            spacing=8,
+            controls=[
+                # Columna Principal: Explorador de Archivos (expand=True)
+                ft.Column(
+                    expand=True,
+                    spacing=8,
+                    controls=[
+                        self._nav_card,
+                        self._files_card,
+                    ],
                 ),
+                # Panel Lateral de Transferencias
+                self._transfers_card,
             ],
         )
         self._render_breadcrumbs()
+        self._render_transfers_panel()
 
     def _log(self, text: str, color: str = theme.TEXT) -> None:
         if self._on_log:
@@ -229,9 +343,71 @@ class ExplorerPage:
         logger.info("El Explorador recibió un cambio de dispositivo; actualizando %s", self._current_path)
         self._refresh()
 
-    def _on_navigate_submit(self, _e: ft.ControlEvent) -> None:
+    def _on_navigate_submit(self, _e: Optional[ft.ControlEvent] = None) -> None:
         path = (self._path_field.value or "/sdcard").strip()
         self._navigate_to(path)
+
+    def _on_filter_changed(self, _e: ft.ControlEvent) -> None:
+        self._render_entries()
+        try:
+            self._files_list.update()
+            self._status_text.update()
+        except Exception:
+            pass
+
+    def _toggle_transfers_panel(self, _e: Optional[ft.ControlEvent] = None) -> None:
+        self._transfers_visible = not self._transfers_visible
+        self._transfers_card.visible = self._transfers_visible
+        self._update_transfers_button()
+        try:
+            self.view.update()
+        except Exception:
+            pass
+
+    def _update_transfers_button(self) -> None:
+        jobs = self._transfer_service.get_jobs()
+        active = sum(1 for j in jobs if j.status in (TransferStatus.QUEUED, TransferStatus.RUNNING))
+        if active > 0:
+            self._transfers_toggle_btn.text = f"Transferencias ({active})"
+            self._transfers_toggle_btn.icon = ft.Icons.SYNC
+            self._transfers_toggle_btn.style = ft.ButtonStyle(
+                color=theme.OK,
+                side=ft.BorderSide(1, theme.OK),
+            )
+        else:
+            self._transfers_toggle_btn.text = f"Transferencias ({len(jobs)})" if jobs else "Transferencias"
+            self._transfers_toggle_btn.icon = ft.Icons.SWAP_VERT
+            self._transfers_toggle_btn.style = ft.ButtonStyle(
+                bgcolor=theme.SURFACE_ALT if self._transfers_visible else None,
+            )
+        try:
+            self._transfers_toggle_btn.update()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _get_file_icon_and_color(name: str, is_dir: bool) -> tuple[str, str]:
+        """Devuelve un icono y color distintivos según el tipo de archivo o carpeta."""
+        if is_dir:
+            return ft.Icons.FOLDER, theme.ACCENT
+        lower = name.lower()
+        if lower.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg")):
+            return ft.Icons.IMAGE_OUTLINED, "#60A5FA"  # Azul claro
+        if lower.endswith((".mp4", ".mkv", ".avi", ".mov", ".3gp", ".webm")):
+            return ft.Icons.VIDEO_FILE_OUTLINED, "#F472B6"  # Rosa/Morado
+        if lower.endswith((".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac", ".opus")):
+            return ft.Icons.AUDIO_FILE_OUTLINED, "#FBBF24"  # Ámbar
+        if lower.endswith((".pdf", ".doc", ".docx", ".odt", ".rtf")):
+            return (ft.Icons.PICTURE_AS_PDF_OUTLINED if lower.endswith(".pdf") else ft.Icons.DESCRIPTION_OUTLINED), "#34D399"  # Verde esmeralda
+        if lower.endswith((".xls", ".xlsx", ".csv", ".tsv")):
+            return ft.Icons.TABLE_CHART_OUTLINED, "#34D399"  # Verde datos
+        if lower.endswith((".apk", ".xapk", ".apks")):
+            return ft.Icons.ANDROID, "#10B981"  # Verde Android
+        if lower.endswith((".zip", ".tar", ".gz", ".rar", ".7z", ".bz2")):
+            return ft.Icons.ARCHIVE_OUTLINED, "#A78BFA"  # Violeta
+        if lower.endswith((".txt", ".md", ".json", ".xml", ".log", ".yaml", ".yml", ".py", ".sh")):
+            return ft.Icons.CODE_OUTLINED, "#38BDF8"  # Cyan
+        return ft.Icons.INSERT_DRIVE_FILE_OUTLINED, theme.TEXT_MUTED
 
     @staticmethod
     def _format_bytes(value: str) -> str:
@@ -273,7 +449,7 @@ class ExplorerPage:
         if not name:
             return "Indica un nombre."
         if name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
-            return "El nombre no puede contener barras ni usar . o ..."
+            return "El nombre no puede contener barras ni usar . o .."
         return None
 
     @staticmethod
@@ -294,32 +470,81 @@ class ExplorerPage:
     def _render_breadcrumbs(self) -> None:
         parts = [part for part in self._current_path.split("/") if part]
         controls: List[ft.Control] = [
-            ft.TextButton("Raíz", icon=ft.Icons.HOME, on_click=lambda _: self._navigate_to("/")),
+            ft.Container(
+                content=ft.Row(
+                    spacing=3,
+                    tight=True,
+                    controls=[
+                        ft.Icon(ft.Icons.HOME, size=13, color=theme.ACCENT),
+                        ft.Text("Raíz", size=11, color=theme.ACCENT, weight=ft.FontWeight.W_500),
+                    ],
+                ),
+                on_click=lambda _: self._navigate_to("/"),
+                mouse_cursor=ft.MouseCursor.CLICK,
+                padding=ft.Padding.symmetric(horizontal=4, vertical=2),
+                border_radius=4,
+            ),
         ]
         accumulated = ""
         for part in parts:
             accumulated += "/" + part
-            controls.append(ft.Text("›", color=theme.TEXT_MUTED, size=12))
-            controls.append(ft.TextButton(part, on_click=lambda _, p=accumulated: self._navigate_to(p)))
+            controls.append(ft.Text("›", color=theme.TEXT_MUTED, size=11))
+            controls.append(
+                ft.Container(
+                    content=ft.Text(part, size=11, color=theme.TEXT, weight=ft.FontWeight.W_500),
+                    on_click=lambda _, p=accumulated: self._navigate_to(p),
+                    mouse_cursor=ft.MouseCursor.CLICK,
+                    padding=ft.Padding.symmetric(horizontal=4, vertical=2),
+                    border_radius=4,
+                )
+            )
         self._breadcrumbs.controls = controls
 
     def _update_quick_locations(self, existing_paths: List[str]) -> None:
-        """Muestra solo ubicaciones que el dispositivo expone realmente."""
+        """Muestra ubicaciones estándar organizadas como pills compactos."""
         known_locations = [
+            ("/", "Raíz", ft.Icons.HOME),
             ("/sdcard", "Almacenamiento", ft.Icons.PHONE_ANDROID),
-            ("/sdcard/DCIM", "Cámara", ft.Icons.CAMERA_ALT),
             ("/sdcard/Download", "Descargas", ft.Icons.DOWNLOAD),
             ("/sdcard/Documents", "Documentos", ft.Icons.DESCRIPTION),
+            ("/sdcard/DCIM", "Cámara", ft.Icons.CAMERA_ALT),
             ("/sdcard/Pictures", "Imágenes", ft.Icons.IMAGE),
             ("/sdcard/Music", "Música", ft.Icons.MUSIC_NOTE),
-            ("/sdcard/Android/media", "Media de apps", ft.Icons.APPS),
+            ("/sdcard/Android/media", "Media Apps", ft.Icons.APPS),
         ]
         allowed = set(existing_paths)
-        self._quick_locations.controls = [
-            ft.TextButton(label, icon=icon, on_click=lambda _, p=path: self._navigate_to(p))
-            for path, label, icon in known_locations
-            if path in allowed
-        ]
+        allowed.add("/")
+        allowed.add("/sdcard")
+
+        chips = []
+        for path, label, icon in known_locations:
+            if path in allowed or path in ("/", "/sdcard"):
+                is_active = (self._current_path == path)
+                chips.append(
+                    ft.Container(
+                        content=ft.Row(
+                            spacing=4,
+                            tight=True,
+                            controls=[
+                                ft.Icon(icon, size=12, color=theme.ACCENT if is_active else theme.TEXT_MUTED),
+                                ft.Text(
+                                    label,
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.NORMAL,
+                                    color=theme.TEXT if is_active else theme.TEXT_MUTED,
+                                ),
+                            ],
+                        ),
+                        padding=ft.Padding.symmetric(horizontal=8, vertical=3),
+                        border_radius=10,
+                        bgcolor="#1E3A5F" if is_active else theme.SURFACE_ALT,
+                        border=ft.Border.all(1, theme.ACCENT if is_active else theme.BORDER),
+                        on_click=lambda _, p=path: self._navigate_to(p),
+                        mouse_cursor=ft.MouseCursor.CLICK,
+                        tooltip=f"Ir a {path}",
+                    )
+                )
+        self._quick_locations.controls = chips
 
     @staticmethod
     def _parse_ls_output(output: str) -> List[Dict[str, str]]:
@@ -339,6 +564,155 @@ class ExplorerPage:
                 continue
             entries.append({"perms": parts[0], "size": parts[4], "name": name})
         return sorted(entries, key=lambda item: (not item["perms"].startswith("d"), item["name"].casefold()))
+
+    def _render_entries(self) -> None:
+        """Renderiza los elementos filtrados con iconos distintivos y acciones rápidas."""
+        query = (self._filter_field.value or "").strip().lower()
+        filtered = [
+            e for e in self._current_entries
+            if not query or query in e["name"].lower()
+        ]
+
+        path = self._current_path
+        items = []
+        for idx, entry in enumerate(filtered):
+            perms, size, name = entry["perms"], entry["size"], entry["name"]
+            is_dir = perms.startswith("d")
+            full_remote_path = f"{path.rstrip('/')}/{name}" if path != "/" else f"/{name}"
+            icon, icon_color = self._get_file_icon_and_color(name, is_dir)
+
+            action_buttons = []
+            if is_dir:
+                action_buttons.append(
+                    ft.IconButton(
+                        ft.Icons.FOLDER_OPEN,
+                        icon_size=16,
+                        tooltip="Abrir carpeta",
+                        on_click=lambda _, p=full_remote_path: self._navigate_to(p),
+                    )
+                )
+                action_buttons.append(
+                    ft.IconButton(
+                        ft.Icons.DOWNLOAD,
+                        icon_size=16,
+                        tooltip="Descargar carpeta a PC (exports/downloads)",
+                        on_click=lambda _, p=full_remote_path: self._prompt_download(p),
+                    )
+                )
+            else:
+                action_buttons.append(
+                    ft.IconButton(
+                        ft.Icons.DOWNLOAD,
+                        icon_size=16,
+                        tooltip="Descargar a PC (exports/downloads)",
+                        on_click=lambda _, p=full_remote_path: self._prompt_download(p),
+                    )
+                )
+                action_buttons.append(
+                    ft.IconButton(
+                        ft.Icons.DRIVE_FILE_MOVE_OUTLINED,
+                        icon_size=16,
+                        tooltip="Descargar y elegir carpeta...",
+                        on_click=lambda _, p=full_remote_path: self._download_to_custom_dir(p),
+                    )
+                )
+
+            action_buttons.append(
+                ft.IconButton(
+                    ft.Icons.EDIT_OUTLINED,
+                    icon_size=16,
+                    tooltip="Renombrar",
+                    on_click=lambda _, p=full_remote_path, n=name: self._show_rename_dialog(p, n),
+                )
+            )
+            action_buttons.append(
+                ft.IconButton(
+                    ft.Icons.DELETE_OUTLINE,
+                    icon_size=16,
+                    tooltip="Eliminar",
+                    icon_color=theme.ERR,
+                    on_click=lambda _, p=full_remote_path, d=is_dir: self._show_delete_dialog(p, d),
+                )
+            )
+
+            row = ft.Container(
+                content=ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[
+                        # Icono y Nombre (clic abre la carpeta si es directorio)
+                        ft.Container(
+                            content=ft.Row(
+                                spacing=8,
+                                controls=[
+                                    ft.Icon(icon, color=icon_color, size=18),
+                                    ft.Text(
+                                        name,
+                                        size=13,
+                                        weight=ft.FontWeight.W_600 if is_dir else ft.FontWeight.NORMAL,
+                                        color="#93C5FD" if is_dir else theme.TEXT,
+                                        no_wrap=True,
+                                        overflow=ft.TextOverflow.ELLIPSIS,
+                                    ),
+                                ],
+                            ),
+                            expand=True,
+                            on_click=(lambda _, p=full_remote_path: self._navigate_to(p)) if is_dir else None,
+                            mouse_cursor=ft.MouseCursor.CLICK if is_dir else ft.MouseCursor.DEFAULT,
+                        ),
+                        # Tamaño y Botones de acción
+                        ft.Row(
+                            spacing=8,
+                            controls=[
+                                ft.Container(
+                                    content=ft.Text(
+                                        self._format_bytes(size) if not is_dir else "Carpeta",
+                                        size=11,
+                                        color=theme.TEXT_MUTED,
+                                        text_align=ft.TextAlign.RIGHT,
+                                    ),
+                                    width=80,
+                                ),
+                                ft.Container(
+                                    content=ft.Row(
+                                        spacing=2,
+                                        alignment=ft.MainAxisAlignment.END,
+                                        controls=action_buttons,
+                                    ),
+                                    width=170,
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                padding=ft.Padding.symmetric(horizontal=10, vertical=3),
+                border_radius=4,
+                bgcolor=theme.SURFACE_ALT if idx % 2 == 0 else theme.SURFACE,
+            )
+            items.append(row)
+
+        if not items:
+            msg = "No se encontraron elementos con ese filtro." if query else "Esta carpeta está vacía."
+            self._files_list.controls = [
+                ft.Container(
+                    content=ft.Column(
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=8,
+                        controls=[
+                            ft.Icon(ft.Icons.FOLDER_OFF_OUTLINED if not query else ft.Icons.SEARCH_OFF, size=36, color=theme.TEXT_MUTED),
+                            ft.Text(msg, color=theme.TEXT_MUTED, size=13),
+                        ],
+                    ),
+                    padding=32,
+                    alignment=ft.alignment.center,
+                )
+            ]
+        else:
+            self._files_list.controls = items
+
+        if query:
+            self._status_text.value = f"{len(filtered)} de {len(self._current_entries)} elementos"
+        else:
+            self._status_text.value = f"{len(self._current_entries)} elementos en {path}"
 
     def _navigate_to(self, path: str) -> None:
         clean = RemotePath(path).clean_path
@@ -407,89 +781,13 @@ class ExplorerPage:
                 if generation != self._refresh_generation or serial != self._device.serial or path != self._current_path:
                     return
 
-                items = []
-                for entry in entries:
-                    perms, size, name = entry["perms"], entry["size"], entry["name"]
-                    is_dir = perms.startswith("d")
-                    full_remote_path = f"{path.rstrip('/')}/{name}" if path != "/" else f"/{name}"
-
-                    icon = ft.Icons.FOLDER if is_dir else ft.Icons.INSERT_DRIVE_FILE_OUTLINED
-                    icon_color = theme.ACCENT if is_dir else theme.TEXT_MUTED
-
-                    # Fila de elemento remoto
-                    row = ft.Container(
-                        content=ft.Row(
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                            controls=[
-                                ft.Row(
-                                    spacing=8,
-                                    controls=[
-                                        ft.Icon(icon, color=icon_color, size=18),
-                                        ft.Text(
-                                            name,
-                                            size=13,
-                                            weight=ft.FontWeight.W_600 if is_dir else ft.FontWeight.NORMAL,
-                                        ),
-                                    ],
-                                ),
-                                ft.Row(
-                                    spacing=4,
-                                    controls=[
-                                        ft.Text(self._format_bytes(size) if not is_dir else "Carpeta", size=11, color=theme.TEXT_MUTED),
-                                        # Botón entrar si es dir
-                                        ft.IconButton(
-                                            ft.Icons.ARROW_FORWARD,
-                                            icon_size=16,
-                                            tooltip="Abrir carpeta",
-                                            on_click=lambda _, p=full_remote_path: self._navigate_to(p),
-                                        ) if is_dir else ft.Container(),
-                                        # Botón descargar rápido a PC
-                                        ft.IconButton(
-                                            ft.Icons.DOWNLOAD,
-                                            icon_size=16,
-                                            tooltip="Descargar a PC (exports/downloads)",
-                                            on_click=lambda _, p=full_remote_path: self._prompt_download(p),
-                                        ),
-                                        # Botón descargar a carpeta personalizada
-                                        ft.IconButton(
-                                            ft.Icons.DRIVE_FILE_MOVE_OUTLINED,
-                                            icon_size=16,
-                                            tooltip="Descargar y elegir carpeta...",
-                                            on_click=lambda _, p=full_remote_path: self._download_to_custom_dir(p),
-                                        ),
-                                        # Botón renombrar
-                                        ft.IconButton(
-                                            ft.Icons.EDIT_OUTLINED,
-                                            icon_size=16,
-                                            tooltip="Renombrar",
-                                            on_click=lambda _, p=full_remote_path, n=name: self._show_rename_dialog(p, n),
-                                        ),
-                                        # Botón eliminar
-                                        ft.IconButton(
-                                            ft.Icons.DELETE_OUTLINE,
-                                            icon_size=16,
-                                            tooltip="Eliminar",
-                                            icon_color=theme.ERR,
-                                            on_click=lambda _, p=full_remote_path, d=is_dir: self._show_delete_dialog(p, d),
-                                        ),
-                                    ],
-                                ),
-                            ],
-                        ),
-                        padding=ft.Padding.symmetric(horizontal=8, vertical=4),
-                        border_radius=4,
-                        bgcolor=theme.SURFACE_ALT,
-                    )
-                    items.append(row)
-
-                self._files_list.controls = items or [
-                    ft.Container(ft.Text("Esta carpeta está vacía.", color=theme.TEXT_MUTED), padding=16)
-                ]
-                self._status_text.value = f"{len(items)} elementos en {path}"
-                self._status_text.color = theme.OK
+                self._current_entries = entries
                 self._storage_text.value = self._format_storage(df_out)
                 self._update_quick_locations([line.strip() for line in roots_out.splitlines() if line.strip()])
                 self._render_breadcrumbs()
+                self._render_entries()
+
+                self._status_text.color = theme.OK
                 try:
                     self._files_list.update()
                     self._status_text.update()
@@ -538,7 +836,6 @@ class ExplorerPage:
 
             self._transfer_service.enqueue_mkdir(self._device.serial, new_full_path)
             self._log(f"Encolada creación de carpeta: {new_full_path}", theme.INFO)
-            # Refrescar después de un breve momento
             threading.Timer(0.8, self._refresh).start()
 
         def on_cancel(_e: ft.ControlEvent) -> None:
@@ -664,7 +961,16 @@ class ExplorerPage:
         if local_files:
             job_ids = self._transfer_service.enqueue_push(self._device.serial, local_files, self._current_path)
             self._log(f"Encolada subida de {len(job_ids)} archivos hacia {self._current_path}", theme.OK)
+            # Abrir panel de transferencias para visibilidad
+            if not self._transfers_visible:
+                self._transfers_visible = True
+                self._transfers_card.visible = True
+                try:
+                    self.view.update()
+                except Exception:
+                    pass
             self._render_transfers_panel()
+            self._update_transfers_button()
 
     def _on_folder_selected_for_upload(self, e: ft.FilePickerResultEvent) -> None:
         if not e.path:
@@ -676,7 +982,15 @@ class ExplorerPage:
 
         job_ids = self._transfer_service.enqueue_push(self._device.serial, [e.path], self._current_path)
         self._log(f"Encolada subida de carpeta {Path(e.path).name} hacia {self._current_path}", theme.OK)
+        if not self._transfers_visible:
+            self._transfers_visible = True
+            self._transfers_card.visible = True
+            try:
+                self.view.update()
+            except Exception:
+                pass
         self._render_transfers_panel()
+        self._update_transfers_button()
 
     async def _on_upload_files_click(self, _e: ft.ControlEvent) -> None:
         err = self._check_device_ready()
@@ -692,7 +1006,15 @@ class ExplorerPage:
             if local_files:
                 job_ids = self._transfer_service.enqueue_push(self._device.serial, local_files, self._current_path)
                 self._log(f"Encolada subida de {len(job_ids)} archivos hacia {self._current_path}", theme.OK)
+                if not self._transfers_visible:
+                    self._transfers_visible = True
+                    self._transfers_card.visible = True
+                    try:
+                        self.view.update()
+                    except Exception:
+                        pass
                 self._render_transfers_panel()
+                self._update_transfers_button()
 
     async def _on_upload_folder_click(self, _e: ft.ControlEvent) -> None:
         err = self._check_device_ready()
@@ -705,7 +1027,15 @@ class ExplorerPage:
         if folder:
             job_ids = self._transfer_service.enqueue_push(self._device.serial, [folder], self._current_path)
             self._log(f"Encolada subida de carpeta {Path(folder).name} hacia {self._current_path}", theme.OK)
+            if not self._transfers_visible:
+                self._transfers_visible = True
+                self._transfers_card.visible = True
+                try:
+                    self.view.update()
+                except Exception:
+                    pass
             self._render_transfers_panel()
+            self._update_transfers_button()
 
     def _prompt_download(self, remote_path: str, custom_dir: Optional[str] = None) -> None:
         err = self._check_device_ready()
@@ -726,7 +1056,16 @@ class ExplorerPage:
         except Exception:
             pass
 
+        if not self._transfers_visible:
+            self._transfers_visible = True
+            self._transfers_card.visible = True
+            try:
+                self.view.update()
+            except Exception:
+                pass
+
         self._render_transfers_panel()
+        self._update_transfers_button()
 
         if self.page:
             try:
@@ -763,7 +1102,7 @@ class ExplorerPage:
             self._prompt_download(rp, custom_dir=dest_dir)
         self._pending_download_remote_paths = []
 
-    def _open_downloads_folder(self, _e: ft.ControlEvent) -> None:
+    def _open_downloads_folder(self, _e: Optional[ft.ControlEvent] = None) -> None:
         dest_dir = Path("exports/downloads").resolve()
         dest_dir.mkdir(parents=True, exist_ok=True)
         os.startfile(str(dest_dir))
@@ -772,11 +1111,21 @@ class ExplorerPage:
     # Panel de Transferencias en tiempo real
     # -------------------------------------------------------------------------
     def _on_transfer_job_updated(self, job: TransferJob) -> None:
+        # Abrir panel si hay un trabajo activo y está cerrado
+        if job.status in (TransferStatus.QUEUED, TransferStatus.RUNNING) and not self._transfers_visible:
+            self._transfers_visible = True
+            self._transfers_card.visible = True
+            try:
+                self.view.update()
+            except Exception:
+                pass
         self._render_transfers_panel()
+        self._update_transfers_button()
 
     def _clear_completed_transfers(self) -> None:
         self._transfer_service.clear_completed_jobs()
         self._render_transfers_panel()
+        self._update_transfers_button()
 
     def _render_transfers_panel(self) -> None:
         jobs = self._transfer_service.get_jobs()
@@ -784,7 +1133,7 @@ class ExplorerPage:
         completed = sum(1 for j in jobs if j.status == TransferStatus.COMPLETED)
         failed = sum(1 for j in jobs if j.status in (TransferStatus.FAILED, TransferStatus.PARTIAL))
 
-        self._transfers_summary.value = f"{active} activas | {completed} completadas | {failed} fallidas/parciales"
+        self._transfers_summary.value = f"{active} activas | {completed} listas | {failed} err"
 
         job_cards = []
         for job in reversed(jobs):
@@ -838,7 +1187,7 @@ class ExplorerPage:
                                 ft.Row(
                                     spacing=6,
                                     controls=[
-                                        ft.Icon(icon, size=16, color=status_color),
+                                        ft.Icon(icon, size=15, color=status_color),
                                         ft.Text(job.job_type.value, size=11, weight=ft.FontWeight.BOLD),
                                     ],
                                 ),
@@ -852,7 +1201,7 @@ class ExplorerPage:
                         ),
                         ft.Text(
                             f"{RemotePath(job.source).name or job.source} -> {RemotePath(job.destination).name or job.destination}",
-                            size=12,
+                            size=11,
                             no_wrap=True,
                             overflow=ft.TextOverflow.ELLIPSIS,
                         ),
@@ -861,7 +1210,7 @@ class ExplorerPage:
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             controls=[
                                 ft.Text(detail_line, size=10, color=theme.TEXT_MUTED, expand=True, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
-                                ft.Row(spacing=4, controls=actions),
+                                ft.Row(spacing=2, controls=actions),
                             ],
                         ),
                     ],
@@ -870,7 +1219,24 @@ class ExplorerPage:
             )
             job_cards.append(card)
 
-        self._transfers_column.controls = job_cards
+        if not job_cards:
+            self._transfers_column.controls = [
+                ft.Container(
+                    content=ft.Column(
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=6,
+                        controls=[
+                            ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, size=24, color=theme.OK),
+                            ft.Text("Sin transferencias activas", size=11, color=theme.TEXT_MUTED),
+                        ],
+                    ),
+                    padding=16,
+                    alignment=ft.alignment.center,
+                )
+            ]
+        else:
+            self._transfers_column.controls = job_cards
+
         try:
             self._transfers_summary.update()
             self._transfers_column.update()
