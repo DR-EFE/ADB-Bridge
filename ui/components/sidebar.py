@@ -126,7 +126,7 @@ class Sidebar:
                     self._mandatory_selection_banner,
                     ft.Row(
                         [
-                            ft.Text("DISPOSITIVOS", size=11, weight=ft.FontWeight.BOLD, color=theme.TEXT_MUTED),
+                            ft.Text("DISPOSITIVO CONECTADO", size=11, weight=ft.FontWeight.BOLD, color=theme.TEXT_MUTED),
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
@@ -180,9 +180,15 @@ class Sidebar:
         else:
             self._mandatory_selection_banner.visible = False
 
-        # Actualizar tarjetas visuales de dispositivos
+        # Actualizar tarjetas visuales: Mostrar únicamente el dispositivo conectado/activo
         cards_controls = []
-        for card_data in mgmt_data.get("cards", []):
+        all_cards = mgmt_data.get("cards", [])
+        connected_cards = [
+            c for c in all_cards
+            if c.get("state") == "conectado" or c.get("is_active")
+        ]
+
+        for card_data in connected_cards:
             cards_controls.append(self._build_device_card(card_data, status))
 
         if not cards_controls:
@@ -191,11 +197,25 @@ class Sidebar:
                     padding=16,
                     border=ft.Border.all(1, theme.BORDER),
                     border_radius=8,
-                    content=ft.Text(
-                        "No hay dispositivos guardados ni detectados.\nConecta un teléfono por USB o WiFi.",
-                        size=11,
-                        color=theme.TEXT_MUTED,
-                        text_align=ft.TextAlign.CENTER,
+                    content=ft.Column(
+                        spacing=4,
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Icon(ft.Icons.PHONELINK_OFF, size=24, color=theme.TEXT_MUTED),
+                            ft.Text(
+                                "Sin dispositivo conectado.",
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=theme.TEXT,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                            ft.Text(
+                                "Conecta un teléfono por USB o Wi-Fi desde la pestaña 'Dispositivos'.",
+                                size=11,
+                                color=theme.TEXT_MUTED,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                        ],
                     ),
                 )
             )

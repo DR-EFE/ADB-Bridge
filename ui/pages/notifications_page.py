@@ -114,19 +114,35 @@ class NotificationsPage:
             on_click=lambda _: self._load_persisted_notifications(),
         )
 
-        # Vista destacada para OTP y ALERTA
+        # Vista destacada para OTP y ALERTA (Diseño compacto y colapsable)
         self._featured_panel = ft.Row(
-            wrap=True,
-            spacing=10,
-            scroll=ft.ScrollMode.AUTO,
+            wrap=False,
+            spacing=8,
+            scroll=ft.ScrollMode.ADAPTIVE,
+        )
+        self._featured_collapsed = False
+        self._featured_toggle_btn = ft.IconButton(
+            icon=ft.Icons.KEYBOARD_ARROW_UP,
+            icon_size=18,
+            tooltip="Ocultar / Mostrar alertas destacadas",
+            on_click=self._toggle_featured_panel,
         )
         self._featured_container = ft.Column(
-            spacing=6,
+            spacing=4,
             controls=[
-                ft.Row([
-                    ft.Icon(ft.Icons.SHIELD, size=16, color=theme.WARN),
-                    ft.Text("Códigos OTP y Alertas Recientes Destacadas", size=13, weight=ft.FontWeight.BOLD),
-                ]),
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[
+                        ft.Row(
+                            spacing=6,
+                            controls=[
+                                ft.Icon(ft.Icons.SHIELD_ROUNDED, size=15, color=theme.WARN),
+                                ft.Text("Alertas y Códigos OTP Recientes", size=12, weight=ft.FontWeight.BOLD, color=theme.TEXT),
+                            ],
+                        ),
+                        self._featured_toggle_btn,
+                    ],
+                ),
                 self._featured_panel,
             ],
             visible=False,
@@ -400,8 +416,20 @@ class NotificationsPage:
         self._render_featured()
         self._render_table()
 
+    def _toggle_featured_panel(self, _e: ft.ControlEvent) -> None:
+        """Colapsa o expande el panel de alertas destacadas para ahorrar espacio."""
+        self._featured_collapsed = not self._featured_collapsed
+        self._featured_panel.visible = not self._featured_collapsed
+        self._featured_toggle_btn.icon = (
+            ft.Icons.KEYBOARD_ARROW_DOWN if self._featured_collapsed else ft.Icons.KEYBOARD_ARROW_UP
+        )
+        try:
+            self._featured_container.update()
+        except Exception:
+            pass
+
     def _render_featured(self) -> None:
-        """Muestra tarjetas destacadas para las alertas críticas y OTPs más recientes."""
+        """Muestra tarjetas compactas y estilizadas para las alertas críticas y OTPs más recientes."""
         important_items = [e for e in self._all_events if e.get("tipo") in ("OTP", "ALERTA")]
         self._featured_panel.controls.clear()
 
@@ -414,56 +442,62 @@ class NotificationsPage:
             return
 
         self._featured_container.visible = True
-        for ev in important_items[:6]:  # Últimos 6 destacados
+        for ev in important_items[:6]:  # Últimos 6 destacados en fila horizontal
             tipo = ev.get("tipo", "ALERTA")
             color = theme.OK if tipo == "OTP" else theme.WARN
+            color_bg = theme.OK_LIGHT if tipo == "OTP" else theme.WARN_LIGHT
             codigo = ev.get("codigo")
+            app_pkg = (ev.get("package") or "").split(".")[-1] or "app"
+
+            header_row = [
+                ft.Container(
+                    content=ft.Text(tipo, size=9, weight=ft.FontWeight.BOLD, color=color),
+                    bgcolor=color_bg,
+                    padding=ft.Padding.symmetric(horizontal=5, vertical=1),
+                    border_radius=4,
+                    border=ft.Border.all(1, color),
+                ),
+                ft.Text(f"• {app_pkg}", size=10, color=theme.TEXT_MUTED, max_lines=1),
+                ft.Container(expand=True),
+                ft.Text(str(ev.get("fecha", ""))[-8:], size=9, color=theme.TEXT_MUTED),
+            ]
 
             card_content = [
-                ft.Row(
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    controls=[
-                        ft.Container(
-                            content=ft.Text(tipo, size=10, weight=ft.FontWeight.BOLD, color=theme.BG),
-                            bgcolor=color,
-                            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-                            border_radius=4,
-                        ),
-                        ft.Text(str(ev.get("fecha", ""))[-8:], size=10, color=theme.TEXT_MUTED),
-                    ],
-                ),
-                ft.Text(
-                    ev.get("titulo") or "(Sin título)",
-                    size=12,
-                    weight=ft.FontWeight.BOLD,
-                    overflow=ft.TextOverflow.ELLIPSIS,
-                    max_lines=1,
-                ),
+                ft.Row(controls=header_row, spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ]
+
             if codigo:
                 card_content.append(
-                    ft.Text(f"CÓDIGO: {codigo}", size=15, weight=ft.FontWeight.BOLD, color=color, selectable=True)
+                    ft.Row(
+                        spacing=4,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Text("CÓDIGO:", size=11, weight=ft.FontWeight.BOLD, color=theme.TEXT_MUTED),
+                            ft.Text(f"{codigo}", size=13, weight=ft.FontWeight.BOLD, color=color, selectable=True),
+                        ],
+                    )
                 )
+
+            titulo = ev.get("titulo") or "(Sin título)"
+            texto = ev.get("texto") or ""
             card_content.append(
                 ft.Text(
-                    ev.get("texto") or "",
-                    size=11,
+                    f"{titulo}: {texto}" if texto else titulo,
+                    size=10,
                     color=theme.TEXT,
                     overflow=ft.TextOverflow.ELLIPSIS,
                     max_lines=2,
+                    selectable=True,
                 )
-            )
-            card_content.append(
-                ft.Text(ev.get("package") or "", size=10, color=theme.TEXT_MUTED)
             )
 
             box = ft.Container(
-                content=ft.Column(card_content, spacing=2),
-                width=240,
+                content=ft.Column(card_content, spacing=3),
+                width=260,
                 padding=8,
-                bgcolor=theme.SURFACE_ALT,
+                bgcolor=theme.SURFACE,
                 border_radius=8,
-                border=ft.Border.all(1, color),
+                border=ft.Border.all(1, theme.BORDER),
             )
             self._featured_panel.controls.append(box)
 
