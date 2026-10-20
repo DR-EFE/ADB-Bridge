@@ -528,7 +528,10 @@ class DevicesPage:
                 online_items.append({
                     "serial": info.serial,
                     "is_network": info.is_network,
-                    "is_active": bool(info.is_primary or info.serial == self._device.serial),
+                    "is_active": bool(
+                        (info.is_primary or info.serial == self._device.serial)
+                        and info.state == "device"
+                    ),
                     "state": info.state,
                     "model": info.model or info.serial,
                     "friendly_name": info.friendly_name or info.serial,

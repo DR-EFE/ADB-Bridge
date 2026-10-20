@@ -570,20 +570,43 @@ class DeviceService:
 
     def _connect_recovery_candidate(self, client: Any, endpoint: str, timeout: float,
                                     device_id: str = "unknown", stage: str = "connect") -> Tuple[bool, str]:
-        # adb reconnect offline afecta a todos los transportes; limpiar solo este endpoint.
+        # Un transporte offline debe limpiarse antes de reconectar. ADB en
+        # Windows necesita un pequeño margen para liberar el socket; sin él,
+        # ``connect`` puede devolver "already connected" y dejarlo offline.
         started = time.monotonic()
         try:
-            if any(d.serial == endpoint and d.state == "offline" for d in client.list()):
+            was_offline = any(d.serial == endpoint and d.state == "offline" for d in client.list())
+            if was_offline:
                 try:
                     client.disconnect(endpoint)
                 except Exception:
                     pass
                 self._conversion_log(device_id, "offline", "OFFLINE", endpoint)
-            output = str(client.connect(endpoint, timeout=timeout) or "")
-            if "connected to" in output.lower() or "already connected" in output.lower():
-                self._conversion_log(device_id, stage, "CONNECTED", endpoint, int((time.monotonic() - started) * 1000))
-                return True, "SUCCESS"
-            code = self._reconnect_error(output)
+                time.sleep(0.35)
+
+            last_output = ""
+            attempts = 2 if was_offline else 1
+            for attempt in range(attempts):
+                last_output = str(client.connect(endpoint, timeout=timeout) or "")
+                accepted = "connected to" in last_output.lower() or "already connected" in last_output.lower()
+                if accepted:
+                    state_deadline = time.monotonic() + min(2.0, max(0.5, timeout))
+                    while time.monotonic() < state_deadline:
+                        current = next((item for item in client.list() if item.serial == endpoint), None)
+                        if current and current.state == "device":
+                            self._conversion_log(device_id, stage, "CONNECTED", endpoint, int((time.monotonic() - started) * 1000))
+                            return True, "SUCCESS"
+                        if current and current.state == "unauthorized":
+                            break
+                        time.sleep(0.2)
+                if attempt + 1 < attempts:
+                    try:
+                        client.disconnect(endpoint)
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+
+            code = self._reconnect_error(last_output)
             self._conversion_log(device_id, stage, code, endpoint, int((time.monotonic() - started) * 1000))
             return False, code
         except Exception as exc:
@@ -1382,7 +1405,11 @@ class DeviceService:
                 associated_endpoints.append(f"USB: {usb}")
 
             is_prim = (device_id == current_id)
-            is_active = (self.serial in (last_ep, usb, provisional_ep) and bool(self.serial))
+            is_active = (
+                self.serial in (last_ep, usb, provisional_ep)
+                and bool(self.serial)
+                and bool(active_info and active_info.state == "device")
+            )
 
             cards.append({
                 "id": device_id,
