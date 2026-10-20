@@ -81,17 +81,24 @@ class AndroidToolsApp:
 
         self._active_device_chip = ft.Container(
             padding=ft.Padding.symmetric(horizontal=10, vertical=4),
-            border_radius=0,
-            bgcolor=theme.SURFACE_ALT,
+            border_radius=8,
+            bgcolor=theme.ACCENT_LIGHT if self.device.serial else theme.SURFACE_ALT,
+            border=ft.Border.all(1, theme.ACCENT if self.device.serial else theme.BORDER),
             content=ft.Row(
                 spacing=6,
                 controls=[
                     ft.Icon(ft.Icons.PHONE_ANDROID, size=15, color=theme.OK if self.device.serial else theme.TEXT_MUTED),
-                    ft.Text(self.device.serial or "Sin dispositivo", size=11, weight=ft.FontWeight.W_500),
+                    ft.Text(self.device.serial or "Sin dispositivo", size=11, weight=ft.FontWeight.W_600, color=theme.TEXT),
                 ],
             ),
             tooltip="Dispositivo activo. Clic para mostrar/ocultar panel de dispositivos",
             on_click=self._toggle_sidebar,
+        )
+
+        self._theme_toggle_btn = ft.IconButton(
+            icon=ft.Icons.DARK_MODE_OUTLINED,
+            tooltip="Cambiar entre modo claro y oscuro",
+            on_click=self._toggle_theme,
         )
 
         self.sidebar = Sidebar(
@@ -121,7 +128,7 @@ class AndroidToolsApp:
         )
 
         self._top_bar = ft.Container(
-            padding=ft.Padding.symmetric(horizontal=4, vertical=2),
+            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
             bgcolor=theme.SURFACE,
             content=ft.Row(
                 spacing=6,
@@ -130,6 +137,7 @@ class AndroidToolsApp:
                     self._sidebar_toggle_btn,
                     ft.Container(expand=True, content=self._tab_bar),
                     self._active_device_chip,
+                    self._theme_toggle_btn,
                 ],
             ),
         )
@@ -227,12 +235,27 @@ class AndroidToolsApp:
         except Exception:
             pass
 
+    def _toggle_theme(self, _e=None) -> None:
+        if self.page.theme_mode == ft.ThemeMode.LIGHT:
+            self.page.theme_mode = ft.ThemeMode.DARK
+            self._theme_toggle_btn.icon = ft.Icons.LIGHT_MODE_OUTLINED
+        else:
+            self.page.theme_mode = ft.ThemeMode.LIGHT
+            self._theme_toggle_btn.icon = ft.Icons.DARK_MODE_OUTLINED
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
     def _on_device_status_update(self, status: DeviceStatus) -> None:
         if hasattr(self, "_active_device_chip"):
             color = theme.OK if status.connected else theme.TEXT_MUTED
             text = status.serial or "Sin dispositivo"
             self._active_device_chip.content.controls[0].color = color
             self._active_device_chip.content.controls[1].value = text
+            self._active_device_chip.content.controls[1].color = theme.TEXT if status.connected else theme.TEXT_MUTED
+            self._active_device_chip.bgcolor = theme.ACCENT_LIGHT if status.connected else theme.SURFACE_ALT
+            self._active_device_chip.border = ft.Border.all(1, theme.ACCENT if status.connected else theme.BORDER)
             try:
                 self._active_device_chip.update()
             except Exception:

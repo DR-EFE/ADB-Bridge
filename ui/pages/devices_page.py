@@ -262,12 +262,15 @@ class DevicesPage:
             )
         )
 
+        # Hero card del dispositivo activo
+        self._hero_active_card = ft.Container()
+
         # ---------------------------------------------------------------------
         # Construcción de la Vista Principal
         # ---------------------------------------------------------------------
         self.view = ft.Column(
             expand=True,
-            spacing=16,
+            spacing=14,
             scroll=ft.ScrollMode.AUTO,
             controls=[
                 # 1. Barra de Herramientas Principal
@@ -277,12 +280,12 @@ class DevicesPage:
                     controls=[
                         ft.Row(
                             [
-                                ft.Icon(ft.Icons.PHONELINK_SETUP_ROUNDED, color=theme.ACCENT, size=26),
+                                ft.Icon(ft.Icons.PHONELINK_SETUP_ROUNDED, color=theme.ACCENT, size=24),
                                 ft.Column(
                                     spacing=2,
                                     controls=[
-                                        ft.Text("Administrador de Dispositivos", size=18, weight=ft.FontWeight.BOLD),
-                                        ft.Text("Gestión de conexiones USB y Wi-Fi, emparejamiento mDNS e historial", size=12, color=theme.TEXT_MUTED),
+                                        ft.Text("Administrador de Dispositivos", size=18, weight=ft.FontWeight.BOLD, color=theme.TEXT),
+                                        ft.Text("Conexiones USB y Wi-Fi, emparejamiento rápido y selección activa", size=12, color=theme.TEXT_MUTED),
                                     ],
                                 ),
                             ],
@@ -293,35 +296,41 @@ class DevicesPage:
                             wrap=True,
                             controls=[
                                 ft.FilledButton(
-                                    "Refrescar",
-                                    icon=ft.Icons.REFRESH,
-                                    on_click=lambda _: self.refresh_devices(),
+                                    "Conectar por IP",
+                                    icon=ft.Icons.WIFI,
+                                    height=34,
+                                    on_click=lambda _: self._toggle_connect_panel(True),
                                 ),
                                 ft.FilledButton(
-                                    "Vincular con QR",
+                                    "Vincular QR",
                                     icon=ft.Icons.QR_CODE_2,
+                                    height=34,
                                     bgcolor=theme.OK,
                                     color=theme.BG,
                                     tooltip="Empareja un teléfono Android 11+ escaneando un código QR",
                                     on_click=self._handle_pair_wireless_qr,
                                 ),
-                                ft.FilledButton(
-                                    "Conectar Nuevo",
-                                    icon=ft.Icons.ADD_TO_QUEUE,
-                                    bgcolor=theme.ACCENT,
-                                    color=theme.BG,
-                                    on_click=lambda _: self._toggle_connect_panel(True),
-                                ),
                                 ft.OutlinedButton(
-                                    "Escanear mDNS",
-                                    icon=ft.Icons.SEARCH,
-                                    on_click=self._handle_scan_mdns,
+                                    "Refrescar",
+                                    icon=ft.Icons.REFRESH,
+                                    height=34,
+                                    on_click=lambda _: self.refresh_devices(),
                                 ),
-                                ft.OutlinedButton(
-                                    "Reiniciar ADB",
-                                    icon=ft.Icons.RESTART_ALT,
-                                    tooltip="Fuerza un reinicio limpio del daemon ADB en puerto 5037",
-                                    on_click=self._handle_restart_adb,
+                                ft.PopupMenuButton(
+                                    icon=ft.Icons.MORE_VERT,
+                                    tooltip="Opciones avanzadas",
+                                    items=[
+                                        ft.PopupMenuItem(
+                                            text="Escanear mDNS / Wi-Fi",
+                                            icon=ft.Icons.SEARCH,
+                                            on_click=self._handle_scan_mdns,
+                                        ),
+                                        ft.PopupMenuItem(
+                                            text="Reiniciar servidor ADB",
+                                            icon=ft.Icons.RESTART_ALT,
+                                            on_click=self._handle_restart_adb,
+                                        ),
+                                    ],
                                 ),
                             ],
                         ),
@@ -329,54 +338,53 @@ class DevicesPage:
                 ),
                 self._progress,
                 self._status_feedback,
+                # 2. Hero Card: Dispositivo Activo Actual (¡Destacado visualmente!)
+                self._hero_active_card,
+                # 3. Paneles expandibles
                 self._connect_card,
                 self._rename_card,
 
-                # 2. Dispositivos en Línea (Conectados Ahora)
+                # 4. Dispositivos en Línea (Conectados Ahora)
                 theme.card(
                     ft.Column(
                         spacing=10,
                         controls=[
                             ft.Row(
-                                [
-                                    ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=theme.OK, size=20),
-                                    ft.Text("Dispositivos en Línea (ADB)", weight=ft.FontWeight.BOLD, size=15),
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                controls=[
+                                    ft.Row(
+                                        [
+                                            ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=theme.OK, size=18),
+                                            ft.Text("Dispositivos en Línea Detectados (ADB)", weight=ft.FontWeight.BOLD, size=14, color=theme.TEXT),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    ft.Text("Haz clic en 'Usar este dispositivo' para cambiar el teléfono activo", size=11, color=theme.TEXT_MUTED),
                                 ],
-                                spacing=8,
-                            ),
-                            ft.Text(
-                                "Dispositivos reconocidos activamente por el servidor ADB local:",
-                                size=12,
-                                color=theme.TEXT_MUTED,
                             ),
                             self._online_list_col,
                         ],
                     )
                 ),
 
-                # 3. Dispositivos Guardados (config/devices.json)
+                # 5. Dispositivos Guardados (config/devices.json)
                 theme.card(
                     ft.Column(
                         spacing=10,
                         controls=[
                             ft.Row(
                                 [
-                                    ft.Icon(ft.Icons.BOOKMARK_BORDER, color=theme.WARN, size=20),
-                                    ft.Text("Historial de Dispositivos Registrados (devices.json)", weight=ft.FontWeight.BOLD, size=15),
+                                    ft.Icon(ft.Icons.BOOKMARK_BORDER, color=theme.WARN, size=18),
+                                    ft.Text("Historial de Dispositivos Registrados (devices.json)", weight=ft.FontWeight.BOLD, size=14, color=theme.TEXT),
                                 ],
                                 spacing=8,
-                            ),
-                            ft.Text(
-                                "Perfiles recordados para reconexión rápida sin necesidad de volver a ingresar datos:",
-                                size=12,
-                                color=theme.TEXT_MUTED,
                             ),
                             self._saved_list_col,
                         ],
                     )
                 ),
 
-                # 4. Ficha Técnica
+                # 6. Ficha Técnica
                 self._specs_card,
             ],
         )
@@ -473,18 +481,19 @@ class DevicesPage:
 
             self._saved_list_col.controls = saved_controls
 
-            # Los cambios originados por el monitor ADB ocurren en segundo
-            # plano. Forzar el update de ambos nodos evita que el log se
-            # actualice antes que las tarjetas visibles.
+            # 3. Renderizar Hero del Dispositivo Activo
+            active_item = next((item for item in online_items if item["is_active"]), None)
+            if not active_item and self._device.serial:
+                active_item = next((item for item in online_items if item["serial"] == self._device.serial), None)
+            self._render_hero_active_card(active_item, has_any_online=bool(online_items))
+
             try:
                 self._online_list_col.update()
                 self._saved_list_col.update()
             except Exception:
-                # Los controles aún pueden no estar montados al iniciar o al
-                # cerrar la ventana; el siguiente refresco los renderiza.
                 pass
 
-            # 3. Cargar ficha técnica del dispositivo activo
+            # 4. Cargar ficha técnica del dispositivo activo
             specs = self._device.get_device_full_specs(self._device.serial)
             self._render_specs(specs)
 
@@ -492,6 +501,134 @@ class DevicesPage:
         except Exception as exc:
             logger.error("Error al refrescar dispositivos: %s", exc)
             self._set_busy(False, f"Error al refrescar dispositivos: {exc}", is_error=True)
+
+    def _render_hero_active_card(self, active_item: Optional[Dict[str, Any]], has_any_online: bool) -> None:
+        """Renderiza el banner destacado del dispositivo activo en uso."""
+        if active_item:
+            title = active_item["friendly_name"]
+            serial = active_item["serial"]
+            is_net = active_item["is_network"]
+            battery = active_item["battery"]
+            bat_str = f" • Batería: {battery}%" if battery is not None else ""
+
+            content = ft.Container(
+                content=ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    wrap=True,
+                    controls=[
+                        ft.Row(
+                            spacing=12,
+                            controls=[
+                                ft.Container(
+                                    content=ft.Icon(
+                                        ft.Icons.WIFI if is_net else ft.Icons.USB,
+                                        size=28,
+                                        color=theme.OK,
+                                    ),
+                                    bgcolor=theme.OK_LIGHT,
+                                    border_radius=10,
+                                    padding=10,
+                                    border=ft.Border.all(1, theme.OK),
+                                ),
+                                ft.Column(
+                                    spacing=2,
+                                    controls=[
+                                        ft.Row(
+                                            spacing=6,
+                                            controls=[
+                                                ft.Container(
+                                                    content=ft.Row(
+                                                        spacing=4,
+                                                        tight=True,
+                                                        controls=[
+                                                            ft.Icon(ft.Icons.CHECK_CIRCLE, size=12, color=theme.OK),
+                                                            ft.Text("DISPOSITIVO ACTIVO EN USO", size=10, weight=ft.FontWeight.BOLD, color=theme.OK),
+                                                        ],
+                                                    ),
+                                                    padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                                                    bgcolor=theme.OK_LIGHT,
+                                                    border_radius=4,
+                                                    border=ft.Border.all(1, theme.OK),
+                                                ),
+                                                ft.Text(f"Conexión: {'Wi-Fi' if is_net else 'Cable USB'}", size=11, color=theme.TEXT_MUTED),
+                                            ],
+                                        ),
+                                        ft.Text(title, size=17, weight=ft.FontWeight.BOLD, color=theme.TEXT),
+                                        ft.Text(f"Serial / IP: {serial} • Estado: Listo{bat_str}", size=12, color=theme.TEXT_MUTED),
+                                    ],
+                                ),
+                            ],
+                        ),
+                        ft.Row(
+                            spacing=6,
+                            controls=[
+                                ft.OutlinedButton(
+                                    "Ficha Técnica",
+                                    icon=ft.Icons.INFO_OUTLINE,
+                                    height=32,
+                                    on_click=lambda _: self._load_specs(serial),
+                                ),
+                                ft.OutlinedButton(
+                                    "Ping",
+                                    icon=ft.Icons.NETWORK_CHECK,
+                                    height=32,
+                                    visible=is_net,
+                                    on_click=lambda _: self._action_ping(serial),
+                                ),
+                                ft.OutlinedButton(
+                                    "Desconectar",
+                                    icon=ft.Icons.LINK_OFF,
+                                    height=32,
+                                    visible=is_net,
+                                    on_click=lambda _: self._action_disconnect(serial),
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                padding=14,
+                bgcolor=theme.ACCENT_LIGHT,
+                border_radius=10,
+                border=ft.Border.all(1.5, theme.ACCENT),
+            )
+        else:
+            msg = (
+                "Hay dispositivos detectados abajo. Pulsa 'Usar este dispositivo' en el que desees controlar."
+                if has_any_online
+                else "Conecta un teléfono por cable USB o haz clic en 'Conectar por IP' / 'Vincular QR'."
+            )
+            content = ft.Container(
+                content=ft.Row(
+                    spacing=12,
+                    controls=[
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.PHONELINK_OFF, size=24, color=theme.WARN),
+                            bgcolor=theme.WARN_LIGHT,
+                            border_radius=10,
+                            padding=10,
+                            border=ft.Border.all(1, theme.WARN),
+                        ),
+                        ft.Column(
+                            spacing=2,
+                            controls=[
+                                ft.Text("Ningún dispositivo activo seleccionado", size=15, weight=ft.FontWeight.BOLD, color=theme.TEXT),
+                                ft.Text(msg, size=12, color=theme.TEXT_MUTED),
+                            ],
+                        ),
+                    ],
+                ),
+                padding=14,
+                bgcolor=theme.WARN_LIGHT,
+                border_radius=10,
+                border=ft.Border.all(1, theme.WARN),
+            )
+
+        self._hero_active_card.content = content
+        try:
+            self._hero_active_card.update()
+        except Exception:
+            pass
 
     def _build_online_card(self, dev: Dict[str, Any]) -> ft.Control:
         serial = dev["serial"]
@@ -502,109 +639,119 @@ class DevicesPage:
         friendly = dev["friendly_name"]
         battery = dev["battery"]
 
-        # Badges
+        title = f"{friendly}" if friendly != serial else f"Dispositivo {serial}"
+        subtitle = f"Serial / Endpoint: {serial}"
+        if model and model != "—" and model not in title:
+            subtitle += f" • Modelo: {model}"
+
+        # Badges informativos
         badges = []
-        # Modo
         mode_text = "Wi-Fi (TCP/IP)" if is_net else "USB"
         mode_color = theme.OK if is_net else theme.ACCENT
         badges.append(self._badge(mode_text, mode_color))
 
-        # Estado
         if state == "device":
-            badges.append(self._badge("Listo (device)", theme.OK))
+            badges.append(self._badge("Listo", theme.OK))
         elif state == "unauthorized":
-            badges.append(self._badge("No Autorizado", theme.WARN))
+            badges.append(self._badge("No Autorizado", theme.WARN, is_bold=True))
         else:
             badges.append(self._badge(state.upper(), theme.ERR))
 
-        # Activo
-        if is_active:
-            badges.append(self._badge("ACTIVO", theme.ACCENT, is_bold=True))
-
-        # Batería
         if battery is not None:
-            badges.append(self._badge(f"Bat: {battery}%", theme.TEXT))
+            badges.append(self._badge(f"{battery}%", theme.TEXT_MUTED))
 
-        # Acciones para este dispositivo
-        action_buttons = []
-
+        # Acciones simplificadas
+        actions = []
         if not is_active and state == "device":
-            action_buttons.append(
+            actions.append(
                 ft.FilledButton(
-                    "Usar como Activo",
-                    icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
-                    height=30,
+                    "Usar este dispositivo",
+                    icon=ft.Icons.CHECK,
+                    height=32,
                     on_click=lambda _, s=serial: self._action_set_active(s),
                 )
             )
 
+        if is_active:
+            actions.append(
+                ft.Container(
+                    content=ft.Row(
+                        spacing=4,
+                        tight=True,
+                        controls=[
+                            ft.Icon(ft.Icons.CHECK_CIRCLE, size=14, color=theme.OK),
+                            ft.Text("SELECCIONADO", size=11, weight=ft.FontWeight.BOLD, color=theme.OK),
+                        ],
+                    ),
+                    padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+                    border_radius=6,
+                    bgcolor=theme.OK_LIGHT,
+                    border=ft.Border.all(1, theme.OK),
+                )
+            )
+
         if not is_net and state == "device" and dev.get("mode") == "tcpip-5555":
-            action_buttons.append(
+            actions.append(
                 ft.OutlinedButton(
-                    "Convertir manualmente ahora",
+                    "Convertir a Wi-Fi",
                     icon=ft.Icons.WIFI,
-                    height=30,
+                    height=32,
                     on_click=lambda _, s=serial: self._action_convert_wifi(s),
                 )
             )
 
-        if is_net:
-            action_buttons.append(
-                ft.OutlinedButton(
-                    "Ping",
-                    icon=ft.Icons.NETWORK_CHECK,
-                    height=30,
-                    on_click=lambda _, s=serial: self._action_ping(s),
-                )
-            )
-
-        action_buttons.append(
-            ft.OutlinedButton(
-                "Ficha",
-                icon=ft.Icons.INFO_OUTLINE,
-                height=30,
+        actions.append(
+            ft.IconButton(
+                ft.Icons.INFO_OUTLINE,
+                tooltip="Ficha técnica",
+                icon_size=18,
                 on_click=lambda _, s=serial: self._load_specs(s),
             )
         )
 
-        title = f"{friendly}" if friendly != serial else f"Dispositivo {serial}"
-        subtitle = f"Serial / Endpoint: {serial}"
-        if model and model != "—" and model not in title:
-            subtitle += f" | Modelo: {model}"
+        if is_net:
+            actions.append(
+                ft.IconButton(
+                    ft.Icons.NETWORK_CHECK,
+                    tooltip="Hacer ping",
+                    icon_size=18,
+                    on_click=lambda _, s=serial: self._action_ping(s),
+                )
+            )
 
         return ft.Container(
-            padding=ft.Padding(12, 10, 12, 10),
-            bgcolor=theme.SURFACE_ALT if is_active else theme.BG,
+            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+            bgcolor=theme.ACCENT_LIGHT if is_active else theme.SURFACE,
             border_radius=8,
-            border=ft.Border.all(1, theme.ACCENT if is_active else theme.BORDER),
-            content=ft.Column(
-                spacing=8,
+            border=ft.Border.all(1.5 if is_active else 1.0, theme.ACCENT if is_active else theme.BORDER),
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                wrap=True,
                 controls=[
                     ft.Row(
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                        wrap=True,
+                        spacing=12,
                         controls=[
-                            ft.Row(
-                                [
-                                    ft.Icon(
-                                        ft.Icons.WIFI if is_net else ft.Icons.USB,
-                                        color=theme.OK if is_active else theme.TEXT_MUTED,
-                                        size=22,
-                                    ),
-                                    ft.Column(
-                                        spacing=2,
-                                        controls=[
-                                            ft.Text(title, weight=ft.FontWeight.BOLD, size=14),
-                                            ft.Text(subtitle, size=11, color=theme.TEXT_MUTED),
-                                        ],
-                                    ),
-                                ],
-                                spacing=8,
+                            ft.Icon(
+                                ft.Icons.WIFI if is_net else ft.Icons.USB,
+                                color=theme.OK if is_active else theme.TEXT_MUTED,
+                                size=24,
                             ),
-                            ft.Row(badges, spacing=6),
+                            ft.Column(
+                                spacing=2,
+                                controls=[
+                                    ft.Row(
+                                        spacing=6,
+                                        controls=[
+                                            ft.Text(title, weight=ft.FontWeight.BOLD, size=14, color=theme.TEXT),
+                                        ] + badges,
+                                    ),
+                                    ft.Text(subtitle, size=11, color=theme.TEXT_MUTED),
+                                ],
+                            ),
                         ],
                     ),
-                    ft.Row(action_buttons, spacing=8, wrap=True),
+                    ft.Row(actions, spacing=6),
                 ],
             ),
         )
@@ -621,105 +768,88 @@ class DevicesPage:
 
         badges = []
         if is_online:
-            badges.append(self._badge("Conectado", theme.OK))
+            badges.append(self._badge("En línea", theme.OK))
         else:
             badges.append(self._badge("Offline", theme.TEXT_MUTED))
 
         if is_active:
-            badges.append(self._badge("ACTIVO", theme.ACCENT, is_bold=True))
+            badges.append(self._badge("ACTIVO", theme.OK, is_bold=True))
 
-        actions = [
-            ft.FilledButton(
-                "Conectar",
-                icon=ft.Icons.PLAY_ARROW,
-                height=30,
-                on_click=lambda _, i=dev_id: self._action_activate_saved(i),
-            ),
-            ft.OutlinedButton(
-                "Principal",
-                icon=ft.Icons.STAR_BORDER,
-                height=30,
-                on_click=lambda _, i=dev_id: self._action_set_primary(i),
-            ),
-            ft.OutlinedButton(
-                "Renombrar",
-                icon=ft.Icons.EDIT_OUTLINED,
-                height=30,
-                on_click=lambda _, i=dev_id, n=friendly: self._open_rename_panel(i, n),
-            ),
-        ]
-
+        actions = []
         if is_online:
+            if not is_active:
+                actions.append(
+                    ft.FilledButton(
+                        "Usar",
+                        icon=ft.Icons.CHECK,
+                        height=28,
+                        on_click=lambda _, i=dev_id: self._action_activate_saved(i),
+                    )
+                )
             actions.append(
                 ft.OutlinedButton(
                     "Desconectar",
                     icon=ft.Icons.LINK_OFF,
-                    height=30,
+                    height=28,
                     on_click=lambda _, i=dev_id: self._action_disconnect(i),
                 )
             )
-
-        if dev.get("provisional"):
-            badges.append(self._badge("PROVISIONAL", theme.WARN, is_bold=True))
-            actions.append(ft.OutlinedButton(
-                "Confirmar teléfono",
-                icon=ft.Icons.VERIFIED_OUTLINED,
-                height=30,
-                on_click=lambda _, i=dev_id: self._confirm_provisional(i),
-            ))
-
-        if ep and ":" in ep:
+        else:
             actions.append(
-                ft.OutlinedButton(
-                    "Ping",
-                    icon=ft.Icons.NETWORK_CHECK,
-                    height=30,
-                    on_click=lambda _, e=ep: self._action_ping(e),
+                ft.FilledButton(
+                    "Conectar",
+                    icon=ft.Icons.PLAY_ARROW,
+                    height=28,
+                    on_click=lambda _, i=dev_id: self._action_activate_saved(i),
                 )
             )
 
         actions.append(
-            ft.OutlinedButton(
-                "Eliminar",
-                icon=ft.Icons.DELETE_OUTLINE,
-                height=30,
+            ft.IconButton(
+                ft.Icons.EDIT_OUTLINED,
+                tooltip="Renombrar",
+                icon_size=16,
+                on_click=lambda _, i=dev_id, n=friendly: self._open_rename_panel(i, n),
+            )
+        )
+        actions.append(
+            ft.IconButton(
+                ft.Icons.DELETE_OUTLINE,
+                tooltip="Eliminar del historial",
+                icon_size=16,
+                icon_color=theme.ERR,
                 on_click=lambda _, i=dev_id, n=friendly, s=(ep or usb or "—"): self._action_delete_saved(i, n, s),
             )
         )
 
-        sub_info = f"Endpoint: {ep or '(sin IP)'} | USB: {usb or '(sin USB)'} | Modo: {mode}"
+        sub_info = f"Endpoint: {ep or '(sin IP)'} • USB: {usb or '—'} • Modo: {mode}"
         if last_utc and last_utc != "—":
-            sub_info += f" | Último uso: {last_utc[:19]}"
+            sub_info += f" • Último: {last_utc[:16]}"
 
         return ft.Container(
-            padding=ft.Padding(12, 10, 12, 10),
-            bgcolor=theme.SURFACE_ALT if is_active else theme.BG,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            bgcolor=theme.ACCENT_LIGHT if is_active else theme.SURFACE,
             border_radius=8,
-            border=ft.Border.all(1, theme.ACCENT if is_active else theme.BORDER),
-            content=ft.Column(
-                spacing=8,
+            border=ft.Border.all(1.5 if is_active else 1.0, theme.ACCENT if is_active else theme.BORDER),
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                wrap=True,
                 controls=[
                     ft.Row(
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                        wrap=True,
+                        spacing=10,
                         controls=[
-                            ft.Row(
-                                [
-                                    ft.Icon(ft.Icons.PHONE_ANDROID, color=theme.TEXT_MUTED, size=22),
-                                    ft.Column(
-                                        spacing=2,
-                                        controls=[
-                                            ft.Text(friendly, weight=ft.FontWeight.BOLD, size=14),
-                                            ft.Text(sub_info, size=11, color=theme.TEXT_MUTED),
-                                        ],
-                                    ),
+                            ft.Icon(ft.Icons.PHONE_ANDROID, color=theme.OK if is_online else theme.TEXT_MUTED, size=20),
+                            ft.Column(
+                                spacing=2,
+                                controls=[
+                                    ft.Row(spacing=6, controls=[ft.Text(friendly, weight=ft.FontWeight.BOLD, size=13, color=theme.TEXT)] + badges),
+                                    ft.Text(sub_info, size=11, color=theme.TEXT_MUTED),
                                 ],
-                                spacing=8,
                             ),
-                            ft.Row(badges, spacing=6),
                         ],
                     ),
-                    ft.Row(actions, spacing=8, wrap=True),
+                    ft.Row(actions, spacing=4),
                 ],
             ),
         )
@@ -1185,11 +1315,11 @@ class DevicesPage:
     # -------------------------------------------------------------------------
     def _badge(self, text: str, color: str, is_bold: bool = False) -> ft.Container:
         return ft.Container(
-            bgcolor=theme.SURFACE,
+            bgcolor=theme.SURFACE_ALT,
             border=ft.Border.all(1, color),
-            border_radius=6,
-            padding=ft.Padding(8, 3, 8, 3),
-            content=ft.Text(text, size=11, color=color, weight=ft.FontWeight.BOLD if is_bold else ft.FontWeight.NORMAL),
+            border_radius=4,
+            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+            content=ft.Text(text, size=10, color=color, weight=ft.FontWeight.BOLD if is_bold else ft.FontWeight.NORMAL),
         )
 
     def _set_busy(self, busy: bool, message: str, is_error: bool = False) -> None:
