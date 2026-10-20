@@ -1,32 +1,45 @@
-"""Tokens de diseño y configuración del tema oscuro de Android Tools."""
+"""Tokens de diseño y configuración del tema claro y descansado de Android Tools."""
 
 from __future__ import annotations
 
 import flet as ft
 
-# Paleta
-BG = "#101010"
-SURFACE = "#191919"
-SURFACE_ALT = "#222222"
-BORDER = "#414141"
-ACCENT = "#E61919"
-OK = "#9CCB8B"
-ERR = "#FF5555"
-WARN = "#E6B85C"
-TEXT = "#EAEAEA"
-TEXT_MUTED = "#A3A3A3"
+# Paleta Clara (Soft & Clean Light Palette - No invasiva)
+BG = "#F8FAFC"            # Fondo principal suave (slate 50)
+SURFACE = "#FFFFFF"       # Tarjetas y paneles principales (blanco puro)
+SURFACE_ALT = "#F1F5F9"   # Superficies secundarias y fondos alternos (slate 100)
+BORDER = "#E2E8F0"        # Bordes tenues y sutiles (slate 200)
 
-MONO_FONT = "Cascadia Mono"
+ACCENT = "#2563EB"        # Azul profesional limpio (Tailwind blue-600)
+ACCENT_LIGHT = "#EFF6FF"  # Azul muy tenue para selecciones y badges (blue-50)
+
+OK = "#059669"            # Verde esmeralda para conexiones exitosas (emerald-600)
+OK_LIGHT = "#ECFDF5"      # Fondo verde suave para estados activos (emerald-50)
+
+ERR = "#DC2626"           # Rojo suave para errores (red-600)
+ERR_LIGHT = "#FEF2F2"     # Fondo rojo suave (red-50)
+
+WARN = "#D97706"          # Ámbar suave para advertencias (amber-600)
+WARN_LIGHT = "#FFFBEB"    # Fondo ámbar suave (amber-50)
+
+TEXT = "#0F172A"          # Texto principal oscuro de alta legibilidad (slate 900)
+TEXT_MUTED = "#64748B"    # Texto secundario/descriptivo suave (slate 500)
+
+CARD_BG = SURFACE
+MONO_FONT = "Consolas, monospace"
 
 # Color por tipo de notificación importante
 TYPE_COLORS = {"OTP": OK, "ALERTA": WARN, "SPAM": TEXT_MUTED}
 
 
 def apply_theme(page: ft.Page, title: str = "Android Tools") -> None:
-    """Aplica modo oscuro, tamaño de ventana y colores base a la página."""
+    """Aplica tema claro limpio, legible y descansado a la vista."""
     page.title = title
-    page.theme_mode = ft.ThemeMode.DARK
-    page.theme = ft.Theme(color_scheme_seed=ACCENT, font_family=MONO_FONT)
+    page.theme_mode = ft.ThemeMode.LIGHT
+    page.theme = ft.Theme(
+        color_scheme_seed=ACCENT,
+        font_family="Segoe UI, Inter, Roboto, Arial, sans-serif",
+    )
     page.bgcolor = BG
     page.padding = 0
     page.window.width = 1280
@@ -35,45 +48,49 @@ def apply_theme(page: ft.Page, title: str = "Android Tools") -> None:
     page.window.min_height = 640
 
 
-def card(content: ft.Control, padding: int = 16, expand: bool | int | None = None) -> ft.Container:
-    """Contenedor estilo tarjeta reutilizable."""
+def card(content: ft.Control, padding: int = 14, expand: bool | int | None = None) -> ft.Container:
+    """Contenedor estilo tarjeta limpio con bordes suaves redondeados."""
     return ft.Container(
         content=content,
         padding=padding,
         bgcolor=SURFACE,
-        border_radius=0,
+        border_radius=10,
         border=ft.Border.all(1, BORDER),
         expand=expand,
     )
 
 
 def module_header(index: str, title: str, description: str) -> ft.Control:
-    """Shared editorial header that identifies each functional module."""
+    """Cabecera sutil y no invasiva para módulos."""
     return ft.Container(
-        padding=ft.Padding.only(left=18, right=18, top=14, bottom=12),
-        border=ft.Border.only(bottom=ft.BorderSide(2, ACCENT)),
+        padding=ft.Padding.only(left=14, right=14, top=8, bottom=8),
+        border=ft.Border.only(bottom=ft.BorderSide(1, BORDER)),
         content=ft.Row(
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            vertical_alignment=ft.CrossAxisAlignment.END,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Column(
-                    spacing=3,
+                ft.Row(
+                    spacing=8,
                     controls=[
-                        ft.Text(f"MODULO / {index}", size=10, color=ACCENT, font_family=MONO_FONT),
-                        ft.Text(title.upper(), size=24, weight=ft.FontWeight.W_700, font_family=MONO_FONT),
-                        ft.Text(description, size=11, color=TEXT_MUTED),
+                        ft.Container(
+                            content=ft.Text(f"M{index}", size=10, weight=ft.FontWeight.BOLD, color=ACCENT),
+                            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                            bgcolor=ACCENT_LIGHT,
+                            border_radius=4,
+                        ),
+                        ft.Text(title, size=15, weight=ft.FontWeight.BOLD, color=TEXT),
                     ],
                 ),
-                ft.Text("ANDROID TOOLS  /  ADB", size=10, color=TEXT_MUTED, font_family=MONO_FONT),
+                ft.Text(description, size=11, color=TEXT_MUTED),
             ],
         ),
     )
 
 
 def module_view(index: str, title: str, description: str, content: ft.Control) -> ft.Control:
-    """Add module identity while preserving the original functional control."""
-    return ft.Column(
+    """Contenedor de módulo limpio y amplio sin cabeceras redundantes ni líneas invasivas."""
+    return ft.Container(
+        content=content,
+        padding=12,
         expand=True,
-        spacing=0,
-        controls=[module_header(index, title, description), ft.Container(content, padding=14, expand=True)],
     )

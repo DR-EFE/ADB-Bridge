@@ -38,7 +38,7 @@ class Sidebar:
         # Banner de selección obligatoria si hay varios dispositivos listos
         self._mandatory_selection_banner = ft.Container(
             visible=False,
-            bgcolor="#3d2800",
+            bgcolor=theme.WARN_LIGHT,
             border=ft.Border.all(1.5, theme.WARN),
             border_radius=8,
             padding=10,
@@ -243,7 +243,7 @@ class Sidebar:
             top_badges.append(
                 ft.Container(
                     padding=ft.Padding(4, 2, 4, 2),
-                    bgcolor="#332b00",
+                    bgcolor=theme.ACCENT_LIGHT,
                     border=ft.Border.all(1, theme.ACCENT),
                     border_radius=4,
                     content=ft.Row(
@@ -259,7 +259,7 @@ class Sidebar:
             top_badges.append(
                 ft.Container(
                     padding=ft.Padding(4, 2, 4, 2),
-                    bgcolor="#0d331a",
+                    bgcolor=theme.OK_LIGHT,
                     border=ft.Border.all(1, theme.OK),
                     border_radius=4,
                     content=ft.Text("Activo", size=10, weight=ft.FontWeight.BOLD, color=theme.OK),
@@ -348,7 +348,7 @@ class Sidebar:
             padding=10,
             border=ft.Border.all(border_width, border_color),
             border_radius=8,
-            bgcolor="#1b2029" if is_active else theme.CARD_BG,
+            bgcolor=theme.ACCENT_LIGHT if is_active else theme.CARD_BG,
             content=ft.Column(
                 spacing=5,
                 controls=[
@@ -379,7 +379,7 @@ class Sidebar:
                             ft.Container(
                                 padding=ft.Padding(4, 1, 4, 1),
                                 border_radius=4,
-                                bgcolor="#232936",
+                                bgcolor=theme.SURFACE_ALT,
                                 content=ft.Text(card.get("mode", "tcpip"), size=10, color=theme.TEXT_MUTED),
                             ),
                             ft.Row(
