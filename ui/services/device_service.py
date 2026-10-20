@@ -570,20 +570,43 @@ class DeviceService:
 
     def _connect_recovery_candidate(self, client: Any, endpoint: str, timeout: float,
                                     device_id: str = "unknown", stage: str = "connect") -> Tuple[bool, str]:
-        # adb reconnect offline afecta a todos los transportes; limpiar solo este endpoint.
+        # Un transporte offline debe limpiarse antes de reconectar. ADB en
+        # Windows necesita un pequeño margen para liberar el socket; sin él,
+        # ``connect`` puede devolver "already connected" y dejarlo offline.
         started = time.monotonic()
         try:
-            if any(d.serial == endpoint and d.state == "offline" for d in client.list()):
+            was_offline = any(d.serial == endpoint and d.state == "offline" for d in client.list())
+            if was_offline:
                 try:
                     client.disconnect(endpoint)
                 except Exception:
                     pass
                 self._conversion_log(device_id, "offline", "OFFLINE", endpoint)
-            output = str(client.connect(endpoint, timeout=timeout) or "")
-            if "connected to" in output.lower() or "already connected" in output.lower():
-                self._conversion_log(device_id, stage, "CONNECTED", endpoint, int((time.monotonic() - started) * 1000))
-                return True, "SUCCESS"
-            code = self._reconnect_error(output)
+                time.sleep(0.35)
+
+            last_output = ""
+            attempts = 2 if was_offline else 1
+            for attempt in range(attempts):
+                last_output = str(client.connect(endpoint, timeout=timeout) or "")
+                accepted = "connected to" in last_output.lower() or "already connected" in last_output.lower()
+                if accepted:
+                    state_deadline = time.monotonic() + min(2.0, max(0.5, timeout))
+                    while time.monotonic() < state_deadline:
+                        current = next((item for item in client.list() if item.serial == endpoint), None)
+                        if current and current.state == "device":
+                            self._conversion_log(device_id, stage, "CONNECTED", endpoint, int((time.monotonic() - started) * 1000))
+                            return True, "SUCCESS"
+                        if current and current.state == "unauthorized":
+                            break
+                        time.sleep(0.2)
+                if attempt + 1 < attempts:
+                    try:
+                        client.disconnect(endpoint)
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+
+            code = self._reconnect_error(last_output)
             self._conversion_log(device_id, stage, code, endpoint, int((time.monotonic() - started) * 1000))
             return False, code
         except Exception as exc:
@@ -1382,7 +1405,11 @@ class DeviceService:
                 associated_endpoints.append(f"USB: {usb}")
 
             is_prim = (device_id == current_id)
-            is_active = (self.serial in (last_ep, usb, provisional_ep) and bool(self.serial))
+            is_active = (
+                self.serial in (last_ep, usb, provisional_ep)
+                and bool(self.serial)
+                and bool(active_info and active_info.state == "device")
+            )
 
             cards.append({
                 "id": device_id,
@@ -1965,7 +1992,12 @@ class DeviceService:
         service = WirelessQrPairingService()
         return service, service.create_payload()
 
-    def connect_endpoint(self, endpoint: str, friendly_name: str = "") -> Tuple[bool, str]:
+    def connect_endpoint(
+        self,
+        endpoint: str,
+        friendly_name: str = "",
+        wifi_mac_address: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """Conecta manualmente a una IP:Puerto y lo guarda."""
         ep = endpoint.strip()
         if not ep:
@@ -1996,11 +2028,89 @@ class DeviceService:
                 return False, f"SERIAL_NO_COINCIDE: no se verificó la identidad de {ep}."
             self._save_wifi_device_to_store(model=name, usb_serial="", endpoint=ep,
                                             physical_id_hash=physical_hash)
+            normalized_mac = re.sub(r"[^0-9A-Fa-f]", "", wifi_mac_address or "").upper()
+            if len(normalized_mac) == 12:
+                store = read_devices_store(self.devices_json)
+                record = next((item for item in store.get("Devices") or [] if item.get("LastEndpoint") == ep), None)
+                if record:
+                    record["WifiMacAddress"] = normalized_mac
+                    save_devices_store(store, self.devices_json)
             self.serial = ep
             self._explicitly_selected = True
             return True, f"¡Conectado exitosamente a {ep}! Guardado como '{name}'."
         except Exception as exc:
             return False, f"Fallo al conectar con {ep}: {exc}"
+
+    def connect_discovered_endpoint(
+        self,
+        device_id: str,
+        endpoint: str,
+        *,
+        activate: bool = False,
+        trusted_mac_match: bool = False,
+        discovered_mac: Optional[str] = None,
+    ) -> ConnectionResult:
+        """Conecta un endpoint encontrado por Nmap sin aceptar identidad débil.
+
+        El servicio de escaneo nunca puede sobrescribir un endpoint por sí
+        mismo. Esta operación vuelve a validar ADB y la identidad física. Si
+        el registro aún no dispone de huella física, solo una coincidencia de
+        MAC ya guardada permite convertirla en una identidad confirmada.
+        """
+        value = (endpoint or "").strip()
+        try:
+            host, raw_port = value.rsplit(":", 1)
+            ipaddress.ip_address(host.strip("[]"))
+            port = int(raw_port)
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except (ValueError, AttributeError):
+            return ConnectionResult(False, device_id=device_id, endpoint=value,
+                                    error="ENDPOINT_INVALIDO", message="El endpoint detectado no es una IP:puerto válida.")
+
+        store = read_devices_store(self.devices_json)
+        target = next((item for item in store.get("Devices") or [] if item.get("Id") == device_id), None)
+        if not target:
+            return ConnectionResult(False, device_id=device_id, endpoint=value,
+                                    error="DISPOSITIVO_NO_ENCONTRADO", message="El dispositivo guardado ya no existe.")
+        lock = self._lock_for_device(target.get("UsbSerial"), device_id, value)
+        with lock:
+            try:
+                client = get_adb_client()
+                output = str(client.connect(value, timeout=10.0) or "")
+                if "connected to" not in output.lower() and "already connected" not in output.lower():
+                    code = self._reconnect_error(output)
+                    return ConnectionResult(False, device_id=device_id, endpoint=value, error=code,
+                                            message=f"ADB no pudo conectar a {value}: {output.strip()}")
+                online = next((item for item in client.list() if item.serial == value), None)
+                if online and online.state == "unauthorized":
+                    return ConnectionResult(False, device_id=device_id, endpoint=value, error="AUTH_FAILED",
+                                            message=f"ADB requiere autorización en {value}.")
+                state, physical_hash = self._verify_reconnect_identity(client, value, target)
+                if state == "provisional" and trusted_mac_match:
+                    # La MAC debe venir de una coincidencia exacta contra el
+                    # inventario; una IP u hostname nunca habilitan este paso.
+                    state = "verified"
+                if state != "verified":
+                    return ConnectionResult(False, device_id=device_id, endpoint=value, error=state,
+                                            message="La identidad ADB no coincide con el dispositivo guardado.")
+
+                self._record_successful_endpoint(target, value, source="network-scan", physical_id_hash=physical_hash)
+                normalized_mac = re.sub(r"[^0-9A-Fa-f]", "", discovered_mac or "").upper()
+                if trusted_mac_match and len(normalized_mac) == 12:
+                    target["WifiMacAddress"] = normalized_mac
+                if activate:
+                    self.serial = value
+                    self._explicitly_selected = True
+                    store["CurrentDeviceId"] = device_id
+                save_devices_store(store, self.devices_json)
+                self.refresh_device_metadata(device_id)
+                self._notify_device_change()
+                return ConnectionResult(True, device_id=device_id, endpoint=value, method="network-scan",
+                                        message=f"Conexión validada a {value} mediante descubrimiento de red.")
+            except Exception as exc:
+                return ConnectionResult(False, device_id=device_id, endpoint=value, error=str(exc),
+                                        message=f"No se pudo validar el endpoint descubierto: {exc}")
 
     def reconnect(self) -> str:
         """Intenta reconectar el dispositivo actual vía reconexión inteligente."""

@@ -159,6 +159,47 @@ class TestDeviceService(unittest.TestCase):
             ensure_single_adb_server(force=False)
         self.assertEqual("start-server", run.call_args.args[0][1])
 
+    @patch("ui.services.device_service.get_adb_client")
+    def test_scanned_endpoint_updates_inventory_only_after_identity_validation(self, mock_get_client):
+        endpoint = "192.168.1.88:40123"
+        save_devices_store({"SchemaVersion": 1, "Devices": [{
+            "Id": "phone", "FriendlyName": "Phone", "WifiMacAddress": "AABBCCDDEEFF",
+            "LastEndpoint": "192.168.1.40:5555", "Endpoints": [],
+        }]}, self.canonical_json)
+        client = MagicMock()
+        client.connect.return_value = f"connected to {endpoint}"
+        client.list.return_value = [type("Record", (), {"serial": endpoint, "state": "device"})()]
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_verify_reconnect_identity", return_value=("verified", "sha256:identity")), \
+             patch.object(service, "refresh_device_metadata"), \
+             patch.object(service, "_current_network_bssid", return_value="aa:bb:cc:dd:ee:ff"):
+            result = service.connect_discovered_endpoint(
+                "phone", endpoint, trusted_mac_match=True, discovered_mac="AA:BB:CC:DD:EE:FF"
+            )
+        self.assertTrue(result.success)
+        saved = read_devices_store(self.canonical_json)["Devices"][0]
+        self.assertEqual(endpoint, saved["LastEndpoint"])
+        self.assertEqual("AABBCCDDEEFF", saved["WifiMacAddress"])
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_scanned_endpoint_rejects_unverified_identity_without_mutating_inventory(self, mock_get_client):
+        endpoint = "192.168.1.89:5555"
+        original = "192.168.1.40:5555"
+        save_devices_store({"SchemaVersion": 1, "Devices": [{
+            "Id": "phone", "FriendlyName": "Phone", "WifiMacAddress": "AABBCCDDEEFF",
+            "LastEndpoint": original, "Endpoints": [],
+        }]}, self.canonical_json)
+        client = MagicMock()
+        client.connect.return_value = f"connected to {endpoint}"
+        client.list.return_value = [type("Record", (), {"serial": endpoint, "state": "device"})()]
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_verify_reconnect_identity", return_value=("SERIAL_NO_COINCIDE", None)):
+            result = service.connect_discovered_endpoint("phone", endpoint, trusted_mac_match=True)
+        self.assertFalse(result.success)
+        self.assertEqual(original, read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"])
+
     def test_unresponsive_occupied_adb_port_requires_manual_restart(self):
         client = MagicMock()
         client.server_version.side_effect = OSError("bad protocol")

@@ -4,6 +4,7 @@ from .backup_service import BackupProgress, BackupService, CategoryDef, get_avai
 from .device_service import DeviceRecord, DeviceService, DeviceStatus
 from .job_queue_service import JobItem, JobQueueService, JobStatus, JobType
 from .monitor_service import UiNotificationMonitor
+from .network_scan_service import NetworkScanResult, NetworkScanService, ScanProfile
 from .transfer_service import RemotePath, TransferJob, TransferService, TransferStatus, TransferType
 
 __all__ = [
@@ -11,6 +12,9 @@ __all__ = [
     "DeviceStatus",
     "DeviceRecord",
     "UiNotificationMonitor",
+    "NetworkScanService",
+    "NetworkScanResult",
+    "ScanProfile",
     "TransferService",
     "TransferJob",
     "TransferStatus",

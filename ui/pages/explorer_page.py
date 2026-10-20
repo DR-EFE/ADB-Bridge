@@ -480,7 +480,6 @@ class ExplorerPage:
                     ],
                 ),
                 on_click=lambda _: self._navigate_to("/"),
-                mouse_cursor=ft.MouseCursor.CLICK,
                 padding=ft.Padding.symmetric(horizontal=4, vertical=2),
                 border_radius=4,
             ),
@@ -493,7 +492,6 @@ class ExplorerPage:
                 ft.Container(
                     content=ft.Text(part, size=11, color=theme.TEXT, weight=ft.FontWeight.W_500),
                     on_click=lambda _, p=accumulated: self._navigate_to(p),
-                    mouse_cursor=ft.MouseCursor.CLICK,
                     padding=ft.Padding.symmetric(horizontal=4, vertical=2),
                     border_radius=4,
                 )
@@ -540,7 +538,6 @@ class ExplorerPage:
                         bgcolor=theme.ACCENT_LIGHT if is_active else theme.SURFACE_ALT,
                         border=ft.Border.all(1, theme.ACCENT if is_active else theme.BORDER),
                         on_click=lambda _, p=path: self._navigate_to(p),
-                        mouse_cursor=ft.MouseCursor.CLICK,
                         tooltip=f"Ir a {path}",
                     )
                 )
@@ -657,7 +654,6 @@ class ExplorerPage:
                             ),
                             expand=True,
                             on_click=(lambda _, p=full_remote_path: self._navigate_to(p)) if is_dir else None,
-                            mouse_cursor=ft.MouseCursor.CLICK if is_dir else ft.MouseCursor.DEFAULT,
                         ),
                         # Tamaño y Botones de acción
                         ft.Row(
@@ -703,7 +699,7 @@ class ExplorerPage:
                         ],
                     ),
                     padding=32,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                 )
             ]
         else:
@@ -1231,7 +1227,7 @@ class ExplorerPage:
                         ],
                     ),
                     padding=16,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                 )
             ]
         else:

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 import threading
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import flet as ft
 
 from .. import theme
 from ..services.device_service import DeviceService
+from ..services.network_scan_service import NetworkHost, NetworkScanError, NetworkScanResult, NetworkScanService, ScanProfile
 from ..services.wireless_qr_service import WirelessQrPairingService
 
 logger = logging.getLogger("ui.devices")
@@ -51,6 +55,47 @@ class DevicesPage:
         # ---------------------------------------------------------------------
         self._online_list_col = ft.Column(spacing=8)
         self._saved_list_col = ft.Column(spacing=8)
+
+        # ---------------------------------------------------------------------
+        # Descubrimiento de red Nmap (manual; Guardian es opcional)
+        # ---------------------------------------------------------------------
+        self._network_scanner = NetworkScanService()
+        self._network_scan_lock = threading.Lock()
+        self._network_scan_cancel = threading.Event()
+        self._guardian_stop = threading.Event()
+        self._guardian_thread: Optional[threading.Thread] = None
+        self._last_network_scan: Optional[NetworkScanResult] = None
+        networks = self._network_scanner.detect_local_networks()
+        default_network = networks[0].cidr if networks else "192.168.1.0/24"
+        self._network_target_field = ft.TextField(
+            label="Red IPv4 (CIDR)", hint_text="192.168.1.0/24", value=default_network,
+            width=210, dense=True, text_size=13,
+        )
+        self._network_interface_selector = ft.Dropdown(
+            label="Interfaz detectada",
+            value=default_network,
+            width=250,
+            dense=True,
+            options=[ft.DropdownOption(key=item.cidr, text=f"{item.name}: {item.cidr}") for item in networks],
+            on_select=self._handle_network_interface_select,
+        )
+        self._network_profile = ft.SegmentedButton(
+            selected=[ScanProfile.QUICK.value],
+            allow_multiple_selection=False,
+            segments=[
+                ft.Segment(value=ScanProfile.QUICK.value, label=ft.Text("Rápido")),
+                ft.Segment(value=ScanProfile.WIRELESS.value, label=ft.Text("Wireless")),
+                ft.Segment(value=ScanProfile.DEEP.value, label=ft.Text("Profundo")),
+                ft.Segment(value=ScanProfile.SECURITY.value, label=ft.Text("Seguridad")),
+            ],
+        )
+        self._network_scan_summary = ft.Text("Nmap: comprobando disponibilidad...", size=12, color=theme.TEXT_MUTED, selectable=True)
+        self._network_known_col = ft.Column(spacing=6)
+        self._network_new_col = ft.Column(spacing=6)
+        self._network_changes_col = ft.Column(spacing=4)
+        self._network_risks_col = ft.Column(spacing=4)
+        self._network_cancel_btn = ft.OutlinedButton("Cancelar escaneo", icon=ft.Icons.CANCEL, visible=False, on_click=self._handle_cancel_network_scan)
+        self._guardian_checkbox = ft.Checkbox(label="Guardian (conocidos cada 60 s)", value=False, on_change=self._handle_guardian_change)
 
         # ---------------------------------------------------------------------
         # Panel de Conectar Nuevo Dispositivo (Expandible)
@@ -321,12 +366,12 @@ class DevicesPage:
                                     tooltip="Opciones avanzadas",
                                     items=[
                                         ft.PopupMenuItem(
-                                            text="Escanear mDNS / Wi-Fi",
+                                            content="Escanear mDNS / Wi-Fi",
                                             icon=ft.Icons.SEARCH,
                                             on_click=self._handle_scan_mdns,
                                         ),
                                         ft.PopupMenuItem(
-                                            text="Reiniciar servidor ADB",
+                                            content="Reiniciar servidor ADB",
                                             icon=ft.Icons.RESTART_ALT,
                                             on_click=self._handle_restart_adb,
                                         ),
@@ -344,7 +389,65 @@ class DevicesPage:
                 self._connect_card,
                 self._rename_card,
 
-                # 4. Dispositivos en Línea (Conectados Ahora)
+                # 2. Descubrimiento / diagnóstico de red con Nmap
+                theme.card(
+                    ft.Column(
+                        spacing=10,
+                        controls=[
+                            ft.Row(
+                                [
+                                    ft.Row(
+                                        [
+                                            ft.Icon(ft.Icons.ROUTER_OUTLINED, color=theme.ACCENT, size=20),
+                                            ft.Text("Buscar dispositivos en la red", weight=ft.FontWeight.BOLD, size=15),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    self._guardian_checkbox,
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                wrap=True,
+                            ),
+                            ft.Text(
+                                "Descubre hosts y puertos ADB con Nmap. Solo coincidencias exactas por MAC se reconectan automáticamente.",
+                                size=12,
+                                color=theme.TEXT_MUTED,
+                            ),
+                            ft.Row(
+                                [
+                                    self._network_target_field,
+                                    self._network_interface_selector,
+                                    self._network_profile,
+                                    ft.FilledButton("Escanear red", icon=ft.Icons.SEARCH, on_click=self._handle_network_scan),
+                                    ft.OutlinedButton("Solo conocidos", icon=ft.Icons.BOOKMARK, on_click=self._handle_known_network_scan),
+                                    self._network_cancel_btn,
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
+                            ft.Row(
+                                [
+                                    ft.OutlinedButton("Exportar CSV", icon=ft.Icons.TABLE_VIEW, on_click=lambda _: self._export_network_scan("csv")),
+                                    ft.OutlinedButton("Exportar JSON", icon=ft.Icons.DATA_OBJECT, on_click=lambda _: self._export_network_scan("json")),
+                                    ft.OutlinedButton("Abrir Advanced IP Scanner", icon=ft.Icons.OPEN_IN_NEW, on_click=self._open_advanced_ip_scanner),
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
+                            self._network_scan_summary,
+                            ft.Text("Dispositivos conocidos", weight=ft.FontWeight.BOLD, size=13),
+                            self._network_known_col,
+                            ft.Text("Candidatos nuevos", weight=ft.FontWeight.BOLD, size=13),
+                            self._network_new_col,
+                            ft.Text("Cambios desde el escaneo anterior", weight=ft.FontWeight.BOLD, size=13),
+                            self._network_changes_col,
+                            ft.Text("Diagnóstico y riesgos", weight=ft.FontWeight.BOLD, size=13),
+                            self._network_risks_col,
+                        ],
+                    )
+                ),
+
+                # 3. Dispositivos en Línea (Conectados Ahora)
                 theme.card(
                     ft.Column(
                         spacing=10,
@@ -367,7 +470,7 @@ class DevicesPage:
                     )
                 ),
 
-                # 5. Dispositivos Guardados (config/devices.json)
+                # 4. Dispositivos Guardados (config/devices.json)
                 theme.card(
                     ft.Column(
                         spacing=10,
@@ -384,7 +487,7 @@ class DevicesPage:
                     )
                 ),
 
-                # 6. Ficha Técnica
+                # 5. Ficha Técnica
                 self._specs_card,
             ],
         )
@@ -433,7 +536,10 @@ class DevicesPage:
                 online_items.append({
                     "serial": info.serial,
                     "is_network": info.is_network,
-                    "is_active": bool(info.is_primary or info.serial == self._device.serial),
+                    "is_active": bool(
+                        (info.is_primary or info.serial == self._device.serial)
+                        and info.state == "device"
+                    ),
                     "state": info.state,
                     "model": info.model or info.serial,
                     "friendly_name": info.friendly_name or info.serial,
@@ -1311,6 +1417,265 @@ class DevicesPage:
         threading.Thread(target=worker, name="dev-restart-adb", daemon=True).start()
 
     # -------------------------------------------------------------------------
+    # Descubrimiento de red Nmap
+    # -------------------------------------------------------------------------
+    def _selected_network_profile(self) -> ScanProfile:
+        selected = list(self._network_profile.selected or [])
+        try:
+            return ScanProfile(selected[0] if selected else ScanProfile.QUICK.value)
+        except ValueError:
+            return ScanProfile.QUICK
+
+    def _handle_network_interface_select(self, _e: ft.ControlEvent) -> None:
+        selected = (self._network_interface_selector.value or "").strip()
+        if selected:
+            self._network_target_field.value = selected
+            try:
+                self._network_target_field.update()
+            except Exception:
+                pass
+
+    def _handle_network_scan(self, _e: ft.ControlEvent) -> None:
+        self._start_network_scan(self._selected_network_profile(), guardian=False)
+
+    def _handle_known_network_scan(self, _e: ft.ControlEvent) -> None:
+        self._start_network_scan(ScanProfile.KNOWN, guardian=False)
+
+    def _handle_cancel_network_scan(self, _e: ft.ControlEvent) -> None:
+        self._network_scan_cancel.set()
+        self._network_scanner.cancel_active_scan()
+        self._network_scan_summary.value = "Cancelando escaneo de red..."
+        try:
+            self._network_scan_summary.update()
+        except Exception:
+            pass
+
+    def _start_network_scan(self, profile: ScanProfile, *, guardian: bool) -> None:
+        if self._is_shutdown or not self._network_scan_lock.acquire(blocking=False):
+            if not guardian:
+                self._log("Ya hay un escaneo de red en curso.", theme.WARN)
+            return
+        target = (self._network_target_field.value or "").strip()
+        self._network_scan_cancel.clear()
+        if not guardian:
+            self._set_busy(True, f"Ejecutando escaneo {profile.value} con Nmap...")
+            self._network_cancel_btn.visible = True
+            try:
+                self._network_cancel_btn.update()
+            except Exception:
+                pass
+
+        def worker() -> None:
+            try:
+                saved = [record.to_dict() for record in self._device.list_saved_devices()]
+                try:
+                    mdns_services = self._device.find_wireless_devices()
+                except Exception as exc:
+                    mdns_services = []
+                    logger.debug("mDNS no disponible durante escaneo Nmap: %s", exc)
+                result = self._network_scanner.scan(
+                    profile,
+                    target,
+                    saved,
+                    mdns_services=mdns_services,
+                    cancel_event=self._network_scan_cancel,
+                )
+                self._last_network_scan = result
+                if not guardian and not result.cancelled:
+                    self._auto_connect_known_scan_results(result)
+                self._render_network_scan(result)
+                message = "Escaneo cancelado." if result.cancelled else f"Escaneo terminado: {len(result.hosts)} host(s) detectado(s)."
+                if not guardian:
+                    self._log(message, theme.WARN if result.cancelled else theme.OK)
+                    self._set_busy(False, message, is_error=result.cancelled)
+                    self.refresh_devices()
+            except NetworkScanError as exc:
+                message = f"No se pudo ejecutar Nmap: {exc}"
+                self._render_network_error(message)
+                if not guardian:
+                    self._log(message, theme.ERR)
+                    self._set_busy(False, message, is_error=True)
+            except Exception as exc:
+                logger.exception("Error inesperado al escanear red")
+                message = f"Error inesperado durante el escaneo de red: {exc}"
+                self._render_network_error(message)
+                if not guardian:
+                    self._log(message, theme.ERR)
+                    self._set_busy(False, message, is_error=True)
+            finally:
+                self._network_scan_lock.release()
+                if not guardian:
+                    self._network_cancel_btn.visible = False
+                    try:
+                        self._network_cancel_btn.update()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=worker, name=f"network-scan-{profile.value}", daemon=True).start()
+
+    def _auto_connect_known_scan_results(self, result: NetworkScanResult) -> None:
+        """Reconecta exclusivamente coincidencias Nmap-MAC exactas.
+
+        ``NetworkScanService`` marca como automáticos únicamente los matches
+        de MAC. El servicio ADB valida de nuevo la identidad antes de escribir
+        el endpoint en el inventario.
+        """
+        for host in result.hosts:
+            if not host.auto_connect or not host.known_device_id:
+                continue
+            endpoint = next(iter(host.endpoints), None)
+            if not endpoint:
+                continue
+            connected = self._device.connect_discovered_endpoint(
+                host.known_device_id,
+                endpoint,
+                activate=False,
+                trusted_mac_match=host.match_type == "mac",
+                discovered_mac=host.mac,
+            )
+            if connected.success:
+                host.changes.append(f"Reconectado automáticamente: {endpoint}")
+            else:
+                host.risks.append(connected.message or connected.error or "No se pudo validar la reconexión ADB.")
+
+    def _network_host_card(self, host: NetworkHost) -> ft.Control:
+        ports = ", ".join(port.label for port in host.ports) or "Sin puertos reportados"
+        title = host.known_device_name or host.hostname or host.ip
+        identity = f"IP: {host.ip}"
+        if host.mac:
+            identity += f" | MAC: {host.mac}"
+        if host.vendor:
+            identity += f" | {host.vendor}"
+        if host.latency_ms is not None:
+            identity += f" | {host.latency_ms:.1f} ms"
+        badges = [self._badge(host.match_type.upper(), theme.OK if host.match_type == "mac" else theme.WARN)]
+        if host.adb_candidate:
+            badges.append(self._badge("ADB / Wireless", theme.ACCENT))
+        actions = []
+        endpoint = next(iter(host.endpoints), None)
+        if endpoint and host.known_device_id:
+            actions.append(ft.OutlinedButton("Conectar", icon=ft.Icons.LINK, height=30,
+                                             on_click=lambda _, h=host, ep=endpoint: self._connect_scanned_host(h, ep)))
+        elif endpoint:
+            actions.append(ft.FilledButton("Agregar y conectar", icon=ft.Icons.ADD_LINK, height=30,
+                                           on_click=lambda _, h=host, ep=endpoint: self._connect_new_scanned_endpoint(h, ep)))
+        return ft.Container(
+            padding=10,
+            border=ft.Border.all(1, theme.BORDER),
+            border_radius=8,
+            content=ft.Column(
+                spacing=5,
+                controls=[
+                    ft.Row([ft.Text(title, weight=ft.FontWeight.BOLD, size=13), *badges], spacing=6, wrap=True),
+                    ft.Text(identity, size=11, color=theme.TEXT_MUTED, selectable=True),
+                    ft.Text(ports, size=11, color=theme.TEXT_MUTED, selectable=True),
+                    ft.Row(actions, spacing=6, wrap=True) if actions else ft.Container(),
+                ],
+            ),
+        )
+
+    def _render_network_scan(self, result: NetworkScanResult) -> None:
+        known = [host for host in result.hosts if host.known_device_id]
+        new = [host for host in result.hosts if not host.known_device_id]
+        self._network_known_col.controls = [self._network_host_card(host) for host in known] or [ft.Text("No se detectaron dispositivos conocidos.", size=12, color=theme.TEXT_MUTED)]
+        self._network_new_col.controls = [self._network_host_card(host) for host in new] or [ft.Text("No se detectaron candidatos nuevos.", size=12, color=theme.TEXT_MUTED)]
+        self._network_changes_col.controls = [ft.Text(change, size=12, color=theme.TEXT_MUTED) for change in result.changes] or [ft.Text("Sin cambios respecto al escaneo anterior.", size=12, color=theme.TEXT_MUTED)]
+        risks = [f"{host.ip}: {risk}" for host in result.hosts for risk in host.risks]
+        risks.extend(result.warnings)
+        self._network_risks_col.controls = [ft.Text(risk, size=12, color=theme.WARN, selectable=True) for risk in risks] or [ft.Text("Sin riesgos ni diagnósticos adicionales.", size=12, color=theme.TEXT_MUTED)]
+        source = "cancelado" if result.cancelled else "completado"
+        self._network_scan_summary.value = f"Nmap {source}: {len(result.hosts)} hosts | perfil {result.profile} | destino {result.target}"
+        for control in (self._network_known_col, self._network_new_col, self._network_changes_col, self._network_risks_col, self._network_scan_summary):
+            try:
+                control.update()
+            except Exception:
+                pass
+
+    def _render_network_error(self, message: str) -> None:
+        self._network_scan_summary.value = message
+        self._network_risks_col.controls = [ft.Text(message, size=12, color=theme.ERR, selectable=True)]
+        for control in (self._network_scan_summary, self._network_risks_col):
+            try:
+                control.update()
+            except Exception:
+                pass
+
+    def _connect_scanned_host(self, host: NetworkHost, endpoint: str) -> None:
+        if not host.known_device_id:
+            return
+        self._set_busy(True, f"Validando {endpoint} contra el inventario ADB...")
+
+        def worker() -> None:
+            result = self._device.connect_discovered_endpoint(
+                host.known_device_id or "",
+                endpoint,
+                activate=False,
+                trusted_mac_match=host.match_type == "mac",
+                discovered_mac=host.mac,
+            )
+            message = result.message or result.error or "Conexión finalizada."
+            self._log(message, theme.OK if result.success else theme.WARN)
+            self._set_busy(False, message, is_error=not result.success)
+            self.refresh_devices()
+
+        threading.Thread(target=worker, name="connect-scanned-adb", daemon=True).start()
+
+    def _connect_new_scanned_endpoint(self, host: NetworkHost, endpoint: str) -> None:
+        self._set_busy(True, f"Conectando manualmente a {endpoint}...")
+
+        def worker() -> None:
+            ok, message = self._device.connect_endpoint(endpoint, wifi_mac_address=host.mac)
+            self._log(message, theme.OK if ok else theme.WARN)
+            self._set_busy(False, message, is_error=not ok)
+            self.refresh_devices()
+
+        threading.Thread(target=worker, name="connect-new-scanned-adb", daemon=True).start()
+
+    def _export_network_scan(self, fmt: str) -> None:
+        if not self._last_network_scan:
+            self._render_network_error("Primero ejecuta un escaneo antes de exportar resultados.")
+            return
+        stamp = self._last_network_scan.started_utc.replace(":", "-").replace("+", "_")[:19]
+        base = Path(os.environ.get("USERPROFILE") or str(Path.home())) / "AndroidTools" / "exports"
+        path = base / f"network-scan-{stamp}.{fmt}"
+        try:
+            written = self._network_scanner.export(self._last_network_scan, path, fmt)
+            message = f"Resultado exportado a {written}"
+            self._log(message, theme.OK)
+            self._network_scan_summary.value = message
+            self._network_scan_summary.update()
+        except (OSError, NetworkScanError) as exc:
+            self._render_network_error(f"No se pudo exportar: {exc}")
+
+    def _open_advanced_ip_scanner(self, _e: ft.ControlEvent) -> None:
+        executable = self._network_scanner.find_advanced_ip_scanner()
+        if not executable:
+            self._render_network_error("Advanced IP Scanner no está instalado o no se encontró su ejecutable.")
+            return
+        try:
+            subprocess.Popen([executable], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            self._log("Advanced IP Scanner abierto como herramienta externa.", theme.OK)
+        except OSError as exc:
+            self._render_network_error(f"No se pudo abrir Advanced IP Scanner: {exc}")
+
+    def _handle_guardian_change(self, _e: ft.ControlEvent) -> None:
+        enabled = bool(self._guardian_checkbox.value)
+        if not enabled:
+            self._guardian_stop.set()
+            return
+        if self._guardian_thread and self._guardian_thread.is_alive():
+            return
+        self._guardian_stop.clear()
+
+        def guardian() -> None:
+            while not self._guardian_stop.wait(60.0):
+                self._start_network_scan(ScanProfile.KNOWN, guardian=True)
+
+        self._guardian_thread = threading.Thread(target=guardian, name="network-guardian", daemon=True)
+        self._guardian_thread.start()
+        self._log("Guardian activado: comprobará dispositivos conocidos cada 60 segundos.", theme.OK)
+
+    # -------------------------------------------------------------------------
     # Helpers Visuales
     # -------------------------------------------------------------------------
     def _badge(self, text: str, color: str, is_bold: bool = False) -> ft.Container:
@@ -1341,4 +1706,7 @@ class DevicesPage:
     def shutdown(self) -> None:
         """Cierre de la página."""
         self._is_shutdown = True
+        self._guardian_stop.set()
+        self._network_scan_cancel.set()
+        self._network_scanner.cancel_active_scan()
         self._device.remove_device_change_listener(self.refresh_devices)
