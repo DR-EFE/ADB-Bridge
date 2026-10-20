@@ -81,7 +81,7 @@ class AndroidToolsApp:
 
         self._active_device_chip = ft.Container(
             padding=ft.Padding.symmetric(horizontal=10, vertical=4),
-            border_radius=12,
+            border_radius=0,
             bgcolor=theme.SURFACE_ALT,
             content=ft.Row(
                 spacing=6,
@@ -146,13 +146,48 @@ class AndroidToolsApp:
                     ft.TabBarView(
                         expand=True,
                         controls=[
-                            ft.Container(self.devices.view, padding=16),
-                            ft.Container(self.explorer.view, padding=16),
-                            ft.Container(self.backup.view, padding=16),
-                            ft.Container(self.whatsapp.view, padding=16),
-                            ft.Container(self.notifications.view, padding=16),
-                            ft.Container(self.commands.view, padding=16),
-                            ft.Container(self.logs.view, padding=16),
+                            theme.module_view(
+                                "01",
+                                "Dispositivos",
+                                "Conexiones USB/Wi-Fi | seleccion segura | estado del equipo",
+                                self.devices.view,
+                            ),
+                            theme.module_view(
+                                "02",
+                                "Explorador y transferencias",
+                                "Archivos del dispositivo | navegacion | cola de transferencias",
+                                self.explorer.view,
+                            ),
+                            theme.module_view(
+                                "03",
+                                "Respaldo avanzado",
+                                "Categorias de respaldo | procesamiento | exportacion",
+                                self.backup.view,
+                            ),
+                            theme.module_view(
+                                "04",
+                                "WhatsApp extractor",
+                                "Exploracion de chats | exportacion | procesamiento",
+                                self.whatsapp.view,
+                            ),
+                            theme.module_view(
+                                "05",
+                                "Monitor de notificaciones",
+                                "Captura en vivo | alertas | filtros e historial",
+                                self.notifications.view,
+                            ),
+                            theme.module_view(
+                                "06",
+                                "Comandos y diagnostico",
+                                "Herramientas ADB | diagnostico | captura",
+                                self.commands.view,
+                            ),
+                            theme.module_view(
+                                "07",
+                                "Registro y salida",
+                                "Actividad tecnica en tiempo real | filtros | exportacion",
+                                self.logs.view,
+                            ),
                         ],
                     ),
                 ],
