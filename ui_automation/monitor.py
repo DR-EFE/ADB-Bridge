@@ -19,6 +19,7 @@ import logging
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -145,6 +146,13 @@ class NotificationMonitor:
         self._cleaned_up = True
         self._device_serial: str = serial or "auto"
         self._seen: "OrderedDict[str, None]" = OrderedDict()
+        # Importación diferida: ui.services.monitor_service adapta esta clase y
+        # una importación global produciría un ciclo durante el arranque.
+        from ui.services.notification_classifier import NotificationClassifier
+        self._ai_classifier = NotificationClassifier(enabled=use_ai)
+        self._ai_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="notification-ai")
+        self._ai_pending: set[str] = set()
+        self._ai_file_lock = threading.Lock()
         self.stats: Dict[str, int] = {"nuevas": 0, "importantes": 0, "ai": 0, "rules": 0, "copias_telefono": 0}
 
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -217,6 +225,7 @@ class NotificationMonitor:
 
         if self.save_all_notifications:
             _append_json_record(self._daily_log_path(), item.to_dict())
+            self._enqueue_ai_classification(item)
 
         result = classify_notification(item, use_ai=self.use_ai)  # Nunca lanza excepciones.
         self.stats[result.fuente] = self.stats.get(result.fuente, 0) + 1
@@ -230,6 +239,37 @@ class NotificationMonitor:
                 self.on_notification_callback(item)
             except Exception as exc:
                 logger.error("Error en on_notification_callback: %s", exc)
+
+    def _enqueue_ai_classification(self, item: NotificationItem) -> None:
+        """Clasifica y adjunta ``ai`` sin bloquear el ciclo ADB."""
+        key = item.key or self._signature(item)
+        if key in self._ai_pending:
+            return
+        self._ai_pending.add(key)
+        self._ai_executor.submit(self._classify_and_attach, item, key)
+
+    def _classify_and_attach(self, item: NotificationItem, key: str) -> None:
+        try:
+            result = self._ai_classifier.classify(item.package, " ".join(filter(None, (item.title, item.text, item.sub_text))), key=key, ts=item.timestamp)
+            path = self._daily_log_path()
+            with self._ai_file_lock:
+                records = _read_json_list(path)
+                changed = False
+                for record in records:
+                    if record.get("key") == item.key or (
+                        record.get("package") == item.package and record.get("title") == item.title and record.get("text") == item.text
+                    ):
+                        record["ai"] = result.to_record()
+                        changed = True
+                        break
+                if changed:
+                    temp = path.with_suffix(path.suffix + ".ai.tmp")
+                    temp.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+                    temp.replace(path)
+        except Exception as exc:
+            logger.debug("No se pudo adjuntar clasificación IA: %s", exc)
+        finally:
+            self._ai_pending.discard(key)
 
     def _handle_important(self, item: NotificationItem, result: ClassificationResult) -> None:
         """Persiste el evento, lo copia al teléfono y lo anuncia en consola."""
@@ -412,6 +452,8 @@ class NotificationMonitor:
         # Detener Ollama solo si fue iniciado por el monitor
         if self.use_ai:
             self.ollama_mgr.stop_if_started_by_us()
+
+        self._ai_executor.shutdown(wait=False, cancel_futures=True)
 
         logger.info(
             "Monitor detenido. Nuevas=%d | Importantes=%d | Clasificadas por IA=%d | por reglas=%d | Copias al teléfono=%d",
