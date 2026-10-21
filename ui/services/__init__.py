@@ -24,6 +24,11 @@ from .automation_rules import (
     AutomationRule, AutomationRun, AutomationRunStatus, TriggerType,
 )
 from .automation_service import AutomationService
+from .file_explorer_models import (
+    BulkItemResult, BulkOperationResult, BulkOperationType, ExplorerFilter,
+    FileNode, FolderStatResult, SearchResult,
+)
+from .file_explorer_service import FileExplorerService
 
 __all__ = [
     "Device",
@@ -80,4 +85,12 @@ __all__ = [
     "ActionRunResult",
     "TriggerType",
     "ActionType",
+    "FileExplorerService",
+    "FileNode",
+    "ExplorerFilter",
+    "SearchResult",
+    "BulkOperationType",
+    "BulkItemResult",
+    "BulkOperationResult",
+    "FolderStatResult",
 ]
