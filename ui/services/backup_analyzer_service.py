@@ -35,9 +35,11 @@ class BackupAnalyzerService:
         self,
         ollama_client: Optional[OllamaClient] = None,
         model: str = "qwen2.5-coder:7b",
+        threshold_repeated: int = 2,
     ) -> None:
         self.ollama = ollama_client or OllamaClient()
         self.model = model
+        self.threshold_repeated = threshold_repeated
 
     def _read_backup_artifacts(self, backup_dir: Path) -> Tuple[Optional[Dict[str, Any]], List[Any]]:
         """Lee MANIFEST.json y errors.json del directorio de respaldo."""
@@ -172,12 +174,13 @@ class BackupAnalyzerService:
     def analyze_backups(
         self,
         backup_dirs: List[Path | str],
-        threshold_repeated: int = 2,
+        threshold_repeated: Optional[int] = None,
     ) -> BackupAnalysisReport:
         """
         Analiza uno o más directorios de respaldo leyendo sus artefactos MANIFEST.json y errors.json.
         Produce un BackupAnalysisReport completo con hallazgos, recomendaciones y resumen.
         """
+        threshold = threshold_repeated if threshold_repeated is not None else self.threshold_repeated
         analysis_id = f"analysis_{uuid.uuid4().hex[:10]}"
         resolved_dirs: List[Path] = [Path(d).resolve() for d in backup_dirs if Path(d).is_dir()]
 
@@ -243,7 +246,7 @@ class BackupAnalyzerService:
         # Identificar rutas repetidamente denegadas o fallidas
         repeated_denied: List[str] = [
             path for path, failures in path_failure_map.items()
-            if len(failures) >= threshold_repeated
+            if len(failures) >= threshold
         ]
 
         # Construir lista de hallazgos (findings)
@@ -254,7 +257,7 @@ class BackupAnalyzerService:
             status = sample.get("status", "ERROR")
             msg = sample.get("message", "")
 
-            sev = "ERROR" if fail_count >= threshold_repeated or status == "DENIED" else "WARNING"
+            sev = "ERROR" if fail_count >= threshold or status == "DENIED" else "WARNING"
             description = (
                 f"La ruta o consulta '{path}' falló en {fail_count} respaldo(s) "
                 f"con estado {status}. Detalle: {msg}"

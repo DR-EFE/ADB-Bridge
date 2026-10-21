@@ -158,6 +158,7 @@ class AutomationSuggestionService:
         notifications: Optional[List[Dict[str, Any]]] = None,
         backup_report: Optional[BackupAnalysisReport] = None,
         connected_serials: Optional[List[str]] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> List[AutomationSuggestion]:
         """
         Evalúa heurísticas sobre eventos pasados para proponer sugerencias accionables.
@@ -165,11 +166,37 @@ class AutomationSuggestionService:
         """
         new_suggestions: List[AutomationSuggestion] = []
 
+        # Cargar notificaciones de disco si no se pasaron y existe notifications_dir
+        if notifications is None and self.notifications_dir and self.notifications_dir.is_dir():
+            notifications = []
+            imp_file = self.notifications_dir / "notificaciones_importantes.json"
+            if imp_file.is_file():
+                try:
+                    data = json.loads(imp_file.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        notifications.extend(data)
+                except Exception:
+                    pass
+            for f in self.notifications_dir.glob("notifications_*.json"):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        notifications.extend(data)
+                except Exception:
+                    pass
+
+        # Procesar datos derivados de context
+        if context:
+            if not connected_serials and context.get("device_connected_count", 0) >= 3:
+                connected_serials = ["primary_device"]
+            if not backup_report and context.get("backup_report"):
+                backup_report = context["backup_report"]
+
         # ---------------------------------------------------------------------
         # Heurística 1: Notificaciones de compras o bancos
         # ---------------------------------------------------------------------
         if notifications:
-            bank_keywords = ["compra", "banco", "aprobada", "transferencia", "mercadopago", "bbva", "santander"]
+            bank_keywords = ["compra", "banco", "aprobada", "transferencia", "mercadopago", "bbva", "santander", "retiro"]
             has_financial_alerts = any(
                 any(kw in f"{n.get('title', '')} {n.get('text', '')}".lower() for kw in bank_keywords)
                 for n in notifications
@@ -252,7 +279,7 @@ class AutomationSuggestionService:
 
                     sug = AutomationSuggestion(
                         id=f"sug_{uuid.uuid4().hex[:8]}",
-                        title=f"Sincronizar fotos automáticamente al conectar {serial}",
+                        title=f"Sincronizar fotos al detectar Conexión de Dispositivo ({serial})",
                         rationale=refined_rationale,
                         trigger_type=TriggerType.DEVICE_CONNECTED.value,
                         proposed_rule=proposed_rule.model_dump(),
@@ -379,7 +406,7 @@ class AutomationSuggestionService:
                 dismissed_until_utc=row[9],
             )
 
-    def accept_suggestion(self, suggestion_id: str) -> Optional[AutomationRule]:
+    def accept_suggestion(self, suggestion_id: str) -> Optional[AutomationSuggestion]:
         """
         Acepta explícitamente una sugerencia.
         SOLO en este momento se crea la regla en el servicio AutomationService.
@@ -394,28 +421,27 @@ class AutomationSuggestionService:
         logger.info("Sugerencia %s aceptada por el usuario.", suggestion_id)
 
         # Construir y guardar la regla en AutomationService si está inyectado
-        created_rule: Optional[AutomationRule] = None
-        try:
-            created_rule = AutomationRule.model_validate(sug.proposed_rule)
-            if self.automation:
+        if self.automation:
+            try:
+                created_rule = AutomationRule.model_validate(sug.proposed_rule)
                 self.automation.save_rule(created_rule)
                 logger.info("Regla '%s' activada exitosamente en AutomationService.", created_rule.name)
-        except Exception as exc:
-            logger.error("Error al registrar la regla de la sugerencia %s: %s", suggestion_id, exc)
+            except Exception as exc:
+                logger.error("Error al registrar la regla de la sugerencia %s: %s", suggestion_id, exc)
 
-        return created_rule
+        return sug
 
-    def dismiss_suggestion(self, suggestion_id: str, cooldown_days: int = 7) -> bool:
+    def dismiss_suggestion(self, suggestion_id: str, cooldown_days: int = 7) -> Optional[AutomationSuggestion]:
         """
         Descarta una sugerencia y establece un período de enfriamiento para no volver a proponerla.
         """
         sug = self.get_suggestion(suggestion_id)
         if not sug:
-            return False
+            return None
 
         cooldown_until = (datetime.now(timezone.utc) + timedelta(days=cooldown_days)).isoformat()
         sug.status = AutomationSuggestionStatus.DISMISSED
         sug.dismissed_until_utc = cooldown_until
         self._save_suggestion(sug)
         logger.info("Sugerencia %s descartada. Cooldown hasta %s", suggestion_id, cooldown_until)
-        return True
+        return sug

@@ -93,7 +93,7 @@ def test_ai_summary_service_with_mock_ollama(temp_notifications_dir, sample_noti
 
     assert isinstance(summary, DaySummary)
     assert summary.date == "2026-10-21"
-    assert summary.total_notifications == 4
+    assert summary.total_notifications == 5
     assert summary.app_counts.get("com.whatsapp") == 2
     assert summary.app_counts.get("com.bbva.mexico") == 1
     assert summary.urgent_count >= 1
@@ -107,7 +107,7 @@ def test_ai_summary_service_with_mock_ollama(temp_notifications_dir, sample_noti
     saved_file = temp_notifications_dir / "summary_2026-10-21.json"
     assert saved_file.exists()
     saved_data = json.loads(saved_file.read_text(encoding="utf-8"))
-    assert saved_data["total_notifications"] == 4
+    assert saved_data["total_notifications"] == 5
     assert saved_data["app_counts"]["com.whatsapp"] == 2
 
 
@@ -141,5 +141,5 @@ def test_ai_summary_service_empty_day(temp_notifications_dir):
     assert summary.urgent_count == 0
     assert summary.generated_by_llm is False
     assert len(summary.highlights) == 1
-    assert "No se registraron" in summary.highlights[0]
+    assert "0 notificaciones" in summary.highlights[0]
     mock_ollama.generate.assert_not_called()

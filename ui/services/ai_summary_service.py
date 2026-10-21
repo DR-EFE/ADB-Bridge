@@ -239,8 +239,8 @@ class AiSummaryService:
             if critical_entry not in combined_critical:
                 combined_critical.append(critical_entry)
 
-        # Intentar síntesis con LLM, con fallback extractivo
-        highlights = self._generate_llm_highlights(date_str, total, top_apps, urgent_items, otp_items)
+        # Intentar síntesis con LLM (solo si hay actividad), con fallback extractivo
+        highlights = self._generate_llm_highlights(date_str, total, top_apps, urgent_items, otp_items) if total > 0 else None
         if highlights:
             generated_by_llm = True
             model_used = self.model
