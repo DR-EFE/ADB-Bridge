@@ -81,8 +81,13 @@ class SQLiteStore:
                 name TEXT PRIMARY KEY, value REAL NOT NULL, payload_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS health_snapshots (
+                id TEXT PRIMARY KEY, serial TEXT NOT NULL, captured_at TEXT NOT NULL,
+                overall_status TEXT NOT NULL, payload_json TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
             CREATE INDEX IF NOT EXISTS idx_connections_endpoint ON connection_attempts(endpoint);
+            CREATE INDEX IF NOT EXISTS idx_health_snapshots_serial_time ON health_snapshots(serial, captured_at DESC);
             """
         if self.engine is not None:
             # SQLAlchemy controla la conexión/migración inicial; los repositorios
@@ -152,6 +157,31 @@ class SQLiteStore:
             conn.execute("""INSERT INTO metrics(name,value,payload_json,updated_at) VALUES(?,?,?,?)
                 ON CONFLICT(name) DO UPDATE SET value=excluded.value,payload_json=excluded.payload_json,updated_at=excluded.updated_at""",
                          (name, value, json.dumps(payload or {}, default=str), now))
+
+    def save_health_snapshot(self, payload: Dict[str, Any]) -> None:
+        """Persiste un snapshot de salud; cada captura conserva su propio historial."""
+        with self.connect() as conn:
+            conn.execute("""INSERT INTO health_snapshots(id,serial,captured_at,overall_status,payload_json)
+                VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload_json=excluded.payload_json,
+                overall_status=excluded.overall_status""", (
+                    str(payload["snapshot_id"]), str(payload["serial"]), str(payload["captured_at"]),
+                    str(payload.get("overall_status", "PARTIAL")), json.dumps(payload, default=str),
+                ))
+
+    def list_health_snapshots(self, serial: str, *, limit: int = 100,
+                              start_utc: Optional[str] = None, end_utc: Optional[str] = None) -> List[Dict[str, Any]]:
+        query = "SELECT payload_json FROM health_snapshots WHERE serial=?"
+        params: List[Any] = [serial]
+        if start_utc:
+            query += " AND captured_at>=?"
+            params.append(start_utc)
+        if end_utc:
+            query += " AND captured_at<=?"
+            params.append(end_utc)
+        query += " ORDER BY captured_at DESC LIMIT ?"
+        params.append(max(1, limit))
+        with self.connect() as conn:
+            return [json.loads(row[0]) for row in conn.execute(query, tuple(params))]
 
     def list_jobs(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         query = "SELECT payload_json FROM jobs"

@@ -9,18 +9,24 @@ OK, EMPTY, DENIED, PARTIAL, ERROR, CANCELLED.
 from __future__ import annotations
 
 import json
+import html
 import logging
 import os
 import re
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ui_automation.adb_manager import get_adb_executable
+
+from .backup_models import BackupDiff, BackupFile, BackupReport
+from .backup_profiles import BackupProfile, BackupProfileItem, resolve_profile
+from .resumable_transfer import sha256_file
 
 logger = logging.getLogger("ui.backup_service")
 
@@ -735,6 +741,239 @@ class BackupService:
             errors=errors,
             queries=queries_res,
         )
+
+    # ------------------------------------------------------------------
+    # Centro de respaldos (Fase 3A): API basada en AdbService inyectado
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _classify_operation(result: Any) -> str:
+        output = f"{getattr(result, 'message', '')} {getattr(result, 'output', '')}".lower()
+        if any(re.search(pattern, output) for pattern in DENIED_PATTERNS):
+            return "DENIED"
+        if not getattr(result, "success", False):
+            return "ERROR"
+        if not str(getattr(result, "output", "")).strip():
+            return "EMPTY"
+        return "OK"
+
+    @staticmethod
+    def _write_json(path: Path, value: Any) -> None:
+        path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+    def _collect_files(self, destination: Path, categories: List[Dict[str, object]]) -> List[BackupFile]:
+        by_folder = {str(item.get("Directory", "")): str(item.get("Id", "unknown")) for item in categories}
+        files: List[BackupFile] = []
+        excluded = {"MANIFEST.json", "checksums.json", "errors.json", "backup-report.html"}
+        for path in destination.rglob("*"):
+            if not path.is_file() or path.name in excluded:
+                continue
+            category = "unknown"
+            for folder, identifier in by_folder.items():
+                if folder and str(path.resolve()).startswith(str(Path(folder).resolve())):
+                    category = identifier
+                    break
+            files.append(BackupFile(
+                path=str(path.relative_to(destination)).replace("\\", "/"),
+                sha256=sha256_file(path), size=path.stat().st_size, category=category,
+            ))
+        return sorted(files, key=lambda item: item.path)
+
+    @staticmethod
+    def _render_report(report: BackupReport) -> str:
+        rows = "".join(
+            "<tr><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                html.escape(str(category.get("Name", category.get("Id", "")))),
+                html.escape(str(category.get("Status", ""))),
+                html.escape(str(category.get("Directory", ""))),
+            ) for category in report.categories
+        )
+        errors = "".join(f"<li>{html.escape(str(error.get('Message', error)))}</li>" for error in report.errors)
+        return f"""<!doctype html><html lang=\"es\"><meta charset=\"utf-8\"><title>Backup report</title>
+<style>body{{font-family:Segoe UI,Arial;margin:2rem}}table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #ccc;padding:.45rem;text-align:left}}.OK{{color:#087f23}}.PARTIAL,.DENIED{{color:#9a6700}}.ERROR{{color:#b42318}}</style>
+<h1>Centro de respaldos</h1><p><b>Perfil:</b> {html.escape(report.profile_id)}<br><b>Dispositivo:</b> {html.escape(report.serial)}<br><b>Estado:</b> {html.escape(report.status)}<br><b>Archivos:</b> {len(report.files)}</p>
+<h2>Categorías</h2><table><tr><th>Categoría</th><th>Estado</th><th>Directorio</th></tr>{rows}</table>
+<h2>Errores ({len(report.errors)})</h2><ul>{errors or '<li>Sin errores.</li>'}</ul></html>"""
+
+    def _write_center_artifacts(self, report: BackupReport, destination: Path) -> Dict[str, str]:
+        manifest = report.to_dict()
+        checksums = {file.path: file.sha256 for file in report.files}
+        manifest_path = destination / "MANIFEST.json"
+        checksums_path = destination / "checksums.json"
+        errors_path = destination / "errors.json"
+        html_path = destination / "backup-report.html"
+        self._write_json(manifest_path, manifest)
+        self._write_json(checksums_path, checksums)
+        self._write_json(errors_path, report.errors)
+        html_path.write_text(self._render_report(report), encoding="utf-8")
+        return {"manifest": str(manifest_path), "checksums": str(checksums_path), "errors": str(errors_path), "report": str(html_path)}
+
+    def run_profile(
+        self,
+        profile: str | BackupProfile,
+        *,
+        serial: str,
+        adb_service: Any,
+        destination_dir: Path | str,
+        custom_folders: Optional[List[str]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+        wait_if_paused: Optional[Callable[[], bool]] = None,
+        on_progress: Optional[Callable[[float, str], None]] = None,
+    ) -> Dict[str, Any]:
+        """Ejecuta un perfil usando sólo ``AdbService`` inyectado.
+
+        La exportación no interpreta una consulta denegada como éxito: cada
+        elemento conserva estados OK/EMPTY/DENIED/PARTIAL/ERROR/CANCELLED.
+        """
+        definition = resolve_profile(profile, custom_folders)
+        destination = Path(destination_dir).resolve()
+        destination.mkdir(parents=True, exist_ok=True)
+        categories: List[Dict[str, object]] = []
+        errors: List[Dict[str, object]] = []
+        total = max(1, len(definition.items))
+
+        for index, item in enumerate(definition.items):
+            if should_cancel and should_cancel():
+                categories.append({"Id": item.id, "Name": item.label, "Status": "CANCELLED", "Directory": ""})
+                break
+            if wait_if_paused and not wait_if_paused():
+                categories.append({"Id": item.id, "Name": item.label, "Status": "CANCELLED", "Directory": ""})
+                break
+            if on_progress:
+                on_progress(index / total, f"Respaldando {item.label}")
+
+            category_dir = destination / item.id
+            category_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                if item.kind == "pull":
+                    assert item.remote_path
+                    result = adb_service.pull(item.remote_path, str(category_dir), serial=serial, timeout=300.0, retries=1)
+                    status = self._classify_operation(result)
+                    copied_files = any(path.is_file() for path in category_dir.rglob("*"))
+                    if getattr(result, "success", False) and copied_files:
+                        status = "OK"
+                    elif status == "OK" and not copied_files:
+                        status = "EMPTY"
+                    record = {"RemotePath": item.remote_path}
+                else:
+                    assert item.command and item.output_name
+                    result = adb_service.shell(item.command, serial=serial, timeout=30.0, retries=1)
+                    status = self._classify_operation(result)
+                    output = str(getattr(result, "output", ""))
+                    output_file = category_dir / item.output_name
+                    output_file.write_text(output if status == "OK" else f"[{status}]\n{output}\n", encoding="utf-8")
+                    record = {"Output": item.output_name}
+                category = {"Id": item.id, "Name": item.label, "Status": status, "Directory": str(category_dir), **record}
+                categories.append(category)
+                if status not in ("OK", "EMPTY"):
+                    errors.append({"Category": item.id, "Status": status, "Message": str(getattr(result, "message", ""))})
+            except Exception as exc:
+                categories.append({"Id": item.id, "Name": item.label, "Status": "ERROR", "Directory": str(category_dir)})
+                errors.append({"Category": item.id, "Status": "ERROR", "Message": str(exc)})
+            if on_progress:
+                on_progress((index + 1) / total, f"Finalizó {item.label}")
+
+        statuses = [str(item["Status"]) for item in categories]
+        status = "OK" if statuses and all(value == "OK" for value in statuses) else "PARTIAL"
+        if statuses and all(value == "DENIED" for value in statuses):
+            status = "DENIED"
+        elif statuses and all(value == "EMPTY" for value in statuses):
+            status = "EMPTY"
+        elif statuses and all(value in ("ERROR", "CANCELLED") for value in statuses):
+            status = statuses[0]
+
+        report = BackupReport(uuid.uuid4().hex, serial, definition.id, str(destination), status, categories=categories, errors=errors)
+        report.files = self._collect_files(destination, categories)
+        artifacts = self._write_center_artifacts(report, destination)
+        return {**report.to_dict(), "Artifacts": artifacts}
+
+    def enqueue_profile(
+        self, queue_service: Any, profile: str | BackupProfile, *, serial: str,
+        adb_service: Any, destination_dir: Path | str, custom_folders: Optional[List[str]] = None,
+    ) -> str:
+        """Encola un backup cooperativo; la cola provee pause/resume/cancel/retry."""
+        from .job_queue_service import JobType
+
+        profile_name = profile.id if isinstance(profile, BackupProfile) else profile
+        def handler(job: Any, update_progress: Callable[[float, str], None]) -> Dict[str, Any]:
+            return self.run_profile(
+                profile, serial=serial, adb_service=adb_service, destination_dir=destination_dir,
+                custom_folders=custom_folders, should_cancel=job.stop_event.is_set,
+                wait_if_paused=lambda: queue_service.wait_if_paused(job), on_progress=update_progress,
+            )
+        return queue_service.enqueue(
+            JobType.BACKUP_CATEGORY, f"Backup: {profile_name}", serial=serial,
+            payload={"profile": profile_name, "destination": str(destination_dir)}, custom_handler=handler,
+        )
+
+    def retry_failed_profile(
+        self, manifest_path: Path | str, *, serial: str, adb_service: Any,
+        destination_dir: Optional[Path | str] = None, custom_folders: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Reejecuta solamente las entradas no satisfactorias de un manifiesto."""
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        profile = resolve_profile(str(manifest["Profile"]), custom_folders)
+        failed_ids = {
+            str(category["Id"]) for category in manifest.get("Categories", [])
+            if category.get("Status") not in ("OK", "EMPTY")
+        }
+        retry_profile = BackupProfile(
+            id=profile.id, label=profile.label, description=profile.description,
+            items=[item for item in profile.items if item.id in failed_ids],
+        )
+        target = Path(destination_dir or manifest["Destination"])
+        return self.run_profile(retry_profile, serial=serial, adb_service=adb_service, destination_dir=target)
+
+    @staticmethod
+    def compare_backups(left_manifest: Path | str, right_manifest: Path | str) -> BackupDiff:
+        """Compara dos MANIFEST.json por ruta relativa y checksum."""
+        left = json.loads(Path(left_manifest).read_text(encoding="utf-8"))
+        right = json.loads(Path(right_manifest).read_text(encoding="utf-8"))
+        left_files = {str(item["path"]): item for item in left.get("Files", [])}
+        right_files = {str(item["path"]): item for item in right.get("Files", [])}
+        duplicates: Dict[str, List[str]] = {}
+        for item in right_files.values():
+            digest = str(item.get("sha256", ""))
+            if digest:
+                duplicates.setdefault(digest, []).append(str(item["path"]))
+        return BackupDiff(
+            added=sorted(set(right_files) - set(left_files)),
+            removed=sorted(set(left_files) - set(right_files)),
+            modified=sorted(path for path in set(left_files) & set(right_files)
+                            if left_files[path].get("sha256") != right_files[path].get("sha256")),
+            duplicates={digest: paths for digest, paths in duplicates.items() if len(paths) > 1},
+        )
+
+    @staticmethod
+    def restore_selected(
+        manifest_path: Path | str, *, adb_service: Any, serial: str,
+        paths: Optional[List[str]] = None, profile: Optional[str] = None,
+        remote_root: str = "/sdcard/Download/Restored", timeout: float = 300.0,
+    ) -> Dict[str, object]:
+        """Restauración mínima: sube rutas seleccionadas, verificando que existan."""
+        manifest_file = Path(manifest_path).resolve()
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        root = Path(str(manifest["Destination"]))
+        wanted = set(paths or [])
+        restored: List[str] = []
+        failed: List[Dict[str, str]] = []
+        for entry in manifest.get("Files", []):
+            relative = str(entry["path"])
+            if wanted and relative not in wanted:
+                continue
+            if profile and str(entry.get("category")) != profile:
+                continue
+            local = root / relative
+            if not local.is_file():
+                failed.append({"path": relative, "error": "Archivo no disponible en backup"})
+                continue
+            remote = str(entry.get("remote_path") or f"{remote_root.rstrip('/')}/{relative}")
+            result = adb_service.push(str(local), remote, serial=serial, timeout=timeout, retries=1)
+            if getattr(result, "success", False):
+                restored.append(relative)
+            else:
+                failed.append({"path": relative, "error": str(getattr(result, "message", "push falló"))})
+        return {"restored": restored, "failed": failed, "success": not failed}
 
     def _backup_queries(
         self,
