@@ -19,6 +19,7 @@ from .pages.devices_page import DevicesPage
 from .pages.explorer_page import ExplorerPage
 from .pages.logs_page import LogsPage
 from .pages.notifications_page import NotificationsPage
+from .pages.operations_page import OperationsPage
 from .pages.whatsapp_page import WhatsAppPage
 from .services.device_service import DeviceService
 from .services.job_queue_service import JobQueueService
@@ -76,6 +77,7 @@ class AndroidToolsApp:
         self.explorer = ExplorerPage(self.device, page=page, on_log=self._on_custom_log)
         self.backup = BackupPage(self.device, page=page, on_log=self._on_custom_log, job_queue=self.job_queue)
         self.commands = CommandsPage(self.device, on_log=self._on_custom_log)
+        self.operations = OperationsPage(self.device, self.job_queue, page=page, on_log=self._on_custom_log)
 
         # Conectar logging global de Python al visor de logs
         self._log_handler = GlobalUiLogHandler(self.logs)
@@ -135,6 +137,7 @@ class AndroidToolsApp:
                 ft.Tab(label="Monitor de Notificaciones", icon=ft.Icons.NOTIFICATIONS_ACTIVE_OUTLINED),
                 ft.Tab(label="Comandos & Diagnóstico", icon=ft.Icons.BOLT_OUTLINED),
                 ft.Tab(label="Registro & Salida (Log)", icon=ft.Icons.RECEIPT_LONG_OUTLINED),
+                ft.Tab(label="Centro operativo", icon=ft.Icons.DASHBOARD_OUTLINED),
             ]
         )
 
@@ -154,7 +157,7 @@ class AndroidToolsApp:
         )
 
         self.tabs = ft.Tabs(
-            length=7,
+            length=8,
             selected_index=0,
             expand=True,
             content=ft.Column(
@@ -207,6 +210,7 @@ class AndroidToolsApp:
                                 "Actividad tecnica en tiempo real | filtros | exportacion",
                                 self.logs.view,
                             ),
+                            theme.module_view("08", "Centro operativo", "Perfiles, diagnóstico y cola reanudable", self.operations.view),
                         ],
                     ),
                 ],
@@ -328,7 +332,7 @@ class AndroidToolsApp:
         logger.info("Cerrando Android Tools...")
         self.sidebar.stop_polling()
         self.device.stop_usb_auto_connect_monitor()
-        for page in (self.devices, self.explorer, self.backup, self.whatsapp, self.notifications, self.commands, self.logs):
+        for page in (self.devices, self.explorer, self.backup, self.whatsapp, self.notifications, self.commands, self.logs, self.operations):
             page.shutdown()
         self.job_queue.shutdown()
         if self._log_handler:

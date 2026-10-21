@@ -152,7 +152,8 @@ class JobDrawer:
         jobs = self._service.get_history(limit=50)
         running = sum(1 for j in jobs if j.status == JobStatus.RUNNING)
         pending = sum(1 for j in jobs if j.status == JobStatus.PENDING)
-        active_total = running + pending
+        paused = sum(1 for j in jobs if j.status == JobStatus.PAUSED)
+        active_total = running + pending + paused
 
         # Actualizar spinner e icono
         self._spinner.visible = (active_total > 0)
@@ -178,6 +179,8 @@ class JobDrawer:
                 parts.append(f"{running} en ejecución")
             if pending > 0:
                 parts.append(f"{pending} en cola")
+            if paused > 0:
+                parts.append(f"{paused} pausado(s)")
             summary = " | ".join(parts)
         else:
             # Mostrar último completado si existe
@@ -231,6 +234,9 @@ class JobDrawer:
             elif job.status == JobStatus.CANCELLED:
                 status_color = theme.TEXT_MUTED
                 status_text = "CANCELADO"
+            elif job.status == JobStatus.PAUSED:
+                status_color = theme.WARN
+                status_text = "PAUSADO"
 
             # Icono por tipo
             icon = ft.Icons.SETTINGS_OUTLINED
@@ -248,6 +254,7 @@ class JobDrawer:
             # Botones de acción
             action_buttons = []
             if job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                action_buttons.append(ft.TextButton("Pausar", icon=ft.Icons.PAUSE, on_click=lambda _, jid=job.id: self._service.pause(jid)))
                 action_buttons.append(
                     ft.TextButton(
                         "Cancelar",
@@ -255,6 +262,8 @@ class JobDrawer:
                         on_click=lambda _, jid=job.id: self._service.cancel(jid),
                     )
                 )
+            elif job.status == JobStatus.PAUSED:
+                action_buttons.append(ft.TextButton("Continuar", icon=ft.Icons.PLAY_ARROW, on_click=lambda _, jid=job.id: self._service.resume(jid)))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 action_buttons.append(
                     ft.TextButton(
