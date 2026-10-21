@@ -25,6 +25,15 @@ from .services.job_queue_service import JobQueueService
 
 logger = logging.getLogger("ui.app")
 
+# Las notificaciones tienen su propia pestaña y persistencia. Estos namespaces
+# no deben contaminar el registro técnico global (ADB, red, transferencias,
+# backups, Nmap y errores de la aplicación).
+NOTIFICATION_LOGGER_PREFIXES = (
+    "ui.notifications",
+    "ui_automation.notifications",
+    "ui_automation.monitor",
+)
+
 
 class GlobalUiLogHandler(logging.Handler):
     """Handler de logging que alimenta la pestaña de Registro en tiempo real."""
@@ -35,6 +44,8 @@ class GlobalUiLogHandler(logging.Handler):
         self.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
 
     def emit(self, record: logging.LogRecord) -> None:
+        if record.name.startswith(NOTIFICATION_LOGGER_PREFIXES):
+            return
         try:
             msg = self.format(record)
             self.logs_page.append_log(record.levelno, msg)

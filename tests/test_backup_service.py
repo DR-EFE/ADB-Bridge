@@ -86,6 +86,38 @@ class TestBackupService(unittest.TestCase):
         self.assertEqual(run_cmd.call_args.args[1][2], "pull")
         self.assertEqual(run_cmd.call_args.args[1][3], "/sdcard/")
 
+    def test_discovers_unknown_gallery_roots_and_skips_thumbnails(self):
+        listing = "\n".join([
+            "/sdcard/DCIM/Camera/photo.jpg",
+            "/sdcard/Vacaciones/2026/video.mp4",
+            "/sdcard/Pictures/.thumbnails/mini.jpg",
+            "/sdcard/Android/data/com.example/cache.jpg",
+            "/sdcard/Notas/readme.txt",
+        ])
+        with patch.object(self.service, "_run_cmd", return_value=(0, listing, "")):
+            roots = self.service._discover_multimedia_roots("adb", "SERIAL")
+        self.assertEqual(roots, ["DCIM", "Pictures", "Vacaciones"])
+
+    def test_multimedia_pull_does_not_create_duplicate_root(self):
+        category = CategoryDef(
+            id="multimedia", name="Multimedia", description="test",
+            sub_folder="Multimedia", is_multimedia=True, folders=["DCIM"],
+        )
+        calls = []
+
+        def fake_run_cmd(adb_exe, args, timeout=None):
+            calls.append(args)
+            if args[2] == "shell":
+                return 0, "/sdcard/DCIM/Camera/photo.jpg\n", ""
+            return 0, "1 file pulled", ""
+
+        with patch.object(self.service, "_run_cmd", side_effect=fake_run_cmd):
+            self.service.run_backup("SERIAL", "Device", self.test_dir, [category])
+
+        pull = next(args for args in calls if args[2] == "pull")
+        self.assertEqual(pull[3], "/sdcard/DCIM")
+        self.assertEqual(Path(pull[4]).name, "Multimedia")
+
     def test_run_backup_generates_manifests_and_summary(self):
         """Verifica que el respaldo genere MANIFEST.json y RESUMEN_BACKUP.json con estados."""
         def fake_run_cmd(adb_exe, args, timeout=None):

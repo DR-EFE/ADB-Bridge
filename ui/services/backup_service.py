@@ -45,6 +45,16 @@ TRANSIENT_PATTERNS = [
     r"timeout",
 ]
 
+# Extensiones que normalmente aparecen en la galería. La detección se hace
+# sobre los archivos, no sobre una lista fija de carpetas, porque cada
+# fabricante/app puede crear una carpeta multimedia distinta.
+MEDIA_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".avif",
+    ".bmp", ".dng", ".raw", ".mp4", ".mkv", ".mov", ".avi", ".3gp",
+    ".webm", ".m4v", ".ts", ".mp3", ".m4a", ".wav", ".aac", ".flac",
+    ".ogg", ".opus", ".amr", ".pdf",
+}
+
 
 def _safe_subprocess_flags() -> int:
     if os.name == "nt":
@@ -367,6 +377,39 @@ class BackupService:
                 pass
         logger.info("[Backup] %s", msg)
 
+    def _discover_multimedia_roots(self, adb_exe: str, serial: str) -> List[str]:
+        """Devuelve las carpetas de primer nivel que contienen medios reales.
+
+        Se consulta el listado de archivos de /sdcard para incluir carpetas de
+        cámara, capturas, miniaturas y aplicaciones que no conocemos de
+        antemano.
+        """
+        ret, out, _ = self._run_cmd(
+            adb_exe,
+            ["-s", serial, "shell", "find", "/sdcard", "-type", "f"],
+            timeout=180.0,
+        )
+        if ret != 0:
+            return []
+
+        roots = set()
+        for raw_path in out.splitlines():
+            remote = raw_path.strip().replace("\\", "/")
+            if not remote.startswith("/sdcard/"):
+                continue
+            relative = remote[len("/sdcard/"):].strip("/")
+            parts = [part for part in relative.split("/") if part]
+            if len(parts) < 2:
+                continue
+            if Path(parts[-1]).suffix.lower() not in MEDIA_EXTENSIONS:
+                continue
+            if parts[0].lower() in {"android", "backups", "androidbackup"}:
+                # Android/media se incorpora mediante sus categorías propias;
+                # Android/data y respaldos no deben entrar en Multimedia.
+                continue
+            roots.add(parts[0])
+        return sorted(roots, key=str.casefold)
+
     def run_backup(
         self,
         serial: str,
@@ -588,14 +631,23 @@ class BackupService:
         cat_dir: Path,
         progress: BackupProgress,
     ) -> CategoryResult:
-        """Copia secuencialmente las carpetas multimedia principales de /sdcard/."""
+        """Copia medios descubiertos y rutas configuradas sin duplicar niveles."""
         queries_res: List[QueryResult] = []
         successful = 0
         errors = 0
         denied = 0
         empty = 0
 
-        for folder_name in cat.folders:
+        configured = list(cat.folders)
+        if cat.id == "multimedia":
+            discovered = self._discover_multimedia_roots(adb_exe, serial)
+            # La lista configurada sigue siendo fallback para carpetas vacías,
+            # permisos restringidos o dispositivos que no implementan find.
+            configured = sorted(set(configured) | set(discovered), key=str.casefold)
+            if discovered:
+                self._log(f"Carpetas multimedia detectadas: {', '.join(discovered)}")
+
+        for folder_name in configured:
             if self._cancel_event.is_set():
                 break
 
@@ -603,15 +655,23 @@ class BackupService:
             self._notify_progress(progress)
 
             remote_src = "/sdcard/" if folder_name == "." else f"/sdcard/{folder_name}"
-            local_target = cat_dir / folder_name
+            relative = Path(folder_name)
+            if folder_name == ".":
+                local_target = cat_dir
+                pull_destination = cat_dir.parent
+            else:
+                local_target = cat_dir / relative
+                # adb pull DIR DEST crea DEST/<basename(DIR)>; usar el padre
+                # conserva rutas como Multimedia/DCIM/Camera y evita
+                # Multimedia/DCIM/DCIM/Camera.
+                pull_destination = cat_dir / relative.parent
             local_target.mkdir(parents=True, exist_ok=True)
 
             ret, out, err = self._run_cmd(
                 adb_exe,
-                ["-s", serial, "pull", remote_src, str(local_target.resolve())],
+                ["-s", serial, "pull", remote_src, str(pull_destination.resolve())],
                 timeout=1800.0 if cat.is_full_storage else 300.0,
             )
-
             # Verificar contenido copiado
             has_files = any(local_target.rglob("*")) if local_target.exists() else False
 
