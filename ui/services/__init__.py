@@ -19,6 +19,11 @@ from .sync_profiles import (
     SyncItemStatus, SyncProfile, SyncReport, SyncRule,
 )
 from .sync_service import SyncService
+from .automation_rules import (
+    ActionRunResult, ActionType, AutomationAction, AutomationCondition,
+    AutomationRule, AutomationRun, AutomationRunStatus, TriggerType,
+)
+from .automation_service import AutomationService
 
 __all__ = [
     "Device",
@@ -66,4 +71,13 @@ __all__ = [
     "SyncReport",
     "SyncItemReport",
     "SyncItemStatus",
+    "AutomationService",
+    "AutomationRule",
+    "AutomationCondition",
+    "AutomationAction",
+    "AutomationRun",
+    "AutomationRunStatus",
+    "ActionRunResult",
+    "TriggerType",
+    "ActionType",
 ]
