@@ -6,6 +6,7 @@ from .devices_page import DevicesPage
 from .explorer_page import ExplorerPage
 from .logs_page import LogsPage
 from .notifications_page import NotificationsPage
+from .operations_page import OperationsPage
 from .whatsapp_page import WhatsAppPage
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "ExplorerPage",
     "LogsPage",
     "NotificationsPage",
+    "OperationsPage",
     "WhatsAppPage",
 ]
