@@ -14,6 +14,12 @@ from .transfer_service import RemotePath, TransferJob, TransferService, Transfer
 from .database import SQLiteStore, get_default_database_path
 from .resumable_transfer import TransferItem, build_transfer_plan, execute_local_plan, sha256_file
 
+from .sync_profiles import (
+    ConflictResolution, SyncConflict, SyncDirection, SyncItemReport,
+    SyncItemStatus, SyncProfile, SyncReport, SyncRule,
+)
+from .sync_service import SyncService
+
 __all__ = [
     "Device",
     "DeviceState",
@@ -51,4 +57,13 @@ __all__ = [
     "JobItem",
     "JobStatus",
     "JobType",
+    "SyncService",
+    "SyncProfile",
+    "SyncRule",
+    "SyncDirection",
+    "ConflictResolution",
+    "SyncConflict",
+    "SyncReport",
+    "SyncItemReport",
+    "SyncItemStatus",
 ]
