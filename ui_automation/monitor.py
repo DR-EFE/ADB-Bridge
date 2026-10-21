@@ -185,6 +185,10 @@ class NotificationMonitor:
         """Ruta del JSON diario con todas las notificaciones."""
         return self.logs_dir / f"notifications_{datetime.now():%Y-%m-%d}.json"
 
+    def _daily_important_log_path(self) -> Path:
+        """Ruta diaria de alertas importantes; evita un JSON único sin límite."""
+        return self.logs_dir / f"important_{datetime.now():%Y-%m-%d}.json"
+
     # ------------------------------------------------------- deduplicación
 
     @staticmethod
@@ -242,7 +246,7 @@ class NotificationMonitor:
             "classification": result.to_dict(),
         }
 
-        saved = _append_json_record(self.important_log_path, event)
+        saved = _append_json_record(self._daily_important_log_path(), event)
         copied = self._copy_to_device() if saved else False
         self._print_alert(item, result, codigo, saved, copied)
 

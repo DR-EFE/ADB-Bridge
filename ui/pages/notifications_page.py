@@ -314,6 +314,8 @@ class NotificationsPage:
     # ----------------------------------------------------------- eventos
 
     def _on_any_notification(self, item: Any) -> None:
+        if self._event_key({"package": getattr(item, "package", ""), "titulo": getattr(item, "title", ""), "texto": getattr(item, "text", "")}) in getattr(self, "_important_keys", set()):
+            return
         self._new_count += 1
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         event = {
@@ -332,6 +334,8 @@ class NotificationsPage:
         self._render_table()
 
     def _on_important(self, event: Dict[str, Any]) -> None:
+        self._important_keys = getattr(self, "_important_keys", set())
+        self._important_keys.add(self._event_key(event))
         self._important_count += 1
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         entry = {
@@ -356,12 +360,15 @@ class NotificationsPage:
     def _load_persisted_notifications(self) -> None:
         """Carga eventos históricos desde 'notifications/' o retrocompatible con 'logs/'."""
         events: List[Dict[str, Any]] = []
+        self._important_keys = set()
+        important_keys = set()
 
         # 1. Cargar importantes
         candidate_important = [
             NOTIFICATIONS_DIR / "notificaciones_importantes.json",
             Path("logs/notificaciones_importantes.json"),
         ]
+        candidate_important.extend(sorted(NOTIFICATIONS_DIR.glob("important_*.json"), reverse=True)[:7])
         for p in candidate_important:
             if p.exists():
                 try:
@@ -370,7 +377,7 @@ class NotificationsPage:
                         for item in data:
                             notif = item.get("notification", {})
                             cls = item.get("classification", {})
-                            events.append({
+                            event = {
                                 "fecha": item.get("detected_at", ""),
                                 "tipo": item.get("tipo") or cls.get("tipo") or "IMPORTANTE",
                                 "codigo": item.get("codigo") or cls.get("codigo") or "",
@@ -378,7 +385,10 @@ class NotificationsPage:
                                 "titulo": notif.get("title", ""),
                                 "texto": notif.get("text", ""),
                                 "package": notif.get("package", ""),
-                            })
+                            }
+                            important_keys.add(self._event_key(event))
+                            self._important_keys.add(self._event_key(event))
+                            events.append(event)
                         break
                 except Exception as exc:
                     logger.debug("Error leyendo %s: %s", p, exc)
@@ -392,7 +402,7 @@ class NotificationsPage:
                 d_data = json.loads(df.read_text(encoding="utf-8"))
                 if isinstance(d_data, list):
                     for item in d_data:
-                        events.append({
+                        event = {
                             "fecha": item.get("timestamp") or item.get("detected_at", ""),
                             "tipo": item.get("tipo", "NORMAL"),
                             "codigo": item.get("codigo", ""),
@@ -400,7 +410,9 @@ class NotificationsPage:
                             "titulo": item.get("title", ""),
                             "texto": item.get("text", ""),
                             "package": item.get("package", ""),
-                        })
+                        }
+                        if self._event_key(event) not in important_keys:
+                            events.append(event)
             except Exception:
                 pass
 
@@ -409,6 +421,14 @@ class NotificationsPage:
         self._all_events = events[:MAX_DISPLAY_RECORDS]
         self._render_featured()
         self._render_table()
+
+    @staticmethod
+    def _event_key(event: Dict[str, Any]) -> tuple:
+        return (
+            str(event.get("package", "")),
+            str(event.get("titulo", event.get("title", ""))),
+            str(event.get("texto", event.get("text", ""))),
+        )
 
     # -------------------------------------------------------------- UI
 

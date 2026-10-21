@@ -761,7 +761,14 @@ class DeviceService:
         saved_entry = next((entry for entry in target.get("Endpoints") or []
                             if isinstance(entry, dict) and entry.get("Endpoint") == saved_ep), None)
         local_candidates: List[Tuple[str, str]] = []
-        if saved_ep and is_network_serial(saved_ep) and (allow_cross_network or self._endpoint_on_current_network(saved_entry)):
+        # Si el registro no tiene BSSID (instalaciones antiguas, Ethernet,
+        # adaptadores virtuales o Windows sin datos WLAN), no bloquear la
+        # reconexión del endpoint principal. La identidad física se valida en
+        # ``finish_candidate`` antes de aceptar o persistir la conexión.
+        saved_network_unknown = not isinstance(saved_entry, dict) or not saved_entry.get("NetworkBssid")
+        if saved_ep and is_network_serial(saved_ep) and (
+            allow_cross_network or self._endpoint_on_current_network(saved_entry) or saved_network_unknown
+        ):
             local_candidates.append((saved_ep, "saved"))
         for ep_entry in target.get("Endpoints") or []:
             ep = ep_entry.get("Endpoint") if isinstance(ep_entry, dict) else ep_entry

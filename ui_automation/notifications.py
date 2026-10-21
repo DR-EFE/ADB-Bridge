@@ -141,6 +141,17 @@ def _dumpsys_extra(block: str, name: str) -> str:
     return ""
 
 
+def _dumpsys_text_lines(block: str) -> str:
+    """Extrae el contenido de conversaciones expuesto como textLines/lines."""
+    match = re.search(r"^\s*android\.(?:textLines|lines)=\[(.*?)\]", block, re.M | re.S)
+    if not match:
+        return ""
+    values = re.findall(r"\((.*?)\)", match.group(1), re.S)
+    if not values:
+        values = [part.strip().strip('"') for part in match.group(1).split(",") if part.strip()]
+    return "\n".join(value.strip() for value in values if value.strip())
+
+
 def _dumpsys_timestamp(block: str) -> Optional[str]:
     """Obtiene la hora de publicación (epoch en ms) si dumpsys la expone."""
     match = re.search(r"\b(?:postTime|when)=(\d{12,13})\b", block)
@@ -166,6 +177,9 @@ def parse_dumpsys_notifications(output: str) -> List[NotificationItem]:
 
         title = _dumpsys_extra(block, "title")
         text = _dumpsys_extra(block, "bigText") or _dumpsys_extra(block, "text")
+        text_lines = _dumpsys_text_lines(block)
+        if text_lines and (not text or "mensaje" in text.lower() or "message" in text.lower()):
+            text = text_lines
         if not (title or text):
             continue  # Notificaciones de servicio sin contenido visible.
 

@@ -57,6 +57,25 @@ class TestDeviceService(unittest.TestCase):
         self.assertEqual(endpoint, read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"])
 
     @patch("ui.services.device_service.get_adb_client")
+    def test_last_endpoint_without_network_metadata_is_tried_automatically(self, mock_get_client):
+        endpoint = "192.168.0.51:5555"
+        save_devices_store({"SchemaVersion": 1, "Devices": [{
+            "Id": "phone", "FriendlyName": "Phone", "Mode": "tcpip-5555",
+            "LastEndpoint": endpoint,
+        }]}, self.canonical_json)
+        client = MagicMock()
+        connected = set()
+        client.list.side_effect = lambda: [type("Record", (), {"serial": ep, "state": "device"})() for ep in connected]
+        client.connect.side_effect = lambda ep, timeout: (connected.add(ep) or f"connected to {ep}")
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "_run_adb_host", return_value=endpoint), \
+             patch.object(service, "_physical_identity", return_value="PHONE-ID"):
+            result = service.connect_device("phone")
+        self.assertTrue(result.success)
+        client.connect.assert_called_once_with(endpoint, timeout=5.0)
+
+    @patch("ui.services.device_service.get_adb_client")
     def test_mismatched_physical_identity_never_updates_saved_endpoint(self, mock_get_client):
         endpoint = "192.168.1.40:5555"
         expected = "sha256:" + hashlib.sha256(b"phone-a").hexdigest()
