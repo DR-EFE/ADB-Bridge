@@ -64,7 +64,9 @@ function Write-AdbLog {
         [Parameter(Mandatory = $true)][ValidateSet('INFO','WARN','ERROR','DEBUG','SUCCESS')][string]$Level,
         [Parameter(Mandatory = $true)][string]$Message,
         [string]$Source = 'AndroidAdb.psm1',
-        [string]$Serial
+        [string]$Serial,
+        [string]$Command,
+        [int]$ExitCode = 0
     )
 
     if ($Level -eq 'DEBUG' -and -not $global:AndroidAdbDebugLogging) { return }
@@ -73,8 +75,11 @@ function Write-AdbLog {
         if (-not $global:AndroidAdbLogInitialized) { return }
         $timestamp = [datetime]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
         $safeMessage = ([string]$Message) -replace "`r?`n", ' | '
+        if ($safeMessage.Length -gt 2000) { $safeMessage = $safeMessage.Substring(0, 2000) + '... [truncated]' }
         $serialText = if ([string]::IsNullOrWhiteSpace($Serial)) { '' } else { " [Serial=$Serial]" }
-        $line = "{0} [{1}] [{2}]{3} {4}{5}" -f $timestamp,$Level,$Source,$serialText,$safeMessage,[Environment]::NewLine
+        $cmdText = if ([string]::IsNullOrWhiteSpace($Command)) { '' } else { " [Cmd=$Command]" }
+        $exitText = if ($ExitCode -ne 0) { " [ExitCode=$ExitCode]" } else { '' }
+        $line = "{0} [{1}] [{2}]{3}{4}{5} {6}{7}" -f $timestamp,$Level,$Source,$serialText,$cmdText,$exitText,$safeMessage,[Environment]::NewLine
         $mutex = New-Object -TypeName System.Threading.Mutex -ArgumentList $false,'Local\AndroidAdbLogMutex'
         $acquired = $false
         try {
@@ -116,15 +121,25 @@ function Get-AdbDevices {
 
 function Get-SingleReadyDevice {
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter(Position = 0)][string]$Serial
+    )
 
     $ready = @(Get-AdbDevices | Where-Object { $_.Status -ceq 'device' })
+    if (-not [string]::IsNullOrWhiteSpace($Serial)) {
+        $found = @($ready | Where-Object { $_.Serial -ieq $Serial })[0]
+        if ($null -ne $found) { return $found }
+        $all = @(Get-AdbDevices | Where-Object { $_.Serial -ieq $Serial })[0]
+        $status = if ($null -ne $all) { $all.Status } else { 'no_encontrado' }
+        throw "DISPOSITIVO_NO_LISTO: El dispositivo '$Serial' no esta en estado 'device' (estado actual: $status)."
+    }
+
     if ($ready.Count -eq 0) {
-        throw 'No hay dispositivos ADB en estado exacto device.'
+        throw 'DISPOSITIVO_NO_SELECCIONADO: No hay dispositivos ADB en estado exacto device.'
     }
     if ($ready.Count -gt 1) {
         $serials = $ready.Serial -join ', '
-        throw "Hay mas de un dispositivo ADB listo ($($ready.Count)): $serials. Seleccion silenciosa cancelada."
+        throw "MULTIPLE_DEVICES: Hay mas de un dispositivo ADB listo ($($ready.Count)): $serials. Seleccion explicita requerida via -Serial."
     }
     return $ready[0]
 }
@@ -507,22 +522,87 @@ function Invoke-Adb {
 
         [Parameter(Mandatory = $true, Position = 0)]
         [ValidateNotNull()]
-        [string[]]$Arguments
+        [string[]]$Arguments,
+
+        [int]$TimeoutSeconds = 0,
+        [int]$Retries = 0,
+        [int]$RetryDelaySeconds = 1
     )
 
     Initialize-AdbLog | Out-Null
     $commandText = ($Arguments -join ' ')
-    Write-AdbLog -Level INFO -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Message ("Inicio ADB: {0}" -f $commandText)
     $adbArguments = @('-s', $Serial) + $Arguments
-    $output = @(& adb @adbArguments 2>&1)
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        $detail = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
-        Write-AdbLog -Level ERROR -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Message ("ADB fallo con codigo {0}: {1}" -f $exitCode,$detail)
-        throw "adb -s '$Serial' fallo con codigo $exitCode. $detail"
+
+    $maxAttempts = [Math]::Max(1, 1 + $Retries)
+    $lastError = $null
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        Write-AdbLog -Level INFO -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Command $commandText -Message ("Inicio ADB (intento {0}/{1})" -f $attempt,$maxAttempts)
+
+        $output = $null
+        $exitCode = 0
+        $timedOut = $false
+
+        if ($TimeoutSeconds -gt 0) {
+            $psi = New-Object Diagnostics.ProcessStartInfo
+            $psi.FileName = 'adb'
+            $psi.Arguments = Get-AdbMediaProcessArgumentString $adbArguments
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+
+            $process = New-Object Diagnostics.Process
+            $process.StartInfo = $psi
+            if (-not $process.Start()) {
+                throw "No se pudo iniciar el proceso adb para '$commandText'."
+            }
+
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                $timedOut = $true
+                try { $process.Kill() } catch { }
+                Write-AdbLog -Level ERROR -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Command $commandText -ExitCode -1 -Message ("Timeout excedido ({0}s). Proceso cancelado." -f $TimeoutSeconds)
+                $lastError = "adb -s '$Serial' excedio el timeout de ${TimeoutSeconds}s para: $commandText"
+                if ($attempt -lt $maxAttempts) {
+                    Start-Sleep -Seconds $RetryDelaySeconds
+                    continue
+                }
+                throw $lastError
+            }
+
+            $exitCode = $process.ExitCode
+            $stdout = $stdoutTask.Result
+            $stderr = $stderrTask.Result
+            $process.Dispose()
+
+            $outputLines = @()
+            if (-not [string]::IsNullOrEmpty($stdout)) { $outputLines += ($stdout -split "`r?`n") }
+            if (-not [string]::IsNullOrEmpty($stderr)) { $outputLines += ($stderr -split "`r?`n") }
+            $output = $outputLines
+        } else {
+            $output = @(& adb @adbArguments 2>&1)
+            $exitCode = $LASTEXITCODE
+        }
+
+        if ($exitCode -ne 0) {
+            $detail = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            Write-AdbLog -Level ERROR -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Command $commandText -ExitCode $exitCode -Message ("ADB fallo con codigo {0}: {1}" -f $exitCode,$detail)
+            $lastError = "adb -s '$Serial' fallo con codigo $exitCode. $detail"
+            if ($attempt -lt $maxAttempts) {
+                Start-Sleep -Seconds $RetryDelaySeconds
+                continue
+            }
+            throw $lastError
+        }
+
+        Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Command $commandText -ExitCode 0 -Message "ADB completado exitosamente."
+        return $output
     }
-    Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Invoke-Adb' -Serial $Serial -Message ("ADB completado: {0}" -f $commandText)
-    return $output
+
+    throw $lastError
 }
 
 function Get-AdbMediaProcessArgumentString {
@@ -645,6 +725,161 @@ function Start-AdbScreenRecording {
     }
 }
 
+function Invoke-AdbShell {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Command,
+        [Parameter(Position = 1)][string]$Serial,
+        [int]$TimeoutSeconds = 30,
+        [int]$Retries = 0
+    )
+
+    $targetSerial = if (-not [string]::IsNullOrWhiteSpace($Serial)) {
+        Resolve-AdbSerial -DeviceOrEndpoint $Serial
+    } else {
+        $single = Get-SingleReadyDevice
+        $single.Serial
+    }
+
+    $arguments = @('shell', $Command)
+    return Invoke-Adb -Serial $targetSerial -Arguments $arguments -TimeoutSeconds $TimeoutSeconds -Retries $Retries
+}
+
+function Invoke-AdbPull {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$RemotePath,
+        [Parameter(Mandatory = $true, Position = 1)][string]$LocalPath,
+        [Parameter(Position = 2)][string]$Serial,
+        [int]$TimeoutSeconds = 300,
+        [int]$Retries = 1
+    )
+
+    $targetSerial = if (-not [string]::IsNullOrWhiteSpace($Serial)) {
+        Resolve-AdbSerial -DeviceOrEndpoint $Serial
+    } else {
+        $single = Get-SingleReadyDevice
+        $single.Serial
+    }
+
+    $arguments = @('pull', $RemotePath, $LocalPath)
+    return Invoke-Adb -Serial $targetSerial -Arguments $arguments -TimeoutSeconds $TimeoutSeconds -Retries $Retries
+}
+
+function Invoke-AdbPush {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$LocalPath,
+        [Parameter(Mandatory = $true, Position = 1)][string]$RemotePath,
+        [Parameter(Position = 2)][string]$Serial,
+        [int]$TimeoutSeconds = 300,
+        [int]$Retries = 1
+    )
+
+    $targetSerial = if (-not [string]::IsNullOrWhiteSpace($Serial)) {
+        Resolve-AdbSerial -DeviceOrEndpoint $Serial
+    } else {
+        $single = Get-SingleReadyDevice
+        $single.Serial
+    }
+
+    $arguments = @('push', $LocalPath, $RemotePath)
+    return Invoke-Adb -Serial $targetSerial -Arguments $arguments -TimeoutSeconds $TimeoutSeconds -Retries $Retries
+}
+
+function Install-AdbPackage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$ApkPath,
+        [Parameter(Position = 1)][string]$Serial,
+        [switch]$Reinstall,
+        [switch]$GrantPermissions,
+        [int]$TimeoutSeconds = 120,
+        [int]$Retries = 0
+    )
+
+    $targetSerial = if (-not [string]::IsNullOrWhiteSpace($Serial)) {
+        Resolve-AdbSerial -DeviceOrEndpoint $Serial
+    } else {
+        $single = Get-SingleReadyDevice
+        $single.Serial
+    }
+
+    $arguments = @('install')
+    if ($Reinstall) { $arguments += '-r' }
+    if ($GrantPermissions) { $arguments += '-g' }
+    $arguments += $ApkPath
+
+    return Invoke-Adb -Serial $targetSerial -Arguments $arguments -TimeoutSeconds $TimeoutSeconds -Retries $Retries
+}
+
+function Add-AdbForward {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$LocalPort,
+        [Parameter(Mandatory = $true)][string]$RemotePort,
+        [Parameter(Position = 0)][string]$Serial,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $targetSerial = if (-not [string]::IsNullOrWhiteSpace($Serial)) {
+        Resolve-AdbSerial -DeviceOrEndpoint $Serial
+    } else {
+        $single = Get-SingleReadyDevice
+        $single.Serial
+    }
+
+    $local = if ($LocalPort -match '^tcp:') { $LocalPort } else { "tcp:$LocalPort" }
+    $remote = if ($RemotePort -match '^tcp:') { $RemotePort } else { "tcp:$RemotePort" }
+    $arguments = @('forward', $local, $remote)
+
+    return Invoke-Adb -Serial $targetSerial -Arguments $arguments -TimeoutSeconds $TimeoutSeconds
+}
+
+function Pair-AdbDevice {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Endpoint,
+        [Parameter(Mandatory = $true, Position = 1)][string]$PairingCode,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $parts = ConvertTo-AdbEndpoint $Endpoint
+    $code = $PairingCode.Trim()
+    if ($code -notmatch '^\d{6}$') {
+        throw "El codigo de pairing debe contener exactamente 6 digitos numéricos: $PairingCode"
+    }
+
+    Write-AdbLog -Level INFO -Source 'AndroidAdb.Pair-AdbDevice' -Message ("Pairing en {0} (codigo oculto)" -f $parts.Endpoint)
+    $output = @(Invoke-AdbHost -Arguments @('pair', $parts.Endpoint, $code) -TimeoutSeconds $TimeoutSeconds)
+    $outputStr = ($output | ForEach-Object { [string]$_ }) -join ' '
+    if ($outputStr -match '(?i)failed|error') {
+        throw "El emparejamiento con $($parts.Endpoint) fallo. Salida: $outputStr"
+    }
+
+    Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Pair-AdbDevice' -Message ("Emparejamiento exitoso con {0}" -f $parts.Endpoint)
+    return $output
+}
+
+function Get-AdbProperty {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Property,
+        [Parameter(Position = 1)][string]$Serial,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $targetSerial = if (-not [string]::IsNullOrWhiteSpace($Serial)) {
+        Resolve-AdbSerial -DeviceOrEndpoint $Serial
+    } else {
+        $single = Get-SingleReadyDevice
+        $single.Serial
+    }
+
+    $out = @(Invoke-Adb -Serial $targetSerial -Arguments @('shell', 'getprop', $Property) -TimeoutSeconds $TimeoutSeconds)
+    return (($out | ForEach-Object { [string]$_ }) -join '').Trim()
+}
+
 function Test-ScrcpyAvailable {
     [CmdletBinding()]
     param()
@@ -746,23 +981,87 @@ function Invoke-AdbHost {
     Ejecuta una orden ADB que no puede llevar -s, por ejemplo pair, connect o mdns.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [int]$TimeoutSeconds = 0,
+        [int]$Retries = 0,
+        [int]$RetryDelaySeconds = 1
+    )
 
     Initialize-AdbLog | Out-Null
     Test-AdbAvailable | Out-Null
     $displayArguments = if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'pair' -and $Arguments.Count -ge 3) {
         @('pair',$Arguments[1],'<codigo oculto>') -join ' '
     } else { $Arguments -join ' ' }
-    Write-AdbLog -Level INFO -Source 'AndroidAdb.Invoke-AdbHost' -Message ("Inicio ADB host: {0}" -f $displayArguments)
-    $output = @(& adb @Arguments 2>&1)
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        $detail = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
-        Write-AdbLog -Level ERROR -Source 'AndroidAdb.Invoke-AdbHost' -Message ("ADB host fallo con codigo {0}: {1}" -f $exitCode,$detail)
-        throw "adb $($Arguments -join ' ') fallo con codigo $exitCode. $detail"
+
+    $maxAttempts = [Math]::Max(1, 1 + $Retries)
+    $lastError = $null
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        Write-AdbLog -Level INFO -Source 'AndroidAdb.Invoke-AdbHost' -Command $displayArguments -Message ("Inicio ADB host (intento {0}/{1})" -f $attempt,$maxAttempts)
+
+        $output = $null
+        $exitCode = 0
+
+        if ($TimeoutSeconds -gt 0) {
+            $psi = New-Object Diagnostics.ProcessStartInfo
+            $psi.FileName = 'adb'
+            $psi.Arguments = Get-AdbMediaProcessArgumentString $Arguments
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+
+            $process = New-Object Diagnostics.Process
+            $process.StartInfo = $psi
+            if (-not $process.Start()) {
+                throw "No se pudo iniciar el proceso adb host para '$displayArguments'."
+            }
+
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                try { $process.Kill() } catch { }
+                Write-AdbLog -Level ERROR -Source 'AndroidAdb.Invoke-AdbHost' -Command $displayArguments -ExitCode -1 -Message ("Timeout excedido ({0}s). Proceso cancelado." -f $TimeoutSeconds)
+                $lastError = "adb host excedio el timeout de ${TimeoutSeconds}s para: $displayArguments"
+                if ($attempt -lt $maxAttempts) {
+                    Start-Sleep -Seconds $RetryDelaySeconds
+                    continue
+                }
+                throw $lastError
+            }
+
+            $exitCode = $process.ExitCode
+            $stdout = $stdoutTask.Result
+            $stderr = $stderrTask.Result
+            $process.Dispose()
+
+            $outputLines = @()
+            if (-not [string]::IsNullOrEmpty($stdout)) { $outputLines += ($stdout -split "`r?`n") }
+            if (-not [string]::IsNullOrEmpty($stderr)) { $outputLines += ($stderr -split "`r?`n") }
+            $output = $outputLines
+        } else {
+            $output = @(& adb @Arguments 2>&1)
+            $exitCode = $LASTEXITCODE
+        }
+
+        if ($exitCode -ne 0) {
+            $detail = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            Write-AdbLog -Level ERROR -Source 'AndroidAdb.Invoke-AdbHost' -Command $displayArguments -ExitCode $exitCode -Message ("ADB host fallo con codigo {0}: {1}" -f $exitCode,$detail)
+            $lastError = "adb $($Arguments -join ' ') fallo con codigo $exitCode. $detail"
+            if ($attempt -lt $maxAttempts) {
+                Start-Sleep -Seconds $RetryDelaySeconds
+                continue
+            }
+            throw $lastError
+        }
+
+        Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Invoke-AdbHost' -Command $displayArguments -ExitCode 0 -Message "ADB host completado exitosamente."
+        return $output
     }
-    Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Invoke-AdbHost' -Message ("ADB host completado: {0}" -f $displayArguments)
-    return $output
+
+    throw $lastError
 }
 
 function ConvertTo-AdbEndpoint {
@@ -879,6 +1178,166 @@ function Connect-AdbEndpoint {
         throw "adb connect no pudo alcanzar $($parts.Endpoint). Salida: $connectText"
     }
     return Wait-AdbDevice -Serial $parts.Endpoint -TimeoutSeconds $TimeoutSeconds
+}
+
+function Disconnect-AdbEndpoint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $parts = ConvertTo-AdbEndpoint $Endpoint
+    Write-AdbLog -Level INFO -Source 'AndroidAdb.Disconnect-AdbEndpoint' -Serial $parts.Endpoint -Message ("Desconectando endpoint {0}" -f $parts.Endpoint)
+    $output = @(Invoke-AdbHost -Arguments @('disconnect', $parts.Endpoint) -TimeoutSeconds $TimeoutSeconds)
+    Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Disconnect-AdbEndpoint' -Serial $parts.Endpoint -Message "Desconexion completada."
+    return $output
+}
+
+function Disconnect-AdbDevice {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)][string]$Serial,
+        [object]$Device
+    )
+
+    $targetSerial = if ($PSBoundParameters.ContainsKey('Device')) {
+        Resolve-AdbSerial -DeviceOrEndpoint $Device
+    } elseif ($PSBoundParameters.ContainsKey('Serial') -and -not [string]::IsNullOrWhiteSpace($Serial)) {
+        if ($Serial -match ':\d+$') {
+            (ConvertTo-AdbEndpoint -Endpoint $Serial).Endpoint
+        } else {
+            $Serial.Trim()
+        }
+    } else {
+        $cur = Get-CurrentAdbDevice
+        if ($null -eq $cur) { throw 'DISPOSITIVO_NO_SELECCIONADO: No hay dispositivo seleccionado ni serial especificado para desconectar.' }
+        Resolve-AdbSerial -DeviceOrEndpoint $cur
+    }
+
+    if ($targetSerial -match ':\d+$') {
+        return Disconnect-AdbEndpoint -Endpoint $targetSerial
+    } else {
+        throw "USB_DISCONNECT_UNSUPPORTED: El dispositivo '$targetSerial' esta conectado por USB fisico y no puede desconectarse por software (desconecta el cable manualmente)."
+    }
+}
+
+function Invoke-AdbShell {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Command,
+        [Parameter(Position = 1)][string]$Serial,
+        [int]$TimeoutSeconds = 30,
+        [int]$Retries = 0
+    )
+
+    $targetDevice = Get-SingleReadyDevice -Serial $Serial
+    $targetSerial = $targetDevice.Serial
+    return Invoke-Adb -Serial $targetSerial -Arguments @('shell', $Command) -TimeoutSeconds $TimeoutSeconds -Retries $Retries
+}
+
+function Invoke-AdbPull {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$RemotePath,
+        [Parameter(Mandatory = $true, Position = 1)][string]$LocalPath,
+        [Parameter(Position = 2)][string]$Serial,
+        [int]$TimeoutSeconds = 300,
+        [int]$Retries = 0
+    )
+
+    $targetDevice = Get-SingleReadyDevice -Serial $Serial
+    $targetSerial = $targetDevice.Serial
+    return Invoke-Adb -Serial $targetSerial -Arguments @('pull', $RemotePath, $LocalPath) -TimeoutSeconds $TimeoutSeconds -Retries $Retries
+}
+
+function Invoke-AdbPush {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$LocalPath,
+        [Parameter(Mandatory = $true, Position = 1)][string]$RemotePath,
+        [Parameter(Position = 2)][string]$Serial,
+        [int]$TimeoutSeconds = 300,
+        [int]$Retries = 0
+    )
+
+    $targetDevice = Get-SingleReadyDevice -Serial $Serial
+    $targetSerial = $targetDevice.Serial
+    return Invoke-Adb -Serial $targetSerial -Arguments @('push', $LocalPath, $RemotePath) -TimeoutSeconds $TimeoutSeconds -Retries $Retries
+}
+
+function Install-AdbPackage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$ApkPath,
+        [Parameter(Position = 1)][string]$Serial,
+        [string[]]$Options = @('-r'),
+        [int]$TimeoutSeconds = 180,
+        [int]$Retries = 0
+    )
+
+    if (-not (Test-Path -LiteralPath $ApkPath)) {
+        throw "APK_NO_ENCONTRADO: No existe el archivo APK en '$ApkPath'."
+    }
+
+    $targetDevice = Get-SingleReadyDevice -Serial $Serial
+    $targetSerial = $targetDevice.Serial
+    $args = @('install') + $Options + @($ApkPath)
+    $output = @(Invoke-Adb -Serial $targetSerial -Arguments $args -TimeoutSeconds $TimeoutSeconds -Retries $Retries)
+    $text = ($output | ForEach-Object { [string]$_ }) -join ' '
+    if ($text -notmatch '(?i)\bSuccess\b') {
+        throw "INSTALL_FAILED: La instalacion de '$ApkPath' no retorno Success. Salida: $text"
+    }
+    return $output
+}
+
+function Add-AdbForward {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$LocalSpec,
+        [Parameter(Mandatory = $true, Position = 1)][string]$RemoteSpec,
+        [Parameter(Position = 2)][string]$Serial,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $targetDevice = Get-SingleReadyDevice -Serial $Serial
+    $targetSerial = $targetDevice.Serial
+    return Invoke-Adb -Serial $targetSerial -Arguments @('forward', $LocalSpec, $RemoteSpec) -TimeoutSeconds $TimeoutSeconds
+}
+
+function Pair-AdbDevice {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Endpoint,
+        [Parameter(Mandatory = $true, Position = 1)][string]$PairingCode,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $parts = ConvertTo-AdbEndpoint $Endpoint
+    Write-AdbLog -Level INFO -Source 'AndroidAdb.Pair-AdbDevice' -Serial $parts.Endpoint -Message ("Iniciando adb pair para {0}" -f $parts.Endpoint)
+    $output = @(Invoke-AdbHost -Arguments @('pair', $parts.Endpoint, $PairingCode) -TimeoutSeconds $TimeoutSeconds)
+    $text = ($output | ForEach-Object { [string]$_ }) -join ' '
+    if ($text -notmatch '(?i)Successfully paired') {
+        Write-AdbLog -Level ERROR -Source 'AndroidAdb.Pair-AdbDevice' -Serial $parts.Endpoint -Message ("adb pair fallo: {0}" -f $text)
+        throw "PAIRING_FALLO: No se pudo emparejar con $($parts.Endpoint). Salida: $text"
+    }
+    Write-AdbLog -Level SUCCESS -Source 'AndroidAdb.Pair-AdbDevice' -Serial $parts.Endpoint -Message "adb pair exitoso."
+    return $output
+}
+
+function Get-AdbProperty {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$PropertyName,
+        [Parameter(Position = 1)][string]$Serial,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $targetDevice = Get-SingleReadyDevice -Serial $Serial
+    $targetSerial = $targetDevice.Serial
+    $output = @(Invoke-Adb -Serial $targetSerial -Arguments @('shell', 'getprop', $PropertyName) -TimeoutSeconds $TimeoutSeconds)
+    $val = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+    return $val.Trim()
 }
 
 function Get-AdbMdnsConnectionEndpoint {
@@ -1553,4 +2012,4 @@ function Invoke-AdbDiagnostics {
     if(-not $NoPause){Read-Host "`nPresiona Enter para continuar"|Out-Null};return [pscustomobject]$result
 }
 
-Export-ModuleMember -Function Initialize-AdbLog, Write-AdbLog, Get-AdbLogPath, Get-AdbDevices, Get-SingleReadyDevice, Get-CurrentAdbDevice, Set-CurrentAdbDevice, Clear-CurrentAdbDevice, Select-CurrentAdbDevice, Test-AdbDeviceReady, Resolve-AdbSerial, Invoke-AdbCommand, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbPhysicalId, Get-AdbPhysicalIdHash, Get-CurrentWifiBssid, Add-AdbEndpointHistory, Invoke-AdbUsbWifiConversion, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, Get-SavedAdbNetworkProfiles, Add-SavedAdbNetworkProfile, Update-SavedAdbNetworkProfile, Remove-SavedAdbNetworkProfile, Get-AdbDeviceStoreBackupDirectory, Get-AdbDeviceStoreBackups, Backup-AdbDeviceStore, Restore-AdbDeviceStore, Capture-AdbScreenshot, Start-AdbScreenRecording, Test-ScrcpyAvailable, Start-AdbScrcpy, Get-AdbSyncProfilesPath, New-AdbSyncProfileStore, Read-AdbSyncProfiles, Save-AdbSyncProfiles, Get-AdbSyncProfiles, Add-AdbSyncProfile, Update-AdbSyncProfile, Remove-AdbSyncProfile, Invoke-AdbSyncProfile, Invoke-AdbDiagnostics, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory
+Export-ModuleMember -Function Initialize-AdbLog, Write-AdbLog, Get-AdbLogPath, Get-AdbDevices, Get-SingleReadyDevice, Get-CurrentAdbDevice, Set-CurrentAdbDevice, Clear-CurrentAdbDevice, Select-CurrentAdbDevice, Test-AdbDeviceReady, Resolve-AdbSerial, Invoke-AdbCommand, Invoke-Adb, Invoke-AdbHost, Test-AdbAvailable, ConvertTo-AdbEndpoint, Get-AndroidToolsConfigPath, Save-AdbConnectionConfig, Read-AdbConnectionConfig, Get-AdbDeviceRecord, Wait-AdbDevice, Connect-AdbEndpoint, Disconnect-AdbEndpoint, Disconnect-AdbDevice, Invoke-AdbShell, Invoke-AdbPull, Invoke-AdbPush, Install-AdbPackage, Add-AdbForward, Pair-AdbDevice, Get-AdbProperty, Get-AdbMdnsConnectionEndpoint, Get-AdbMdnsServices, Get-AdbDeviceIpv4, Get-AdbPhysicalId, Get-AdbPhysicalIdHash, Get-CurrentWifiBssid, Add-AdbEndpointHistory, Invoke-AdbUsbWifiConversion, Get-AdbDeviceStorePath, New-AdbDeviceStore, Read-AdbDeviceStore, Save-AdbDeviceStore, Get-SavedAdbDevices, Add-SavedAdbDevice, Update-SavedAdbDevice, Remove-SavedAdbDevice, Get-SavedAdbNetworkProfiles, Add-SavedAdbNetworkProfile, Update-SavedAdbNetworkProfile, Remove-SavedAdbNetworkProfile, Get-AdbDeviceStoreBackupDirectory, Get-AdbDeviceStoreBackups, Backup-AdbDeviceStore, Restore-AdbDeviceStore, Capture-AdbScreenshot, Start-AdbScreenRecording, Test-ScrcpyAvailable, Start-AdbScrcpy, Get-AdbSyncProfilesPath, New-AdbSyncProfileStore, Read-AdbSyncProfiles, Save-AdbSyncProfiles, Get-AdbSyncProfiles, Add-AdbSyncProfile, Update-AdbSyncProfile, Remove-AdbSyncProfile, Invoke-AdbSyncProfile, Invoke-AdbDiagnostics, ConvertTo-SafeAdbSearchPattern, ConvertTo-SafeAndroidPath, ConvertTo-SafeWindowsName, Protect-BackupDirectory

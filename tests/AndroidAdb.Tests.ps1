@@ -201,6 +201,64 @@ Describe "AndroidAdb Module Unit Tests" {
             ($exported -contains "Update-SavedAdbDevice") | Should Be $true
             ($exported -contains "ConvertTo-AdbEndpoint") | Should Be $true
             ($exported -contains "Invoke-AdbDiagnostics") | Should Be $true
+            ($exported -contains "Disconnect-AdbEndpoint") | Should Be $true
+            ($exported -contains "Disconnect-AdbDevice") | Should Be $true
+            ($exported -contains "Invoke-AdbShell") | Should Be $true
+            ($exported -contains "Invoke-AdbPull") | Should Be $true
+            ($exported -contains "Invoke-AdbPush") | Should Be $true
+            ($exported -contains "Install-AdbPackage") | Should Be $true
+            ($exported -contains "Add-AdbForward") | Should Be $true
+            ($exported -contains "Pair-AdbDevice") | Should Be $true
+            ($exported -contains "Get-AdbProperty") | Should Be $true
+        }
+    }
+
+    Context "Contrato Unificado ADB (AndroidAdb Fase 1)" {
+        It "Get-SingleReadyDevice falla si se llama sin serial y no hay dispositivos conectados" {
+            Mock Get-AdbDevices { return @() } -ModuleName AndroidAdb
+            { Get-SingleReadyDevice } | Should Throw "DISPOSITIVO_NO_SELECCIONADO"
+        }
+
+        It "Get-SingleReadyDevice falla si hay multiples dispositivos y no se especifica serial" {
+            Mock Get-AdbDevices {
+                return @(
+                    [pscustomobject]@{ Serial = "DEV1"; Status = "device" },
+                    [pscustomobject]@{ Serial = "DEV2"; Status = "device" }
+                )
+            } -ModuleName AndroidAdb
+            { Get-SingleReadyDevice } | Should Throw "MULTIPLE_DEVICES"
+        }
+
+        It "Get-SingleReadyDevice retorna el dispositivo unico si solo hay uno en estado device" {
+            Mock Get-AdbDevices {
+                return @(
+                    [pscustomobject]@{ Serial = "SOLO_UNO"; Status = "device" }
+                )
+            } -ModuleName AndroidAdb
+            $dev = Get-SingleReadyDevice
+            $dev.Serial | Should Be "SOLO_UNO"
+        }
+
+        It "Get-SingleReadyDevice resuelve el dispositivo indicado si se proporciona -Serial" {
+            Mock Get-AdbDevices {
+                return @(
+                    [pscustomobject]@{ Serial = "DEV1"; Status = "device" },
+                    [pscustomobject]@{ Serial = "DEV2"; Status = "device" }
+                )
+            } -ModuleName AndroidAdb
+            $dev = Get-SingleReadyDevice -Serial "DEV2"
+            $dev.Serial | Should Be "DEV2"
+        }
+
+        It "Disconnect-AdbEndpoint normaliza y desconecta via adb disconnect" {
+            Mock Test-AdbAvailable { return $true } -ModuleName AndroidAdb
+            Mock Invoke-AdbHost { return @("disconnected 192.168.1.50:5555") } -ModuleName AndroidAdb
+            $res = Disconnect-AdbEndpoint -Endpoint "192.168.1.50:5555"
+            $res | Should Match "disconnected"
+        }
+
+        It "Disconnect-AdbDevice falla limpiamente al intentar desconectar USB fisico" {
+            { Disconnect-AdbDevice -Serial "USB123456" } | Should Throw "USB_DISCONNECT_UNSUPPORTED"
         }
     }
 }

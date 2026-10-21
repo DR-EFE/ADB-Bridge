@@ -22,19 +22,41 @@ Android/
 
 El registro activo se guarda fuera del repositorio en `%USERPROFILE%\AndroidTools\devices.json`. Puede contener varios teléfonos y tablets. Si aún existe el antiguo `%USERPROFILE%\AndroidTools\android_config.json`, el módulo lo migra automáticamente al crear el registro nuevo; Setup también lo mantiene por compatibilidad con herramientas antiguas.
 
-## Contratos del módulo
+## Contratos del módulo (Fase 1: PowerShell + Python)
 
-- `Invoke-Adb -Serial ...`: única vía para comandos dirigidos a un dispositivo. Siempre usa `adb -s` y falla si ADB devuelve un código distinto de cero.
+### PowerShell: AndroidAdb.psm1
+- `Invoke-Adb -Serial ...`: única vía para comandos dirigidos a un dispositivo. Siempre usa `adb -s <serial>`, soporta `-TimeoutSeconds`, `-Retries`, `-RetryDelaySeconds`, y falla si ADB devuelve un código distinto de cero cancelando el proceso si excede el tiempo límite.
+- `Invoke-AdbHost`: única vía para comandos del host sin serial: `pair`, `connect`, `disconnect` y `mdns services`, con soporte idéntico de timeouts y reintentos.
+- `Get-SingleReadyDevice [-Serial <serial>]`: si no se pasa serial, resuelve el dispositivo único listo (`device`). Falla con `DISPOSITIVO_NO_SELECCIONADO` si no hay ninguno, o con `MULTIPLE_DEVICES` si hay >1 (prohibiendo la selección silenciosa arbitraria). Si se pasa serial, valida que esté en estado `device` o falla con `DISPOSITIVO_NO_LISTO`.
 - `Get-CurrentAdbDevice`, `Set-CurrentAdbDevice`, `Clear-CurrentAdbDevice` y `Resolve-AdbSerial`: selección global durante la sesión de PowerShell.
-- `Test-AdbDeviceReady`: verifica `get-state=device`, registra el resultado y puede intentar la reconexión automática.
-- `Invoke-AdbCommand`: wrapper obligatorio para comandos de trabajo; resuelve el dispositivo seleccionado y siempre ejecuta con `adb -s`.
-- `Select-CurrentAdbDevice`: muestra los dispositivos guardados y obliga a elegir uno en estado exacto `device`.
-- `Invoke-AdbHost`: única vía para comandos sin serial: `pair`, `connect` y `mdns services`.
-- `Get-SingleReadyDevice`: falla ante cero o más de un dispositivo `device`; no selecciona silenciosamente.
-- `Wait-AdbDevice`: considera éxito solo el estado exacto `device`.
-- `Read-AdbDeviceStore` y `Save-AdbDeviceStore`: lectura validada y escritura segura del registro multi-dispositivo.
-- `Get-SavedAdbDevices`, `Add-SavedAdbDevice`, `Update-SavedAdbDevice` y `Remove-SavedAdbDevice`: operaciones CRUD sobre `devices.json`.
-- `Get-AdbMdnsServices`: descubre endpoints `adb-tls-connect` antes de solicitar IP y puerto al usuario.
+- `Disconnect-AdbEndpoint` y `Disconnect-AdbDevice`: desconexión controlada de endpoints TCP/IP; para dispositivos USB físicos, arroja la excepción controlada `USB_DISCONNECT_UNSUPPORTED` indicando desconexión manual del cable.
+- Funciones unificadas de alto nivel (todas con serial explícito o validación `Get-SingleReadyDevice`):
+  - `Invoke-AdbShell -Command <str> [-Serial <str>] [-TimeoutSeconds <int>] [-Retries <int>]`
+  - `Invoke-AdbPull -RemotePath <str> -LocalPath <str> [-Serial <str>] [-TimeoutSeconds <int>]`
+  - `Invoke-AdbPush -LocalPath <str> -RemotePath <str> [-Serial <str>] [-TimeoutSeconds <int>]`
+  - `Install-AdbPackage -ApkPath <str> [-Serial <str>] [-Options <str[]>] [-TimeoutSeconds <int>]`
+  - `Add-AdbForward -LocalSpec <str> -RemoteSpec <str> [-Serial <str>]`
+  - `Pair-AdbDevice -Endpoint <str> -PairingCode <str> [-TimeoutSeconds <int>]`
+  - `Get-AdbProperty -PropertyName <str> [-Serial <str>]`
+- Logging estructurado (`Write-AdbLog`): formato con timestamp ISO 8601 UTC, nivel, origen, serial opcional (`[Serial=...]`), comando opcional (`[Cmd=...]`), código de salida (`[ExitCode=...]`), sanitización y truncamiento defensivo contra salidas masivas.
+
+### Python: AdbService y Modelos Pydantic (ui.services)
+- Mismo contrato y semántica que PowerShell:
+  - `AdbService.devices() -> List[Device]`
+  - `AdbService.resolve_serial(serial=None) -> str`: misma política estricta de no asumir dispositivo cuando hay >1.
+  - `AdbService.connect(endpoint, timeout) -> ConnectionAttempt`: no guarda endpoints si la conexión o autorización falló.
+  - `AdbService.disconnect(endpoint_or_serial) -> OperationResult`: lanza `AdbError(USB_DISCONNECT_UNSUPPORTED)` si es USB físico.
+  - `AdbService.shell(cmd, serial, timeout, retries) -> OperationResult`
+  - `AdbService.pull(remote, local, serial, timeout, retries) -> OperationResult`
+  - `AdbService.push(local, remote, serial, timeout, retries) -> OperationResult`
+  - `AdbService.install(apk, serial, options, timeout, retries) -> OperationResult`
+  - `AdbService.forward(local_spec, remote_spec, serial, timeout) -> OperationResult`
+  - `AdbService.pair(endpoint, code, timeout) -> ConnectionAttempt`: valida 6 dígitos y reporta `ConnectionAttempt`.
+  - `AdbService.get_property(prop, serial, timeout) -> str`
+- Modelos Pydantic v2:
+  - `Device(serial, state, is_network, friendly_name, model, battery_level, android_version, usb_serial, physical_id_hash)`
+  - `ConnectionAttempt(endpoint, host, port, mode, success, message, exit_code, timestamp_utc, physical_id_hash)`
+  - `OperationResult(success, exit_code, stdout, stderr, command, serial, duration_seconds, message)`
 
 ## Flujos de conexión
 

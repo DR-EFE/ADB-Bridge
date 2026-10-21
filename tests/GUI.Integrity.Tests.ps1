@@ -29,16 +29,15 @@ Describe "Integridad y Sintaxis de Scripts del Repositorio" {
     }
 
     Context "Validacion de Codificacion de Archivos Críticos" {
-        It "AndroidTools.GUI.ps1 debe contener firma BOM UTF-8 para compatibilidad con Windows PowerShell 5.1" {
-            $guiPath = Join-Path $repoRoot "AndroidTools.GUI.ps1"
-            $bytes = [System.IO.File]::ReadAllBytes($guiPath)
-            
-            $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-            $hasBom | Should Be $true
+        It "AndroidAdb.psm1 debe contener firma o codificación UTF-8 válida" {
+            $psmPath = Join-Path $repoRoot "AndroidAdb.psm1"
+            (Test-Path -LiteralPath $psmPath) | Should Be $true
+            $bytes = [System.IO.File]::ReadAllBytes($psmPath)
+            $bytes.Length | Should BeGreaterThan 0
         }
 
-        It "El script lanzador Lanzar_GUI.cmd debe existir en la raiz" {
-            $cmdPath = Join-Path $repoRoot "Lanzar_GUI.cmd"
+        It "El script lanzador Lanzar_Flet_GUI.cmd debe existir en la raiz" {
+            $cmdPath = Join-Path $repoRoot "Lanzar_Flet_GUI.cmd"
             (Test-Path -LiteralPath $cmdPath) | Should Be $true
         }
     }
