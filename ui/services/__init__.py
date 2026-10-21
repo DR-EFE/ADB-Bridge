@@ -29,6 +29,14 @@ from .file_explorer_models import (
     FileNode, FolderStatResult, SearchResult,
 )
 from .file_explorer_service import FileExplorerService
+from .ollama_client import OllamaClient, OllamaError
+from .ai_report_models import (
+    AutomationSuggestion, AutomationSuggestionStatus, BackupAnalysisReport,
+    BackupFinding, BackupRecommendation, DaySummary,
+)
+from .ai_summary_service import AiSummaryService
+from .backup_analyzer_service import BackupAnalyzerService
+from .automation_suggestion_service import AutomationSuggestionService
 
 __all__ = [
     "Device",
@@ -93,4 +101,16 @@ __all__ = [
     "BulkItemResult",
     "BulkOperationResult",
     "FolderStatResult",
+    "OllamaClient",
+    "OllamaError",
+    "DaySummary",
+    "BackupFinding",
+    "BackupRecommendation",
+    "BackupAnalysisReport",
+    "AutomationSuggestionStatus",
+    "AutomationSuggestion",
+    "AiSummaryService",
+    "BackupAnalyzerService",
+    "AutomationSuggestionService",
 ]
+
