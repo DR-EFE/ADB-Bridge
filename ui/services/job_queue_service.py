@@ -28,6 +28,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from .database import SQLiteStore
+
 logger = logging.getLogger("ui.job_queue_service")
 
 # Patrones para clasificar fallos transitorios susceptibles de reintento
@@ -50,6 +52,7 @@ TRANSIENT_ERROR_PATTERNS = [
 class JobStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -82,6 +85,15 @@ class JobItem:
     payload: Dict[str, Any] = field(default_factory=dict)
     result: Optional[Dict[str, Any]] = None
     stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    pause_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    bytes_total: int = 0
+    bytes_completed: int = 0
+    files_total: int = 0
+    files_completed: int = 0
+    skip_existing: bool = False
+    only_changes: bool = False
+    checksums: Dict[str, str] = field(default_factory=dict)
+    failed_files: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializa el trabajo para persistencia en JSON."""
@@ -101,6 +113,14 @@ class JobItem:
             "finished_at": self.finished_at,
             "payload": self.payload,
             "result": self.result,
+            "bytes_total": self.bytes_total,
+            "bytes_completed": self.bytes_completed,
+            "files_total": self.files_total,
+            "files_completed": self.files_completed,
+            "skip_existing": self.skip_existing,
+            "only_changes": self.only_changes,
+            "checksums": self.checksums,
+            "failed_files": self.failed_files,
         }
 
     @classmethod
@@ -134,6 +154,14 @@ class JobItem:
             finished_at=data.get("finished_at"),
             payload=data.get("payload", {}),
             result=data.get("result"),
+            bytes_total=int(data.get("bytes_total", 0)),
+            bytes_completed=int(data.get("bytes_completed", 0)),
+            files_total=int(data.get("files_total", 0)),
+            files_completed=int(data.get("files_completed", 0)),
+            skip_existing=bool(data.get("skip_existing", False)),
+            only_changes=bool(data.get("only_changes", False)),
+            checksums=dict(data.get("checksums", {})),
+            failed_files=list(data.get("failed_files", [])),
         )
         return item
 
@@ -163,9 +191,12 @@ class JobQueueService:
         history_path: Optional[Path] = None,
         max_local_workers: int = 3,
         auto_persist: bool = True,
+        database_path: Optional[Path] = None,
+        database: Optional[SQLiteStore] = None,
     ) -> None:
         self._history_path = history_path or get_default_jobs_history_path()
         self._auto_persist = auto_persist
+        self._database = database if database is not None else SQLiteStore(database_path)
         self._lock = threading.RLock()
 
         # Registro en memoria de todos los trabajos
@@ -254,6 +285,8 @@ class JobQueueService:
             retries_left=max_retries,
             max_retries=max_retries,
             payload=payload or {},
+            skip_existing=bool((payload or {}).get("skip_existing", False)),
+            only_changes=bool((payload or {}).get("only_changes", False)),
         )
 
         with self._lock:
@@ -322,6 +355,42 @@ class JobQueueService:
                 return True
 
             return False
+
+    def pause(self, job_id: str) -> bool:
+        """Pausa un job sin perder su checkpoint; el handler puede cooperar con wait_if_paused."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+                return False
+            job.pause_event.set()
+            job.status = JobStatus.PAUSED
+            job.current_step = "Pausado; checkpoint conservado"
+        self._notify(job)
+        self._persist_history()
+        return True
+
+    def resume(self, job_id: str) -> bool:
+        """Reanuda un job pausado desde el progreso persistido."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.PAUSED:
+                return False
+            job.pause_event.clear()
+            job.status = JobStatus.PENDING
+            job.current_step = "Reanudado desde checkpoint"
+        self._notify(job)
+        self._persist_history()
+        self._dispatch(job)
+        return True
+
+    def wait_if_paused(self, job: JobItem, poll_seconds: float = 0.1) -> bool:
+        """Bloquea cooperativamente mientras el job está pausado.
+
+        Devuelve False si se solicitó cancelación y True al continuar.
+        """
+        while job.pause_event.is_set() and not job.stop_event.is_set():
+            time.sleep(poll_seconds)
+        return not job.stop_event.is_set()
 
     def retry(self, job_id: str) -> bool:
         """Re-encola manualmente un trabajo que haya fallado o sido cancelado."""
@@ -429,7 +498,7 @@ class JobQueueService:
         """Ejecuta un trabajo con soporte de reintentos, cancelaciones y actualización de progreso."""
         with self._lock:
             # Si ya fue cancelado mientras esperaba en cola
-            if job.status == JobStatus.CANCELLED or job.stop_event.is_set():
+            if job.status in (JobStatus.CANCELLED, JobStatus.PAUSED) or job.stop_event.is_set():
                 job.status = JobStatus.CANCELLED
                 job.finished_at = datetime.now().isoformat()
                 self._notify(job)
@@ -464,6 +533,8 @@ class JobQueueService:
                 return
 
             try:
+                if not self.wait_if_paused(job):
+                    raise RuntimeError("Cancelado por el usuario")
                 # Obtener el handler
                 handler = None
                 with self._lock:
@@ -551,11 +622,16 @@ class JobQueueService:
 
     def _persist_history(self) -> None:
         """Guarda de forma atómica el historial en JSON."""
-        if not self._auto_persist:
-            return
         try:
             with self._lock:
                 data = [job.to_dict() for job in self._jobs.values()]
+
+            if self._database:
+                for job_data in data:
+                    self._database.save_job(job_data)
+
+            if not self._auto_persist:
+                return
 
             self._history_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = self._history_path.with_suffix(".tmp")
@@ -566,11 +642,13 @@ class JobQueueService:
 
     def _load_history(self) -> None:
         """Carga el historial guardado en JSON al iniciar."""
-        if not self._history_path.is_file():
-            return
         try:
-            content = self._history_path.read_text(encoding="utf-8")
-            raw_list = json.loads(content)
+            # SQLite es la fuente de verdad; el JSON solo permite migrar
+            # instalaciones anteriores o exportaciones antiguas.
+            raw_list = self._database.list_jobs() if self._database else []
+            if not raw_list and self._history_path.is_file():
+                content = self._history_path.read_text(encoding="utf-8")
+                raw_list = json.loads(content)
             if isinstance(raw_list, list):
                 with self._lock:
                     for item_data in raw_list:

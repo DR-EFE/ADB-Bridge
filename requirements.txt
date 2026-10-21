@@ -1,0 +1,6 @@
+pydantic>=2.6,<3
+SQLAlchemy>=2.0,<3
+flet>=0.24
+uiautomator2>=3.2
+adbutils>=2.5
+pytest>=8.0

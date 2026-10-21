@@ -326,11 +326,15 @@ class TestJobQueueService(unittest.TestCase):
 
     def test_clear_completed(self):
         """clear_completed() elimina los terminados pero conserva los activos."""
+        completed = threading.Event()
+
         def dummy_h(job, prog):
+            completed.set()
             return True
 
         j1 = self.service.enqueue(JobType.LOCAL_PROCESS, "Completado 1", custom_handler=dummy_h)
-        time.sleep(0.1)
+        self.assertTrue(completed.wait(timeout=2.0))
+        time.sleep(0.05)
 
         self.service.clear_completed()
         self.assertIsNone(self.service.get_job(j1))
