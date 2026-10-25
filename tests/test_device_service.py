@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,69 @@ class TestDeviceService(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_qr_pairing_saves_connect_service_for_later_reconnect(self, mock_get_client):
+        save_devices_store({"SchemaVersion": 1, "CurrentDeviceId": None, "Devices": []}, self.canonical_json)
+        old_endpoint = "192.168.1.50:41000"
+        new_endpoint = "192.168.1.50:42000"
+        connect_name = "adb-phone-123._adb-tls-connect._tcp"
+        qr_service = MagicMock()
+        qr_service.pair.return_value = SimpleNamespace(
+            endpoint=old_endpoint, service_name="androidtools-temporary"
+        )
+        client = MagicMock()
+        client.connect.return_value = f"connected to {old_endpoint}"
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        mdns = [
+            {"service_name": connect_name, "endpoint": old_endpoint, "host": "192.168.1.50"}
+        ]
+        with patch.object(service, "find_wireless_devices", return_value=mdns), \
+             patch.object(service, "_endpoint_ready", return_value=True), \
+             patch.object(service, "_connected_identity_hash", return_value="sha256:phone"):
+            ok, _ = service.pair_wireless_qr(qr_service=qr_service, qr_payload=object())
+
+        self.assertTrue(ok)
+        saved = read_devices_store(self.canonical_json)["Devices"][0]
+        self.assertEqual(connect_name, saved["MdnsServiceName"])
+        self.assertEqual(connect_name, saved["Endpoints"][0]["MdnsServiceName"])
+
+        with patch.object(service, "find_wireless_devices", return_value=[
+                 {"service_name": connect_name, "endpoint": new_endpoint, "host": "192.168.1.50"}
+             ]), patch.object(service, "_connect_recovery_candidate", return_value=(True, "")), \
+             patch.object(service, "_verify_reconnect_identity", return_value=("verified", "sha256:phone")), \
+             patch.object(service, "refresh_device_metadata"):
+            result = service.auto_reconnect_saved_devices()[0]
+
+        self.assertTrue(result.success)
+        self.assertEqual(new_endpoint, result.endpoint)
+        self.assertEqual("mdns", result.method)
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_old_qr_record_recovers_by_verified_identity(self, mock_get_client):
+        save_devices_store({"SchemaVersion": 1, "CurrentDeviceId": "phone", "Devices": [{
+            "Id": "phone", "FriendlyName": "Phone", "Mode": "wireless-debugging-tls",
+            "MdnsServiceName": "androidtools-old-pairing", "PhysicalIdHash": "sha256:phone",
+            "LastEndpoint": "192.168.1.50:41000",
+        }]}, self.canonical_json)
+        mock_get_client.return_value.list.return_value = []
+        service = DeviceService(devices_json_path=self.canonical_json)
+        services = [
+            {"service_name": "other._adb-tls-connect._tcp", "endpoint": "192.168.1.60:42000"},
+            {"service_name": "phone._adb-tls-connect._tcp", "endpoint": "192.168.1.50:42000"},
+        ]
+        with patch.object(service, "find_wireless_devices", return_value=services), \
+             patch.object(service, "_connect_recovery_candidate", return_value=(True, "")), \
+             patch.object(service, "_verify_reconnect_identity", side_effect=[
+                 ("SERIAL_NO_COINCIDE", "sha256:other"), ("verified", "sha256:phone")
+             ]), patch.object(service, "refresh_device_metadata"):
+            result = service.auto_reconnect_saved_devices()[0]
+
+        self.assertTrue(result.success)
+        self.assertEqual("192.168.1.50:42000", result.endpoint)
+        saved = read_devices_store(self.canonical_json)["Devices"][0]
+        self.assertEqual("phone._adb-tls-connect._tcp", saved["MdnsServiceName"])
 
     @patch("ui.services.device_service.get_adb_client")
     def test_last_endpoint_requires_current_bssid_and_explicit_override(self, mock_get_client):
@@ -826,6 +890,58 @@ class TestDeviceService(unittest.TestCase):
 
         self.assertEqual("192.168.1.50:46617", endpoint)
         self.assertEqual(endpoint, service.serial)
+
+    def test_transfer_reconnect_of_secondary_does_not_change_primary(self):
+        save_devices_store({"SchemaVersion": 1, "CurrentDeviceId": "primary", "Devices": [
+            {"Id": "primary", "LastEndpoint": "192.168.1.10:41000"},
+            {"Id": "secondary", "LastEndpoint": "192.168.1.20:42000"},
+        ]}, self.canonical_json)
+        service = DeviceService(serial="192.168.1.10:41000", devices_json_path=self.canonical_json)
+        with patch.object(service, "connect_device", return_value=SimpleNamespace(
+            success=True, endpoint="192.168.1.20:43000"
+        )) as connect:
+            endpoint = service.reconnect_device("192.168.1.20:42000")
+        self.assertEqual("192.168.1.20:43000", endpoint)
+        connect.assert_called_once_with("secondary", activate=False)
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_wifi_search_recovers_old_qr_record_by_identity(self, mock_get_client):
+        save_devices_store({"SchemaVersion": 1, "CurrentDeviceId": "phone", "Devices": [
+            {"Id": "phone", "MdnsServiceName": "old-qr-pairing", "PhysicalIdHash": "sha256:phone"},
+        ]}, self.canonical_json)
+        service = DeviceService(devices_json_path=self.canonical_json)
+        mdns = [{"service_name": "phone._adb-tls-connect._tcp", "endpoint": "192.168.1.50:42000"}]
+        with patch.object(service, "find_wireless_devices", return_value=mdns), \
+             patch.object(service, "_connect_recovery_candidate", return_value=(True, "")), \
+             patch.object(service, "_verify_reconnect_identity", return_value=("verified", "sha256:phone")):
+            result = service.discover_and_reconnect_wireless()
+        self.assertTrue(result.success)
+        self.assertEqual("192.168.1.50:42000", result.endpoint)
+        self.assertEqual("phone._adb-tls-connect._tcp", read_devices_store(self.canonical_json)["Devices"][0]["MdnsServiceName"])
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_manual_wifi_endpoint_must_match_saved_identity(self, mock_get_client):
+        old_endpoint = "192.168.1.50:41000"
+        new_endpoint = "192.168.1.50:42000"
+        save_devices_store({"SchemaVersion": 1, "CurrentDeviceId": "phone", "Devices": [{
+            "Id": "phone", "LastEndpoint": old_endpoint, "PhysicalIdHash": "sha256:phone",
+        }]}, self.canonical_json)
+        client = MagicMock()
+        client.connect.return_value = f"connected to {new_endpoint}"
+        mock_get_client.return_value = client
+        service = DeviceService(serial=old_endpoint, devices_json_path=self.canonical_json)
+        with patch.object(service, "_endpoint_ready", return_value=True), \
+             patch.object(service, "_verify_reconnect_identity", side_effect=[
+                 ("SERIAL_NO_COINCIDE", "sha256:other"), ("verified", "sha256:phone")
+             ]):
+            rejected = service.discover_and_reconnect_wireless(new_endpoint)
+            self.assertFalse(rejected.success)
+            self.assertEqual(old_endpoint, service.serial)
+            self.assertEqual(old_endpoint, read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"])
+            accepted = service.discover_and_reconnect_wireless(new_endpoint)
+        self.assertTrue(accepted.success)
+        self.assertEqual(new_endpoint, service.serial)
+        self.assertEqual(new_endpoint, read_devices_store(self.canonical_json)["Devices"][0]["LastEndpoint"])
 
     @patch("ui.services.device_service.get_adb_client")
     @patch("ui.services.device_service.get_adb_executable")

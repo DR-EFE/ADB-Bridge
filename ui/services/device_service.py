@@ -742,12 +742,24 @@ class DeviceService:
             if preferred_service:
                 matched_svc = next((s for s in services if s["service_name"].lower() == preferred_service), None)
 
-            if matched_svc:
-                ep = matched_svc["endpoint"]
+            # Los registros creados por QR anteriormente guardaban el nombre
+            # temporal de pairing. Probar otros anuncios TLS solo cuando hay
+            # una huella física guardada; finish_candidate valida la identidad
+            # antes de actualizar el registro con el servicio correcto.
+            mdns_candidates = [matched_svc] if matched_svc else []
+            if target.get("PhysicalIdHash"):
+                mdns_candidates.extend(
+                    svc for svc in services if svc is not matched_svc
+                    and svc.get("endpoint") != (matched_svc or {}).get("endpoint")
+                )
+            for candidate in mdns_candidates:
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+                ep = candidate["endpoint"]
                 logger.info("Probando reconexión mDNS a %s para %s...", ep, target.get("FriendlyName"))
                 connected, code = self._connect_recovery_candidate(client, ep, timeout(5.0), device_id, "mdns")
                 if connected:
-                    result = finish_candidate(ep, "mdns", matched_svc["service_name"])
+                    result = finish_candidate(ep, "mdns", candidate["service_name"])
                     if result:
                         return result
                 else:
@@ -1954,12 +1966,21 @@ class DeviceService:
         try:
             result = service.pair(payload, timeout=timeout, progress=progress)
             endpoint = result.endpoint
-            if not endpoint:
+            # El nombre incluido en el QR identifica el servicio temporal de
+            # pairing. La reconexión necesita el servicio TLS de conexión.
+            try:
                 services = self.find_wireless_devices()
-                matching = [item for item in services if item.get("service_name", "").startswith("_adb-tls-connect")]
-                endpoint = matching[0]["endpoint"] if len(matching) == 1 else None
+            except Exception as exc:
+                logger.debug("mDNS no disponible después del emparejamiento QR: %s", exc)
+                services = []
+            if not endpoint:
+                endpoint = services[0]["endpoint"] if len(services) == 1 else None
             if not endpoint:
                 return False, "Emparejamiento correcto, pero no se encontró el endpoint de conexión mDNS."
+            connect_service_name = next(
+                (item["service_name"] for item in services if item.get("endpoint") == endpoint),
+                "",
+            )
             client = get_adb_client()
             connect_output = client.connect(endpoint, timeout=12.0).strip()
             if not self._endpoint_ready(client, endpoint):
@@ -1974,12 +1995,12 @@ class DeviceService:
                 "Id": device_id,
                 "FriendlyName": friendly_name.strip() or f"Android Wireless ({endpoint})",
                 "UsbSerial": None,
-                "MdnsServiceName": result.service_name,
+                "MdnsServiceName": connect_service_name,
                 "Mode": "wireless-debugging-tls",
                 "IsPaired": True,
                 "NetworkProfiles": [],
             }
-            self._record_successful_endpoint(record, endpoint, source="mdns", mdns_service_name=result.service_name,
+            self._record_successful_endpoint(record, endpoint, source="mdns", mdns_service_name=connect_service_name,
                                              physical_id_hash=physical_hash)
             devices.append(record)
             store["CurrentDeviceId"] = device_id
@@ -2163,12 +2184,15 @@ class DeviceService:
                     break
         if not selected_id:
             return None
-        result = self.connect_device(selected_id, activate=True)
+        result = self.connect_device(selected_id, activate=not current_id or selected_id == current_id)
         return result.endpoint if result.success else None
 
     def discover_and_reconnect_wireless(self, endpoint: Optional[str] = None) -> ConnectionResult:
         """Busca el nuevo endpoint mDNS o manual y lo conecta."""
         try:
+            store = read_devices_store(self.devices_json)
+            current_id = store.get("CurrentDeviceId")
+            record = next((d for d in store.get("Devices", []) if d.get("Id") == current_id), None)
             client = get_adb_client()
             if endpoint:
                 target_ep = endpoint.strip()
@@ -2177,48 +2201,67 @@ class DeviceService:
                     return ConnectionResult(False, endpoint=target_ep, message=f"ADB no pudo conectar a {target_ep}: {res}", error=res)
                 if not self._endpoint_ready(client, target_ep):
                     return ConnectionResult(False, endpoint=target_ep, error="OFFLINE", message="ADB aceptó el endpoint, pero no quedó en estado device.")
+                if record:
+                    state, physical_hash = self._verify_reconnect_identity(client, target_ep, record)
+                    if state != "verified":
+                        return ConnectionResult(False, endpoint=target_ep, error=state,
+                                                message="El endpoint no coincide con el teléfono guardado.")
+                    self._record_successful_endpoint(record, target_ep, source="manual", physical_id_hash=physical_hash)
+                    save_devices_store(store, self.devices_json)
                 self.serial = target_ep
                 self._explicitly_selected = True
                 self._notify_device_change()
-                return ConnectionResult(True, endpoint=target_ep, message=f"Conectado a {target_ep}.")
+                return ConnectionResult(True, device_id=str(record["Id"]) if record else None,
+                                        endpoint=target_ep, method="manual", message=f"Conectado a {target_ep}.")
 
             services = self.find_wireless_devices()
             if not services:
                 return ConnectionResult(False, message="No se encontraron servicios Wireless Debugging por mDNS en esta red.")
-            store = read_devices_store(self.devices_json)
-            current_id = store.get("CurrentDeviceId")
-            record = next((d for d in store.get("Devices", []) if d.get("Id") == current_id), None)
-
-            preferred_service = str((record or {}).get("MdnsServiceName") or "").lower()
-            matching = [item for item in services if preferred_service and item["service_name"].lower() == preferred_service]
-            if record and not matching:
-                return ConnectionResult(False, error="SERIAL_NO_COINCIDE", message="mDNS no identificó el servicio guardado de este teléfono.")
-            selected = matching[0] if matching else services[0]
+            if record:
+                preferred = str(record.get("MdnsServiceName") or "").lower()
+                matching = [item for item in services if preferred and item["service_name"].lower() == preferred]
+                candidates = matching + ([item for item in services if item not in matching]
+                                         if record.get("PhysicalIdHash") else [])
+                if not candidates:
+                    return ConnectionResult(False, error="SERIAL_NO_COINCIDE",
+                                            message="mDNS no identificó el servicio guardado de este teléfono.")
+                for candidate in candidates:
+                    value = candidate["endpoint"]
+                    connected, _ = self._connect_recovery_candidate(client, value, 5.0, str(record["Id"]), "mdns")
+                    if not connected:
+                        continue
+                    state, physical_hash = self._verify_reconnect_identity(client, value, record)
+                    if state == "provisional" and candidate in matching:
+                        self._provisional_endpoints[str(record["Id"])] = value
+                        self.serial = value
+                        self._explicitly_selected = True
+                        self._notify_device_change()
+                        return ConnectionResult(True, device_id=str(record["Id"]), endpoint=value, method="mdns",
+                                                provisional=True,
+                                                message=f"Conexión provisional a {value}; identidad pendiente de confirmar.")
+                    if state != "verified":
+                        continue
+                    self._record_successful_endpoint(record, value, source="mdns",
+                                                     mdns_service_name=candidate["service_name"], physical_id_hash=physical_hash)
+                    save_devices_store(store, self.devices_json)
+                    self._provisional_endpoints.pop(str(record["Id"]), None)
+                    self.serial = value
+                    self._explicitly_selected = True
+                    self._notify_device_change()
+                    return ConnectionResult(True, device_id=str(record["Id"]), endpoint=value, method="mdns",
+                                            message=f"Conectado por Wireless Debugging a {value}.")
+                return ConnectionResult(False, error="SERIAL_NO_COINCIDE",
+                                        message="No se verificó la identidad de ningún endpoint mDNS del teléfono guardado.")
+            if len(services) != 1:
+                return ConnectionResult(False, error="SELECCION_REQUERIDA",
+                                        message="Se encontraron varios teléfonos; selecciona el endpoint manualmente.")
+            selected = services[0]
 
             res = client.connect(selected["endpoint"], timeout=10.0).strip()
             if "connected to" not in res.lower() and "already connected" not in res.lower():
                 return ConnectionResult(False, endpoint=selected["endpoint"], message=f"ADB no pudo conectar a {selected['endpoint']}: {res}", error=res)
             if not self._endpoint_ready(client, selected["endpoint"]):
                 return ConnectionResult(False, endpoint=selected["endpoint"], error="OFFLINE", message="ADB no dejó el endpoint en estado device.")
-            if record:
-                state, physical_hash = self._verify_reconnect_identity(client, selected["endpoint"], record)
-                if state not in ("verified", "provisional"):
-                    return ConnectionResult(False, endpoint=selected["endpoint"], error=state,
-                                            message="El endpoint mDNS no coincide con el teléfono guardado.")
-                if state == "verified":
-                    self._record_successful_endpoint(record, selected["endpoint"], source="mdns",
-                                                     mdns_service_name=selected["service_name"], physical_id_hash=physical_hash)
-                    save_devices_store(store, self.devices_json)
-                    self._provisional_endpoints.pop(str(record["Id"]), None)
-                else:
-                    self._provisional_endpoints[str(record["Id"])] = selected["endpoint"]
-                self.serial = selected["endpoint"]
-                self._explicitly_selected = True
-                self._notify_device_change()
-                return ConnectionResult(True, device_id=str(record["Id"]), endpoint=selected["endpoint"], method="mdns",
-                                        provisional=state == "provisional",
-                                        message=(f"Conexión provisional a {selected['endpoint']}; identidad pendiente de confirmar."
-                                                 if state == "provisional" else f"Conectado por Wireless Debugging a {selected['endpoint']}."))
             self.serial = selected["endpoint"]
             self._explicitly_selected = True
             self._notify_device_change()

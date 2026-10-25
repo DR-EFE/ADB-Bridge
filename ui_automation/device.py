@@ -12,6 +12,7 @@ import uiautomator2 as u2
 from .adb_manager import (
     ensure_single_adb_server,
     get_adb_client,
+    get_watchdog_serial,
     is_network_serial,
     start_reconnect_watchdog,
     stop_reconnect_watchdog,
@@ -155,6 +156,9 @@ class DeviceManager:
         :raises DeviceConnectionError: Si no se puede establecer la conexión.
         """
         try:
+            recovered_serial = get_watchdog_serial(self._watchdog_event)
+            if recovered_serial:
+                self.serial = recovered_serial
             logger.info("Iniciando conexión con dispositivo (serial=%s)...", self.serial or "auto-detect")
             
             # 1. Asegurar único daemon ADB activo y controlado
@@ -209,6 +213,11 @@ class DeviceManager:
         """
         if self._device is None:
             return self.connect()
+        recovered_serial = get_watchdog_serial(self._watchdog_event)
+        if recovered_serial and recovered_serial != getattr(self._device, "serial", None):
+            ensure_uiautomator_ready(serial=recovered_serial)
+            self._device = u2.connect(recovered_serial)
+            self.serial = recovered_serial
         return self._device
 
     def is_alive(self) -> bool:

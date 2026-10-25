@@ -1346,6 +1346,7 @@ function Get-AdbMdnsConnectionEndpoint {
 
     $lines = @(Invoke-AdbHost -Arguments @('mdns','services'))
     $candidates = @()
+    $hostCandidates = @()
     foreach ($line in $lines) {
         $text = [string]$line
         if ($text -notmatch 'adb-tls-connect') { continue }
@@ -1355,11 +1356,11 @@ function Get-AdbMdnsConnectionEndpoint {
         $serviceName = ($text.Trim() -split '\s+')[0]
         if ($PreferredServiceName) {
             if ($serviceName -ieq $PreferredServiceName) { return $candidate }
-            continue
         }
-        if (-not [string]::IsNullOrWhiteSpace($PreferredHost) -and $candidate.Host -ieq $PreferredHost) { return $candidate }
+        if (-not [string]::IsNullOrWhiteSpace($PreferredHost) -and $candidate.Host -ieq $PreferredHost) { $hostCandidates += $candidate }
         $candidates += $candidate
     }
+    if ($PreferredHost -and $hostCandidates.Count -eq 1) { return $hostCandidates[0] }
     if (-not $PreferredHost -and -not $PreferredServiceName -and $candidates.Count -eq 1) { return $candidates[0] }
     return $null
 }

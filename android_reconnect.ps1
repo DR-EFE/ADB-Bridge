@@ -157,7 +157,10 @@ function Connect-And-RememberDevice {
 
 function Test-EndpointCurrentNetwork {
     param([object]$Entry)
-    if ($null -eq $Entry -or $null -eq $Entry.PSObject.Properties['NetworkBssid'] -or -not $Entry.NetworkBssid) { return $false }
+    # Los registros antiguos y las conexiones sin WLAN no tienen BSSID. El
+    # candidato sigue pasando por la verificación de identidad física antes
+    # de actualizar el historial.
+    if ($null -eq $Entry -or $null -eq $Entry.PSObject.Properties['NetworkBssid'] -or -not $Entry.NetworkBssid) { return $true }
     $current = Get-CurrentWifiBssid
     return ($current -and $current -ieq [string]$Entry.NetworkBssid)
 }

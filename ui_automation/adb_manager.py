@@ -29,6 +29,7 @@ _client_lock = threading.Lock()
 # Control de hilos watchdog activos por serial
 _watchdog_lock = threading.Lock()
 _active_watchdogs: Dict[str, threading.Event] = {}
+_watchdog_current_serial: Dict[threading.Event, str] = {}
 
 
 def get_adb_executable() -> str:
@@ -178,7 +179,7 @@ def _discover_mdns_endpoints() -> List[str]:
     return endpoints
 
 
-def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event, max_duration: float = 120.0) -> None:
+def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event, max_duration: float = 0.0) -> None:
     """
     Bucle en segundo plano para verificar periódicamente la salud de la conexión
     y reintentar reconexión TCP/IP sin reiniciar el daemon ADB.
@@ -218,6 +219,10 @@ def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event, max_
                         from ui.services.device_service import DeviceService
                         endpoint = DeviceService().reconnect_device(serial)
                         if endpoint:
+                            with _watchdog_lock:
+                                if any(event is stop_event for event in _active_watchdogs.values()):
+                                    _active_watchdogs[endpoint] = stop_event
+                                    _watchdog_current_serial[stop_event] = endpoint
                             serial = endpoint
                             failure_started_at = None
                             logger.info("Watchdog ADB: endpoint recuperado %s", endpoint)
@@ -237,14 +242,21 @@ def _watchdog_loop(serial: str, interval: int, stop_event: threading.Event, max_
         except Exception as loop_exc:
             logger.debug("Aviso en ciclo de verificación de watchdog (%s): %s", serial, loop_exc)
 
+    with _watchdog_lock:
+        for key, event in list(_active_watchdogs.items()):
+            if event is stop_event:
+                del _active_watchdogs[key]
+        _watchdog_current_serial.pop(stop_event, None)
+    stop_event.set()
     logger.info("Watchdog de conexión ADB finalizado para %s.", serial)
 
 
-def start_reconnect_watchdog(serial: str, interval: int = 20, max_duration: float = 120.0) -> threading.Event:
+def start_reconnect_watchdog(serial: str, interval: int = 20, max_duration: float = 0.0) -> threading.Event:
     """
     Inicia un watchdog ligero en un hilo daemon para monitorear el estado de conexión del dispositivo.
-    Si el dispositivo pasa a offline o se desconecta, intenta reconectarlo con `adb connect <serial>`
-    SIN reiniciar el daemon ADB.
+    Si el dispositivo pasa a offline o se desconecta, intenta recuperar el
+    registro guardado sin reiniciar el daemon ADB. Por defecto sigue vigilando
+    mientras la aplicación esté activa.
 
     :param serial: Serial del dispositivo (ej: '192.168.1.50:5555' o USB serial).
     :param interval: Intervalo en segundos entre cada comprobación (default: 20s).
@@ -263,6 +275,7 @@ def start_reconnect_watchdog(serial: str, interval: int = 20, max_duration: floa
 
         stop_event = threading.Event()
         _active_watchdogs[serial] = stop_event
+        _watchdog_current_serial[stop_event] = serial
 
         thread = threading.Thread(
             target=_watchdog_loop,
@@ -282,15 +295,28 @@ def stop_reconnect_watchdog(serial: Optional[str] = None) -> None:
     """
     with _watchdog_lock:
         if serial:
-            stop_event = _active_watchdogs.pop(serial, None)
+            stop_event = _active_watchdogs.get(serial)
             if stop_event:
                 stop_event.set()
+                for key, event in list(_active_watchdogs.items()):
+                    if event is stop_event:
+                        del _active_watchdogs[key]
+                _watchdog_current_serial.pop(stop_event, None)
                 logger.info("Señal de detención enviada al watchdog de %s.", serial)
         else:
             for s, stop_event in list(_active_watchdogs.items()):
                 stop_event.set()
                 logger.info("Señal de detención enviada al watchdog de %s.", s)
             _active_watchdogs.clear()
+            _watchdog_current_serial.clear()
+
+
+def get_watchdog_serial(stop_event: Optional[threading.Event]) -> Optional[str]:
+    """Devuelve el endpoint vigente que recuperó el watchdog indicado."""
+    if stop_event is None:
+        return None
+    with _watchdog_lock:
+        return _watchdog_current_serial.get(stop_event)
 
 
 def is_watchdog_active(serial: str) -> bool:
