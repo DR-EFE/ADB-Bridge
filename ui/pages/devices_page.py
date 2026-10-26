@@ -6,8 +6,9 @@ import logging
 import os
 import subprocess
 import threading
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import flet as ft
 
@@ -15,6 +16,8 @@ from .. import theme
 from ..services.device_service import DeviceService
 from ..services.network_scan_service import NetworkHost, NetworkScanError, NetworkScanResult, NetworkScanService, ScanProfile
 from ..services.wireless_qr_service import WirelessQrPairingService
+from .commands_page import CommandsPage
+from .operations_page import OperationsPage
 
 logger = logging.getLogger("ui.devices")
 
@@ -28,14 +31,27 @@ class DevicesPage:
         page: Optional[ft.Page] = None,
         on_log: Optional[Callable[[str, str], None]] = None,
         on_device_changed: Optional[Callable[[str], None]] = None,
+        job_queue: Optional[Any] = None,
     ) -> None:
         self._device = device
         self._page = page
         self._on_log = on_log
         self._on_device_changed = on_device_changed
+        self._job_queue = job_queue
         self._refresh_lock = threading.Lock()
         self._is_shutdown = False
         self._unlock_credentials: Dict[str, str] = {}
+        self._active_section = "connections"
+        self._last_online_items: List[Dict[str, Any]] = []
+
+        # Instanciar módulos de diagnóstico y operaciones integrados
+        self.commands = CommandsPage(self._device, on_log=self._on_log)
+        self.operations = (
+            OperationsPage(self._device, self._job_queue, page=self._page, on_log=self._on_log)
+            if self._job_queue
+            else None
+        )
+
         # El monitor USB -> Wi-Fi corre fuera de esta página.  Este callback
         # actualiza las tarjetas justo al cambiar ADB, sin pulsar Refrescar.
         self._device.add_device_change_listener(self.refresh_devices)
@@ -312,85 +328,110 @@ class DevicesPage:
         self._hero_active_card = ft.Container()
 
         # ---------------------------------------------------------------------
-        # Construcción de la Vista Principal
+        # Controles de Desbloqueo y PIN en sesión
         # ---------------------------------------------------------------------
-        self.view = ft.Column(
-            expand=True,
-            spacing=14,
-            scroll=ft.ScrollMode.AUTO,
-            controls=[
-                # 1. Barra de Herramientas Principal
-                ft.Row(
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    wrap=True,
-                    controls=[
-                        ft.Row(
-                            [
-                                ft.Icon(ft.Icons.PHONELINK_SETUP_ROUNDED, color=theme.ACCENT, size=24),
-                                ft.Column(
-                                    spacing=2,
-                                    controls=[
-                                        ft.Text("Administrador de Dispositivos", size=18, weight=ft.FontWeight.BOLD, color=theme.TEXT),
-                                        ft.Text("Conexiones USB y Wi-Fi, emparejamiento rápido y selección activa", size=12, color=theme.TEXT_MUTED),
-                                    ],
-                                ),
-                            ],
-                            spacing=10,
-                        ),
-                        ft.Row(
-                            spacing=8,
-                            wrap=True,
-                            controls=[
-                                ft.FilledButton(
-                                    "Conectar por IP",
-                                    icon=ft.Icons.WIFI,
-                                    height=34,
-                                    on_click=lambda _: self._toggle_connect_panel(True),
-                                ),
-                                ft.FilledButton(
-                                    "Vincular QR",
-                                    icon=ft.Icons.QR_CODE_2,
-                                    height=34,
-                                    bgcolor=theme.OK,
-                                    color=theme.BG,
-                                    tooltip="Empareja un teléfono Android 11+ escaneando un código QR",
-                                    on_click=self._handle_pair_wireless_qr,
-                                ),
-                                ft.OutlinedButton(
-                                    "Refrescar",
-                                    icon=ft.Icons.REFRESH,
-                                    height=34,
-                                    on_click=lambda _: self.refresh_devices(),
-                                ),
-                                ft.PopupMenuButton(
-                                    icon=ft.Icons.MORE_VERT,
-                                    tooltip="Opciones avanzadas",
-                                    items=[
-                                        ft.PopupMenuItem(
-                                            content="Escanear mDNS / Wi-Fi",
-                                            icon=ft.Icons.SEARCH,
-                                            on_click=self._handle_scan_mdns,
-                                        ),
-                                        ft.PopupMenuItem(
-                                            content="Reiniciar servidor ADB",
-                                            icon=ft.Icons.RESTART_ALT,
-                                            on_click=self._handle_restart_adb,
-                                        ),
-                                    ],
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-                self._progress,
-                self._status_feedback,
-                # 2. Hero Card: Dispositivo Activo Actual (¡Destacado visualmente!)
-                self._hero_active_card,
-                # 3. Paneles expandibles
-                self._connect_card,
-                self._rename_card,
+        self._pin_target_label = ft.Text(
+            f"Dispositivo activo: {self._device.serial or 'Ninguno seleccionado'}",
+            size=12,
+            color=theme.TEXT_MUTED,
+        )
+        self._pin_input = ft.TextField(
+            label="PIN o Contraseña de desbloqueo",
+            hint_text="Introduce el PIN numérico o contraseña...",
+            password=True,
+            can_reveal_password=True,
+            width=320,
+            text_size=13,
+            dense=True,
+            on_submit=lambda _: self._save_session_pin(),
+        )
+        self._pin_status_badge = ft.Container(
+            content=ft.Row(
+                spacing=4,
+                tight=True,
+                controls=[
+                    ft.Icon(ft.Icons.LOCK, size=13, color=theme.WARN),
+                    ft.Text("Sin PIN en sesión", size=11, weight=ft.FontWeight.BOLD, color=theme.WARN),
+                ],
+            ),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+            bgcolor=theme.WARN_LIGHT,
+            border_radius=6,
+            border=ft.Border.all(1, theme.WARN),
+        )
 
-                # 2. Descubrimiento / diagnóstico de red con Nmap
+        # ---------------------------------------------------------------------
+        # Navegación por Sub-Secciones (Segmented Buttons)
+        # ---------------------------------------------------------------------
+        self._section_nav = ft.SegmentedButton(
+            selected=["connections"],
+            allow_multiple_selection=False,
+            segments=[
+                ft.Segment(
+                    value="connections",
+                    label=ft.Text("Conexiones & Red"),
+                    icon=ft.Icon(ft.Icons.DEVICES),
+                ),
+                ft.Segment(
+                    value="config",
+                    label=ft.Text("Configuración & Desbloqueo"),
+                    icon=ft.Icon(ft.Icons.SECURITY),
+                ),
+                ft.Segment(
+                    value="operations",
+                    label=ft.Text("Centro Operativo"),
+                    icon=ft.Icon(ft.Icons.DASHBOARD_CUSTOMIZE),
+                ),
+                ft.Segment(
+                    value="diagnostics",
+                    label=ft.Text("Comandos & Diagnóstico"),
+                    icon=ft.Icon(ft.Icons.TERMINAL),
+                ),
+            ],
+            on_change=self._handle_section_change,
+        )
+
+        # 1. Sección: Conexiones & Red (Tarjetas online agrupadas, guardadas, Nmap)
+        self._section_connections = ft.Column(
+            spacing=14,
+            visible=True,
+            controls=[
+                theme.card(
+                    ft.Column(
+                        spacing=10,
+                        controls=[
+                            ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                controls=[
+                                    ft.Row(
+                                        [
+                                            ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=theme.OK, size=18),
+                                            ft.Text("Dispositivos en Línea Detectados (ADB)", weight=ft.FontWeight.BOLD, size=14, color=theme.TEXT),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    ft.Text("Haz clic en 'Usar este dispositivo' para cambiar el teléfono activo", size=11, color=theme.TEXT_MUTED),
+                                ],
+                            ),
+                            self._online_list_col,
+                        ],
+                    )
+                ),
+                theme.card(
+                    ft.Column(
+                        spacing=10,
+                        controls=[
+                            ft.Row(
+                                [
+                                    ft.Icon(ft.Icons.BOOKMARK_BORDER, color=theme.WARN, size=18),
+                                    ft.Text("Historial de Dispositivos Registrados (devices.json)", weight=ft.FontWeight.BOLD, size=14, color=theme.TEXT),
+                                ],
+                                spacing=8,
+                            ),
+                            self._saved_list_col,
+                        ],
+                    )
+                ),
                 theme.card(
                     ft.Column(
                         spacing=10,
@@ -447,49 +488,127 @@ class DevicesPage:
                         ],
                     )
                 ),
+            ],
+        )
 
-                # 3. Dispositivos en Línea (Conectados Ahora)
-                theme.card(
-                    ft.Column(
-                        spacing=10,
-                        controls=[
-                            ft.Row(
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                controls=[
-                                    ft.Row(
-                                        [
-                                            ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=theme.OK, size=18),
-                                            ft.Text("Dispositivos en Línea Detectados (ADB)", weight=ft.FontWeight.BOLD, size=14, color=theme.TEXT),
-                                        ],
-                                        spacing=8,
-                                    ),
-                                    ft.Text("Haz clic en 'Usar este dispositivo' para cambiar el teléfono activo", size=11, color=theme.TEXT_MUTED),
-                                ],
-                            ),
-                            self._online_list_col,
-                        ],
-                    )
-                ),
-
-                # 4. Dispositivos Guardados (config/devices.json)
-                theme.card(
-                    ft.Column(
-                        spacing=10,
-                        controls=[
-                            ft.Row(
-                                [
-                                    ft.Icon(ft.Icons.BOOKMARK_BORDER, color=theme.WARN, size=18),
-                                    ft.Text("Historial de Dispositivos Registrados (devices.json)", weight=ft.FontWeight.BOLD, size=14, color=theme.TEXT),
-                                ],
-                                spacing=8,
-                            ),
-                            self._saved_list_col,
-                        ],
-                    )
-                ),
-
-                # 5. Ficha Técnica
+        # 2. Sección: Configuración & Desbloqueo (PIN editable, Pantalla/Teclas, Reinicio, Ficha técnica)
+        self._section_config = ft.Column(
+            spacing=14,
+            visible=False,
+            controls=[
+                self._build_unlock_config_card(),
+                self._build_screen_keys_card(),
+                self._build_device_settings_card(),
                 self._specs_card,
+            ],
+        )
+
+        # 3. Sección: Centro Operativo (Respaldos por perfil, Sincronización, Salud SQLite, Automatizaciones)
+        self._section_operations = ft.Column(
+            spacing=14,
+            visible=False,
+            controls=self._build_operations_controls(),
+        )
+
+        # 4. Sección: Comandos & Diagnóstico (Diagnóstico Integral ADB/Red/Hardware, Consultas, Consola)
+        self._section_diagnostics = ft.Column(
+            spacing=14,
+            visible=False,
+            controls=[
+                self.commands.view.controls[0],
+                self.commands.view.controls[2],
+                self.commands.view.controls[3],
+            ],
+        )
+
+        # ---------------------------------------------------------------------
+        # Construcción de la Vista Principal Integral
+        # ---------------------------------------------------------------------
+        self.view = ft.Column(
+            expand=True,
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            controls=[
+                # 1. Barra de Herramientas Principal
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    wrap=True,
+                    controls=[
+                        ft.Row(
+                            [
+                                ft.Icon(ft.Icons.PHONELINK_SETUP_ROUNDED, color=theme.ACCENT, size=24),
+                                ft.Column(
+                                    spacing=2,
+                                    controls=[
+                                        ft.Text("Administrador de Dispositivo", size=18, weight=ft.FontWeight.BOLD, color=theme.TEXT),
+                                        ft.Text("Control integral, configuración, diagnóstico y operaciones en un solo lugar", size=12, color=theme.TEXT_MUTED),
+                                    ],
+                                ),
+                            ],
+                            spacing=10,
+                        ),
+                        ft.Row(
+                            spacing=8,
+                            wrap=True,
+                            controls=[
+                                ft.FilledButton(
+                                    "Conectar por IP",
+                                    icon=ft.Icons.WIFI,
+                                    height=34,
+                                    on_click=lambda _: self._toggle_connect_panel(True),
+                                ),
+                                ft.FilledButton(
+                                    "Vincular QR",
+                                    icon=ft.Icons.QR_CODE_2,
+                                    height=34,
+                                    bgcolor=theme.OK,
+                                    color=theme.BG,
+                                    tooltip="Empareja un teléfono Android 11+ escaneando un código QR",
+                                    on_click=self._handle_pair_wireless_qr,
+                                ),
+                                ft.OutlinedButton(
+                                    "Refrescar",
+                                    icon=ft.Icons.REFRESH,
+                                    height=34,
+                                    on_click=lambda _: self.refresh_devices(),
+                                ),
+                                ft.PopupMenuButton(
+                                    icon=ft.Icons.MORE_VERT,
+                                    tooltip="Opciones avanzadas",
+                                    items=[
+                                        ft.PopupMenuItem(
+                                            content="Escanear mDNS / Wi-Fi",
+                                            icon=ft.Icons.SEARCH,
+                                            on_click=self._handle_scan_mdns,
+                                        ),
+                                        ft.PopupMenuItem(
+                                            content="Reiniciar servidor ADB",
+                                            icon=ft.Icons.RESTART_ALT,
+                                            on_click=self._handle_restart_adb,
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                self._progress,
+                self._status_feedback,
+                # 2. Hero Card: Dispositivo Activo Actual
+                self._hero_active_card,
+                # 3. Paneles expandibles
+                self._connect_card,
+                self._rename_card,
+                # 4. Selector de Módulos Internos
+                ft.Container(
+                    content=self._section_nav,
+                    padding=ft.Padding.only(top=2, bottom=2),
+                ),
+                # 5. Secciones de contenido dinámico
+                self._section_connections,
+                self._section_config,
+                self._section_operations,
+                self._section_diagnostics,
             ],
         )
 
@@ -588,11 +707,22 @@ class DevicesPage:
 
             self._saved_list_col.controls = saved_controls
 
+            # Cachear copia de online_items para re-renderizado rápido
+            self._last_online_items = online_items
+
             # 3. Renderizar Hero del Dispositivo Activo
             active_item = next((item for item in online_items if item["is_active"]), None)
             if not active_item and self._device.serial:
                 active_item = next((item for item in online_items if item["serial"] == self._device.serial), None)
             self._render_hero_active_card(active_item, has_any_online=bool(online_items))
+
+            # Actualizar controles de PIN en sesión para el dispositivo activo
+            self._update_pin_controls(self._device.serial)
+            if self.operations:
+                try:
+                    self.operations._load_profiles()
+                except Exception:
+                    pass
 
             try:
                 self._online_list_col.update()
@@ -610,13 +740,30 @@ class DevicesPage:
             self._set_busy(False, f"Error al refrescar dispositivos: {exc}", is_error=True)
 
     def _render_hero_active_card(self, active_item: Optional[Dict[str, Any]], has_any_online: bool) -> None:
-        """Renderiza el banner destacado del dispositivo activo en uso."""
+        """Renderiza el banner destacado del dispositivo activo en uso con estado de PIN y controles rápidos."""
         if active_item:
             title = active_item["friendly_name"]
             serial = active_item["serial"]
             is_net = active_item["is_network"]
             battery = active_item["battery"]
             bat_str = f" • Batería: {battery}%" if battery is not None else ""
+            pin_set = bool(self._unlock_credentials.get(serial))
+
+            pin_badge = ft.Container(
+                content=ft.Row(
+                    spacing=4,
+                    tight=True,
+                    controls=[
+                        ft.Icon(ft.Icons.LOCK_OPEN if pin_set else ft.Icons.LOCK, size=11, color=theme.OK if pin_set else theme.WARN),
+                        ft.Text("PIN ACTIVO EN SESIÓN" if pin_set else "SIN PIN", size=10, weight=ft.FontWeight.BOLD, color=theme.OK if pin_set else theme.WARN),
+                    ],
+                ),
+                padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                bgcolor=theme.OK_LIGHT if pin_set else theme.WARN_LIGHT,
+                border_radius=4,
+                border=ft.Border.all(1, theme.OK if pin_set else theme.WARN),
+                tooltip="PIN o contraseña configurada temporalmente en memoria para este teléfono" if pin_set else "Sin credencial de desbloqueo en memoria para esta sesión",
+            )
 
             content = ft.Container(
                 content=ft.Row(
@@ -658,6 +805,7 @@ class DevicesPage:
                                                     border_radius=4,
                                                     border=ft.Border.all(1, theme.OK),
                                                 ),
+                                                pin_badge,
                                                 ft.Text(f"Conexión: {'Wi-Fi' if is_net else 'Cable USB'}", size=11, color=theme.TEXT_MUTED),
                                             ],
                                         ),
@@ -669,12 +817,36 @@ class DevicesPage:
                         ),
                         ft.Row(
                             spacing=6,
+                            wrap=True,
                             controls=[
+                                ft.FilledButton(
+                                    "Desbloquear",
+                                    icon=ft.Icons.LOCK_OPEN,
+                                    bgcolor=theme.OK,
+                                    color=theme.BG,
+                                    height=32,
+                                    tooltip="Desbloquear pantalla usando el PIN o contraseña en sesión",
+                                    on_click=lambda _, s=serial: self._trigger_unlock(s),
+                                ),
+                                ft.OutlinedButton(
+                                    "Despertar",
+                                    icon=ft.Icons.WB_SUNNY,
+                                    height=32,
+                                    tooltip="Encender la pantalla del teléfono",
+                                    on_click=lambda _: self._wake_screen(),
+                                ),
+                                ft.OutlinedButton(
+                                    "Configurar PIN",
+                                    icon=ft.Icons.PASSWORD,
+                                    height=32,
+                                    tooltip="Ver o editar el PIN/contraseña de desbloqueo",
+                                    on_click=lambda _: self._focus_pin_config(),
+                                ),
                                 ft.OutlinedButton(
                                     "Ficha Técnica",
                                     icon=ft.Icons.INFO_OUTLINE,
                                     height=32,
-                                    on_click=lambda _: self._load_specs(serial),
+                                    on_click=lambda _, s=serial: self._show_specs_tab(s),
                                 ),
                                 ft.OutlinedButton(
                                     "Ping",
@@ -803,7 +975,7 @@ class DevicesPage:
                     "Desbloquear",
                     icon=ft.Icons.LOCK_OPEN,
                     height=32,
-                    on_click=lambda _, s=serial: self._open_unlock_dialog(s),
+                    on_click=lambda _, s=serial: self._trigger_unlock(s),
                 )
             )
 
@@ -990,6 +1162,573 @@ class DevicesPage:
             pass
 
     # -------------------------------------------------------------------------
+    # Métodos de Navegación por Sub-Secciones y Desbloqueo / PIN
+    # -------------------------------------------------------------------------
+    def _handle_section_change(self, e: ft.ControlEvent) -> None:
+        selected = list(e.control.selected) if hasattr(e.control, "selected") and e.control.selected else ["connections"]
+        self._switch_to_section(selected[0])
+
+    def _switch_to_section(self, section_name: str) -> None:
+        self._active_section = section_name
+        self._section_nav.selected = [section_name]
+        self._section_connections.visible = (section_name == "connections")
+        self._section_config.visible = (section_name == "config")
+        self._section_operations.visible = (section_name == "operations")
+        self._section_diagnostics.visible = (section_name == "diagnostics")
+        try:
+            self._section_nav.update()
+            self._section_connections.update()
+            self._section_config.update()
+            self._section_operations.update()
+            self._section_diagnostics.update()
+        except Exception:
+            try:
+                self.view.update()
+            except Exception:
+                pass
+
+    def _focus_pin_config(self) -> None:
+        self._switch_to_section("config")
+        try:
+            self._pin_input.focus()
+        except Exception:
+            pass
+
+    def _show_specs_tab(self, serial: str) -> None:
+        self._load_specs(serial)
+        self._switch_to_section("config")
+
+    def _update_pin_controls(self, serial: Optional[str] = None) -> None:
+        target = serial or self._device.serial or ""
+        curr_pin = self._unlock_credentials.get(target, "")
+        self._pin_input.value = curr_pin
+        self._pin_target_label.value = f"Dispositivo activo: {target or 'Ninguno seleccionado'}"
+        is_set = bool(curr_pin)
+        self._pin_status_badge.bgcolor = theme.OK_LIGHT if is_set else theme.WARN_LIGHT
+        self._pin_status_badge.border = ft.Border.all(1, theme.OK if is_set else theme.WARN)
+        self._pin_status_badge.content = ft.Row(
+            spacing=4,
+            tight=True,
+            controls=[
+                ft.Icon(ft.Icons.LOCK_OPEN if is_set else ft.Icons.LOCK, size=13, color=theme.OK if is_set else theme.WARN),
+                ft.Text("PIN activo en sesión (••••)" if is_set else "Sin PIN en sesión", size=11, weight=ft.FontWeight.BOLD, color=theme.OK if is_set else theme.WARN),
+            ],
+        )
+        try:
+            self._pin_input.update()
+            self._pin_target_label.update()
+            self._pin_status_badge.update()
+        except Exception:
+            pass
+
+    def _render_hero_active_card_current(self) -> None:
+        online_items = getattr(self, "_last_online_items", [])
+        active_item = next((item for item in online_items if item["is_active"]), None)
+        if not active_item and self._device.serial:
+            active_item = next((item for item in online_items if item["serial"] == self._device.serial), None)
+        self._render_hero_active_card(active_item, has_any_online=bool(online_items))
+
+    def _save_session_pin(self) -> None:
+        serial = self._device.serial
+        if not serial:
+            self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
+            return
+        val = (self._pin_input.value or "").strip()
+        if not val:
+            self._set_busy(False, "Introduce un PIN o contraseña antes de guardar.", is_error=True)
+            return
+        self._unlock_credentials[serial] = val
+        self._update_pin_controls(serial)
+        self._render_hero_active_card_current()
+        msg = f"PIN/Contraseña guardado en memoria para la sesión activa ({serial})."
+        self._log(msg, theme.OK)
+        self._set_busy(False, msg)
+
+    def _clear_session_pin(self) -> None:
+        serial = self._device.serial
+        if serial:
+            self._unlock_credentials.pop(serial, None)
+        self._pin_input.value = ""
+        self._update_pin_controls(serial)
+        self._render_hero_active_card_current()
+        msg = "Credencial eliminada de la sesión activa."
+        self._log(msg, theme.WARN)
+        self._set_busy(False, msg)
+
+    def _trigger_unlock(self, target_serial: Optional[str] = None) -> None:
+        serial = target_serial or self._device.serial
+        if not serial:
+            self._set_busy(False, "No hay dispositivo seleccionado para desbloquear.", is_error=True)
+            return
+        credential = self._unlock_credentials.get(serial, "") or (self._pin_input.value or "").strip()
+        if not credential:
+            self._open_unlock_dialog(serial)
+            return
+
+        self._unlock_credentials[serial] = credential
+        self._update_pin_controls(serial)
+        self._render_hero_active_card_current()
+        self._set_busy(True, f"Desbloqueando {serial}...")
+
+        def worker():
+            result = self._device.unlock_device(serial, credential)
+            message = result.message or result.error or "No se pudo desbloquear."
+            self._log(message, theme.OK if result.success else theme.ERR)
+            self._set_busy(False, message, is_error=not result.success)
+
+        threading.Thread(target=worker, name="dev-unlock", daemon=True).start()
+
+    def _wake_screen(self) -> None:
+        serial = self._device.serial
+        if not serial:
+            self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
+            return
+        try:
+            from ui_automation.adb_manager import get_adb_client
+            dev = get_adb_client().device(serial)
+            dev.keyevent(224)
+            msg = f"Pantalla despertada en {serial}."
+            self._set_busy(False, msg)
+            self._log(msg, theme.OK)
+        except Exception as exc:
+            err = f"Error al despertar pantalla: {exc}"
+            self._set_busy(False, err, is_error=True)
+            self._log(err, theme.ERR)
+
+    def _swipe_unlock_screen(self) -> None:
+        serial = self._device.serial
+        if not serial:
+            self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
+            return
+        try:
+            import re
+            import time
+            from ui_automation.adb_manager import get_adb_client
+            dev = get_adb_client().device(serial)
+            dev.keyevent(224)
+            time.sleep(0.3)
+            size = str(dev.shell("wm size") or "")
+            sizes = re.findall(r"(\d+)x(\d+)", size)
+            width, height = map(int, sizes[-1]) if sizes else (1080, 1920)
+            x = width // 2
+            dev.shell(f"input swipe {x} {height * 4 // 5} {x} {height // 4} 350")
+            msg = f"Deslizado hacia arriba ejecutado en {serial}."
+            self._set_busy(False, msg)
+            self._log(msg, theme.OK)
+        except Exception as exc:
+            err = f"Error al deslizar: {exc}"
+            self._set_busy(False, err, is_error=True)
+            self._log(err, theme.ERR)
+
+    def _take_screenshot(self) -> None:
+        serial = self._device.serial
+        if not serial:
+            self._set_busy(False, "No hay dispositivo seleccionado para captura.", is_error=True)
+            return
+
+        def work():
+            try:
+                self._set_busy(True, "Capturando pantalla del teléfono...")
+                from ui_automation.adb_manager import get_adb_client
+                dev = get_adb_client().device(serial)
+                pil_img = dev.screenshot()
+                shots_dir = Path("logs/screenshots")
+                shots_dir.mkdir(parents=True, exist_ok=True)
+                filename = shots_dir / f"screenshot_{datetime.now():%Y%m%d_%H%M%S}.png"
+                pil_img.save(str(filename))
+                msg = f"Captura guardada en: {filename.resolve()}"
+                self._set_busy(False, msg)
+                self._log(msg, theme.OK)
+                try:
+                    os.startfile(str(filename.resolve()))
+                except Exception:
+                    pass
+            except Exception as exc:
+                err = f"Error al tomar captura de pantalla: {exc}"
+                self._set_busy(False, err, is_error=True)
+                self._log(err, theme.ERR)
+
+        threading.Thread(target=work, name="dev-screenshot", daemon=True).start()
+
+    def _send_keyevent(self, keycode: int, name: str) -> None:
+        serial = self._device.serial
+        if not serial:
+            self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
+            return
+        try:
+            from ui_automation.adb_manager import get_adb_client
+            dev = get_adb_client().device(serial)
+            dev.keyevent(keycode)
+            msg = f"Tecla enviada: {name} (keycode {keycode})"
+            self._set_busy(False, msg)
+            self._log(msg, theme.OK)
+        except Exception as exc:
+            err = f"Error al enviar tecla {name}: {exc}"
+            self._set_busy(False, err, is_error=True)
+            self._log(err, theme.ERR)
+
+    def _expand_statusbar(self) -> None:
+        serial = self._device.serial
+        if not serial:
+            self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
+            return
+        try:
+            from ui_automation.adb_manager import get_adb_client
+            dev = get_adb_client().device(serial)
+            dev.shell("cmd statusbar expand-notifications")
+            msg = "Panel de notificaciones desplegado."
+            self._set_busy(False, msg)
+            self._log(msg, theme.OK)
+        except Exception as exc:
+            err = f"Error al desplegar notificaciones: {exc}"
+            self._set_busy(False, err, is_error=True)
+            self._log(err, theme.ERR)
+
+    def _reboot_device_mode(self, mode: Optional[str] = None) -> None:
+        serial = self._device.serial
+        if not serial:
+            self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
+            return
+        try:
+            from ui_automation.adb_manager import get_adb_client
+            dev = get_adb_client().device(serial)
+            if mode == "bootloader":
+                dev.reboot("bootloader")
+                msg = f"Dispositivo {serial} reiniciando en modo Bootloader..."
+            elif mode == "recovery":
+                dev.reboot("recovery")
+                msg = f"Dispositivo {serial} reiniciando en modo Recovery..."
+            else:
+                dev.reboot()
+                msg = f"Dispositivo {serial} reiniciando..."
+            self._set_busy(False, msg)
+            self._log(msg, theme.WARN)
+        except Exception as exc:
+            err = f"Error al reiniciar dispositivo: {exc}"
+            self._set_busy(False, err, is_error=True)
+            self._log(err, theme.ERR)
+
+    def _start_rename_active(self) -> None:
+        serial = self._device.serial
+        if not serial:
+            self._set_busy(False, "No hay dispositivo seleccionado para renombrar.", is_error=True)
+            return
+        self._toggle_rename_panel(True, target_id=serial, current_name=serial)
+
+    def _build_unlock_config_card(self) -> ft.Control:
+        return theme.card(
+            ft.Column(
+                spacing=12,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        wrap=True,
+                        controls=[
+                            ft.Row(
+                                spacing=8,
+                                controls=[
+                                    ft.Icon(ft.Icons.SECURITY, color=theme.ACCENT, size=20),
+                                    ft.Text("Desbloqueo de Pantalla (PIN / Contraseña)", weight=ft.FontWeight.BOLD, size=15),
+                                ],
+                            ),
+                            self._pin_status_badge,
+                        ],
+                    ),
+                    ft.Row(
+                        spacing=6,
+                        controls=[
+                            ft.Icon(ft.Icons.PHONE_ANDROID, size=14, color=theme.TEXT_MUTED),
+                            self._pin_target_label,
+                        ],
+                    ),
+                    ft.Text(
+                        "Configura y edita aquí el PIN numérico o contraseña de tu teléfono. "
+                        "Al guardarlo en la sesión, podrás desbloquear la pantalla instantáneamente con un solo clic.",
+                        size=12,
+                        color=theme.TEXT_MUTED,
+                    ),
+                    ft.Row(
+                        spacing=10,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            self._pin_input,
+                            ft.FilledButton(
+                                "Guardar en Sesión",
+                                icon=ft.Icons.SAVE,
+                                height=36,
+                                on_click=lambda _: self._save_session_pin(),
+                            ),
+                            ft.FilledButton(
+                                "Desbloquear Ahora",
+                                icon=ft.Icons.LOCK_OPEN,
+                                bgcolor=theme.OK,
+                                color=theme.BG,
+                                height=36,
+                                on_click=lambda _: self._trigger_unlock(),
+                            ),
+                            ft.OutlinedButton(
+                                "Borrar PIN",
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                height=36,
+                                on_click=lambda _: self._clear_session_pin(),
+                            ),
+                        ],
+                    ),
+                    ft.Row(
+                        spacing=10,
+                        wrap=True,
+                        controls=[
+                            ft.OutlinedButton(
+                                "Despertar Pantalla",
+                                icon=ft.Icons.WB_SUNNY,
+                                height=32,
+                                on_click=lambda _: self._wake_screen(),
+                            ),
+                            ft.OutlinedButton(
+                                "Deslizar Arriba (Swipe)",
+                                icon=ft.Icons.SWIPE_UP,
+                                height=32,
+                                on_click=lambda _: self._swipe_unlock_screen(),
+                            ),
+                        ],
+                    ),
+                    ft.Container(
+                        padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                        bgcolor=theme.SURFACE_ALT,
+                        border_radius=6,
+                        border=ft.Border.all(1, theme.BORDER),
+                        content=ft.Row(
+                            spacing=6,
+                            controls=[
+                                ft.Icon(ft.Icons.INFO_OUTLINE, size=14, color=theme.ACCENT),
+                                ft.Text(
+                                    "Seguridad: Esta credencial se conserva únicamente en memoria RAM durante la sesión activa "
+                                    "y se destruye al cerrar la aplicación. No se persiste en devices.json ni en disco.",
+                                    size=11,
+                                    color=theme.TEXT_MUTED,
+                                ),
+                            ],
+                        ),
+                    ),
+                ],
+            )
+        )
+
+    def _build_screen_keys_card(self) -> ft.Control:
+        return theme.card(
+            ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Row(
+                        spacing=8,
+                        controls=[
+                            ft.Icon(ft.Icons.TOUCH_APP_OUTLINED, color=theme.ACCENT, size=20),
+                            ft.Text("Control de Pantalla y Teclas Físicas", weight=ft.FontWeight.BOLD, size=15),
+                        ],
+                    ),
+                    ft.Row(
+                        wrap=True,
+                        spacing=10,
+                        controls=[
+                            ft.FilledButton("Capturar Pantalla", icon=ft.Icons.CAMERA_ALT, on_click=lambda _: self._take_screenshot()),
+                            ft.OutlinedButton("Despertar Pantalla", icon=ft.Icons.WB_SUNNY, on_click=lambda _: self._wake_screen()),
+                            ft.OutlinedButton("Botón Power", icon=ft.Icons.POWER_SETTINGS_NEW, on_click=lambda _: self._send_keyevent(26, "Power")),
+                            ft.OutlinedButton("Botón Inicio", icon=ft.Icons.HOME, on_click=lambda _: self._send_keyevent(3, "Home")),
+                            ft.OutlinedButton("Botón Atrás", icon=ft.Icons.ARROW_BACK, on_click=lambda _: self._send_keyevent(4, "Atrás")),
+                            ft.OutlinedButton("Bajar Notificaciones", icon=ft.Icons.NOTIFICATIONS, on_click=lambda _: self._expand_statusbar()),
+                        ],
+                    ),
+                ],
+            )
+        )
+
+    def _build_device_settings_card(self) -> ft.Control:
+        return theme.card(
+            ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Row(
+                        spacing=8,
+                        controls=[
+                            ft.Icon(ft.Icons.SETTINGS_OUTLINED, color=theme.OK, size=20),
+                            ft.Text("Ajustes, Conectividad y Reinicios", weight=ft.FontWeight.BOLD, size=15),
+                        ],
+                    ),
+                    ft.Row(
+                        wrap=True,
+                        spacing=10,
+                        controls=[
+                            ft.OutlinedButton(
+                                "Renombrar Dispositivo",
+                                icon=ft.Icons.EDIT,
+                                on_click=lambda _: self._start_rename_active(),
+                            ),
+                            ft.OutlinedButton(
+                                "Convertir a Wi-Fi (puerto 5555)",
+                                icon=ft.Icons.WIFI,
+                                on_click=lambda _: self._action_convert_wifi(self._device.serial),
+                            ),
+                            ft.OutlinedButton(
+                                "Reiniciar Normal",
+                                icon=ft.Icons.RESTART_ALT,
+                                on_click=lambda _: self._reboot_device_mode(None),
+                            ),
+                            ft.OutlinedButton(
+                                "Reiniciar en Bootloader",
+                                icon=ft.Icons.FLASH_ON,
+                                on_click=lambda _: self._reboot_device_mode("bootloader"),
+                            ),
+                            ft.OutlinedButton(
+                                "Reiniciar en Recovery",
+                                icon=ft.Icons.BUILD,
+                                on_click=lambda _: self._reboot_device_mode("recovery"),
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        )
+
+    def _build_operations_controls(self) -> List[ft.Control]:
+        if not self.operations:
+            return [
+                theme.card(
+                    ft.Text(
+                        "El servicio de cola de trabajos no está inicializado para el Centro Operativo.",
+                        size=13,
+                        color=theme.TEXT_MUTED,
+                    )
+                )
+            ]
+        return [
+            theme.card(
+                ft.Column(
+                    spacing=10,
+                    controls=[
+                        ft.Row(
+                            spacing=8,
+                            controls=[
+                                ft.Icon(ft.Icons.BACKUP_ROUNDED, color=theme.ACCENT, size=20),
+                                ft.Text("Centro de Respaldos Rápidos", size=16, weight=ft.FontWeight.BOLD),
+                            ],
+                        ),
+                        ft.Text(
+                            "El avance, pausa, continuación y cancelación aparecen en la cola inferior de trabajos.",
+                            color=theme.TEXT_MUTED,
+                            size=12,
+                        ),
+                        ft.Row(
+                            wrap=True,
+                            spacing=10,
+                            controls=[
+                                self.operations.backup_profile,
+                                self.operations.destination,
+                                ft.FilledButton(
+                                    "Encolar respaldo",
+                                    icon=ft.Icons.BACKUP,
+                                    height=36,
+                                    on_click=self.operations._enqueue_backup,
+                                ),
+                            ],
+                        ),
+                    ],
+                )
+            ),
+            theme.card(
+                ft.Column(
+                    spacing=10,
+                    controls=[
+                        ft.Row(
+                            spacing=8,
+                            controls=[
+                                ft.Icon(ft.Icons.SYNC_ROUNDED, color=theme.OK, size=20),
+                                ft.Text("Sincronización de Carpetas", size=16, weight=ft.FontWeight.BOLD),
+                            ],
+                        ),
+                        ft.Row(
+                            wrap=True,
+                            spacing=10,
+                            controls=[
+                                self.operations.sync_profile,
+                                ft.FilledButton(
+                                    "Encolar sincronización",
+                                    icon=ft.Icons.SYNC,
+                                    height=36,
+                                    on_click=self.operations._enqueue_sync,
+                                ),
+                            ],
+                        ),
+                        ft.Text("Perfiles guardados por el servicio de sincronización.", color=theme.TEXT_MUTED, size=11),
+                    ],
+                )
+            ),
+            theme.card(
+                ft.Column(
+                    spacing=10,
+                    controls=[
+                        ft.Row(
+                            spacing=8,
+                            controls=[
+                                ft.Icon(ft.Icons.MONITOR_HEART_ROUNDED, color=theme.WARN, size=20),
+                                ft.Text("Salud del Dispositivo y Telemetría", size=16, weight=ft.FontWeight.BOLD),
+                            ],
+                        ),
+                        ft.Row(
+                            spacing=10,
+                            controls=[
+                                ft.FilledButton(
+                                    "Diagnosticar Salud",
+                                    icon=ft.Icons.MONITOR_HEART,
+                                    height=36,
+                                    on_click=self.operations._diagnose,
+                                ),
+                                ft.Text("Guarda historial continuo en SQLite.", color=theme.TEXT_MUTED, size=12),
+                            ],
+                        ),
+                        self.operations.health_result,
+                    ],
+                )
+            ),
+            theme.card(
+                ft.Column(
+                    spacing=10,
+                    controls=[
+                        ft.Row(
+                            spacing=8,
+                            controls=[
+                                ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, color=theme.ACCENT, size=20),
+                                ft.Text("Automatizaciones al Conectar Dispositivo", size=16, weight=ft.FontWeight.BOLD),
+                            ],
+                        ),
+                        ft.Row(
+                            wrap=True,
+                            spacing=10,
+                            controls=[
+                                self.operations.automation_name,
+                                ft.FilledButton(
+                                    "Guardar regla device_connected",
+                                    icon=ft.Icons.ADD,
+                                    height=36,
+                                    on_click=self.operations._save_rule,
+                                ),
+                                ft.OutlinedButton(
+                                    "Actualizar reglas",
+                                    icon=ft.Icons.REFRESH,
+                                    height=36,
+                                    on_click=self.operations._refresh_rules,
+                                ),
+                            ],
+                        ),
+                        self.operations.automation_status,
+                        self.operations.automation_rules_list,
+                    ],
+                )
+            ),
+            self.operations.status,
+        ]
+
+    # -------------------------------------------------------------------------
     # Acciones de Dispositivos (Workers Asíncronos)
     # -------------------------------------------------------------------------
     def _open_unlock_dialog(self, serial: str) -> None:
@@ -1006,22 +1745,18 @@ class DevicesPage:
         )
 
         def submit(_event):
-            credential = field.value or ""
+            credential = (field.value or "").strip()
             if not credential:
                 self._set_busy(False, "Introduce el PIN o la contraseña.", is_error=True)
                 return
             self._unlock_credentials[serial] = credential
-            field.value = ""
-            page.pop_dialog()
-            self._set_busy(True, f"Desbloqueando {serial}...")
-
-            def worker():
-                result = self._device.unlock_device(serial, credential)
-                message = result.message or result.error or "No se pudo desbloquear."
-                self._log(message, theme.OK if result.success else theme.ERR)
-                self._set_busy(False, message, is_error=not result.success)
-
-            threading.Thread(target=worker, name="dev-unlock", daemon=True).start()
+            self._update_pin_controls(serial)
+            self._render_hero_active_card_current()
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
+            self._trigger_unlock(serial)
 
         page.show_dialog(ft.AlertDialog(
             modal=True,
@@ -1768,3 +2503,13 @@ class DevicesPage:
         self._network_scan_cancel.set()
         self._network_scanner.cancel_active_scan()
         self._device.remove_device_change_listener(self.refresh_devices)
+        if self.commands and hasattr(self.commands, "shutdown"):
+            try:
+                self.commands.shutdown()
+            except Exception:
+                pass
+        if self.operations and hasattr(self.operations, "shutdown"):
+            try:
+                self.operations.shutdown()
+            except Exception:
+                pass

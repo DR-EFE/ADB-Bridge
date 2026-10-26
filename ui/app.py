@@ -70,14 +70,18 @@ class AndroidToolsApp:
             page=page,
             on_log=self._on_custom_log,
             on_device_changed=lambda _: self.sidebar.refresh_now(),
+            job_queue=self.job_queue,
         )
         self.logs = LogsPage(page)
         self.notifications = NotificationsPage(self.device)
         self.whatsapp = WhatsAppPage(self.device, job_queue=self.job_queue)
         self.explorer = ExplorerPage(self.device, page=page, on_log=self._on_custom_log)
         self.backup = BackupPage(self.device, page=page, on_log=self._on_custom_log, job_queue=self.job_queue)
-        self.commands = CommandsPage(self.device, on_log=self._on_custom_log)
-        self.operations = OperationsPage(self.device, self.job_queue, page=page, on_log=self._on_custom_log)
+        # Comandos y Centro Operativo integrados en el Administrador de Dispositivo (mantenidos como atributos para compatibilidad)
+        self.commands = getattr(self.devices, "commands", None) or CommandsPage(self.device, on_log=self._on_custom_log)
+        self.operations = getattr(self.devices, "operations", None) or OperationsPage(
+            self.device, self.job_queue, page=page, on_log=self._on_custom_log
+        )
 
         # Conectar logging global de Python al visor de logs
         self._log_handler = GlobalUiLogHandler(self.logs)
@@ -128,16 +132,15 @@ class AndroidToolsApp:
         )
 
         # Sistema de pestañas con barra superior integrada y botón de menú desplegable
+        # Sistema de pestañas con barra superior integrada y botón de menú desplegable
         self._tab_bar = ft.TabBar(
             tabs=[
-                ft.Tab(label="Dispositivos", icon=ft.Icons.PHONELINK_SETUP_OUTLINED),
+                ft.Tab(label="Administrador de Dispositivo", icon=ft.Icons.PHONELINK_SETUP_OUTLINED),
                 ft.Tab(label="Explorador & Transferencias", icon=ft.Icons.FOLDER_SPECIAL_OUTLINED),
                 ft.Tab(label="Backup avanzado", icon=ft.Icons.BACKUP_OUTLINED),
                 ft.Tab(label="WhatsApp Extractor", icon=ft.Icons.CHAT_OUTLINED),
                 ft.Tab(label="Monitor de Notificaciones", icon=ft.Icons.NOTIFICATIONS_ACTIVE_OUTLINED),
-                ft.Tab(label="Comandos & Diagnóstico", icon=ft.Icons.BOLT_OUTLINED),
                 ft.Tab(label="Registro & Salida (Log)", icon=ft.Icons.RECEIPT_LONG_OUTLINED),
-                ft.Tab(label="Centro operativo", icon=ft.Icons.DASHBOARD_OUTLINED),
             ]
         )
 
@@ -157,7 +160,7 @@ class AndroidToolsApp:
         )
 
         self.tabs = ft.Tabs(
-            length=8,
+            length=6,
             selected_index=0,
             expand=True,
             content=ft.Column(
@@ -170,8 +173,8 @@ class AndroidToolsApp:
                         controls=[
                             theme.module_view(
                                 "01",
-                                "Dispositivos",
-                                "Conexiones USB/Wi-Fi | seleccion segura | estado del equipo",
+                                "Administrador de Dispositivo",
+                                "Conexiones USB/Wi-Fi | configuraciones & PIN | centro operativo | diagnóstico",
                                 self.devices.view,
                             ),
                             theme.module_view(
@@ -200,17 +203,10 @@ class AndroidToolsApp:
                             ),
                             theme.module_view(
                                 "06",
-                                "Comandos y diagnostico",
-                                "Herramientas ADB | diagnostico | captura",
-                                self.commands.view,
-                            ),
-                            theme.module_view(
-                                "07",
                                 "Registro y salida",
                                 "Actividad tecnica en tiempo real | filtros | exportacion",
                                 self.logs.view,
                             ),
-                            theme.module_view("08", "Centro operativo", "Perfiles, diagnóstico y cola reanudable", self.operations.view),
                         ],
                     ),
                 ],
@@ -332,7 +328,7 @@ class AndroidToolsApp:
         logger.info("Cerrando Android Tools...")
         self.sidebar.stop_polling()
         self.device.stop_usb_auto_connect_monitor()
-        for page in (self.devices, self.explorer, self.backup, self.whatsapp, self.notifications, self.commands, self.logs, self.operations):
+        for page in (self.devices, self.explorer, self.backup, self.whatsapp, self.notifications, self.logs):
             page.shutdown()
         self.job_queue.shutdown()
         if self._log_handler:
