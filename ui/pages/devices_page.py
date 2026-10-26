@@ -35,6 +35,7 @@ class DevicesPage:
         self._on_device_changed = on_device_changed
         self._refresh_lock = threading.Lock()
         self._is_shutdown = False
+        self._unlock_credentials: Dict[str, str] = {}
         # El monitor USB -> Wi-Fi corre fuera de esta página.  Este callback
         # actualiza las tarjetas justo al cambiar ADB, sin pulsar Refrescar.
         self._device.add_device_change_listener(self.refresh_devices)
@@ -796,6 +797,16 @@ class DevicesPage:
                 )
             )
 
+        if state == "device":
+            actions.append(
+                ft.OutlinedButton(
+                    "Desbloquear",
+                    icon=ft.Icons.LOCK_OPEN,
+                    height=32,
+                    on_click=lambda _, s=serial: self._open_unlock_dialog(s),
+                )
+            )
+
         if not is_net and state == "device" and dev.get("mode") == "tcpip-5555":
             actions.append(
                 ft.OutlinedButton(
@@ -981,6 +992,52 @@ class DevicesPage:
     # -------------------------------------------------------------------------
     # Acciones de Dispositivos (Workers Asíncronos)
     # -------------------------------------------------------------------------
+    def _open_unlock_dialog(self, serial: str) -> None:
+        page = self._page or getattr(self.view, "page", None)
+        if not page:
+            return
+        field = ft.TextField(
+            label="PIN o contraseña",
+            value=self._unlock_credentials.get(serial, ""),
+            password=True,
+            can_reveal_password=True,
+            autofocus=True,
+            width=330,
+        )
+
+        def submit(_event):
+            credential = field.value or ""
+            if not credential:
+                self._set_busy(False, "Introduce el PIN o la contraseña.", is_error=True)
+                return
+            self._unlock_credentials[serial] = credential
+            field.value = ""
+            page.pop_dialog()
+            self._set_busy(True, f"Desbloqueando {serial}...")
+
+            def worker():
+                result = self._device.unlock_device(serial, credential)
+                message = result.message or result.error or "No se pudo desbloquear."
+                self._log(message, theme.OK if result.success else theme.ERR)
+                self._set_busy(False, message, is_error=not result.success)
+
+            threading.Thread(target=worker, name="dev-unlock", daemon=True).start()
+
+        page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Desbloquear dispositivo"),
+            content=ft.Column([
+                ft.Text(f"Conexión seleccionada: {serial}", size=12, color=theme.TEXT_MUTED),
+                field,
+                ft.Text("Se detectará PIN primero y, si no aparece, contraseña. El dato se conserva solo durante esta sesión.",
+                        size=11, color=theme.TEXT_MUTED),
+            ], tight=True, width=380),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda _: page.pop_dialog()),
+                ft.FilledButton("Desbloquear", on_click=submit),
+            ],
+        ))
+
     def _action_set_active(self, serial: str) -> None:
         self._set_busy(True, f"Cambiando dispositivo activo a {serial}...")
 
@@ -1706,6 +1763,7 @@ class DevicesPage:
     def shutdown(self) -> None:
         """Cierre de la página."""
         self._is_shutdown = True
+        self._unlock_credentials.clear()
         self._guardian_stop.set()
         self._network_scan_cancel.set()
         self._network_scanner.cancel_active_scan()

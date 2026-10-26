@@ -114,6 +114,7 @@ class NotificationMonitor:
         important_filename: str = DEFAULT_IMPORTANT_FILENAME,
         device_copy_path: Optional[str] = DEFAULT_DEVICE_COPY_PATH,
         save_all_notifications: bool = True,
+        device_id: Optional[str] = None,
     ):
         """
         :param serial: Serial USB o ``IP:PUERTO``. None = autodetección.
@@ -135,6 +136,7 @@ class NotificationMonitor:
         self.important_filename = important_filename
         self.device_copy_path = device_copy_path
         self.save_all_notifications = save_all_notifications
+        self.device_id = device_id
 
         self.device_mgr = DeviceManager(serial=self.serial)
         self.ollama_mgr = OllamaServiceManager()
@@ -224,7 +226,11 @@ class NotificationMonitor:
         logger.info("Nueva notificación: [%s] %s - %s", item.package, item.title, item.text)
 
         if self.save_all_notifications:
-            _append_json_record(self._daily_log_path(), item.to_dict())
+            record = item.to_dict()
+            record["device_serial"] = self._device_serial
+            if self.device_id:
+                record["device_id"] = self.device_id
+            _append_json_record(self._daily_log_path(), record)
             self._enqueue_ai_classification(item)
 
         result = classify_notification(item, use_ai=self.use_ai)  # Nunca lanza excepciones.
@@ -256,6 +262,10 @@ class NotificationMonitor:
                 records = _read_json_list(path)
                 changed = False
                 for record in records:
+                    if self.device_id and record.get("device_id") != self.device_id:
+                        continue
+                    if not self.device_id and record.get("device_serial") != self._device_serial:
+                        continue
                     if record.get("key") == item.key or (
                         record.get("package") == item.package and record.get("title") == item.title and record.get("text") == item.text
                     ):
@@ -285,6 +295,8 @@ class NotificationMonitor:
             "notification": item.to_dict(),
             "classification": result.to_dict(),
         }
+        if self.device_id:
+            event["device_id"] = self.device_id
 
         saved = _append_json_record(self._daily_important_log_path(), event)
         copied = self._copy_to_device() if saved else False

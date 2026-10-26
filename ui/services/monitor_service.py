@@ -38,6 +38,9 @@ class UiNotificationMonitor(NotificationMonitor):
                     "titulo": item.title,
                     "texto": item.text,
                     "package": item.package,
+                    "timestamp": item.timestamp,
+                    "device_serial": self._device_serial,
+                    "device_id": self.device_id,
                     "razon": result.razon,
                 }
             )

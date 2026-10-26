@@ -738,10 +738,13 @@ class TestDeviceService(unittest.TestCase):
 
         mock_client.list.return_value = [dev1, dev2]
 
-        mock_dev = MagicMock()
-        mock_dev.getprop.return_value = "Phone"
-        mock_dev.shell.return_value = "level: 50"
-        mock_client.device.return_value = mock_dev
+        mock_dev_a = MagicMock()
+        mock_dev_a.getprop.return_value = "PHONE-A-SERIAL"
+        mock_dev_a.shell.return_value = "level: 50"
+        mock_dev_b = MagicMock()
+        mock_dev_b.getprop.return_value = "PHONE-B-SERIAL"
+        mock_dev_b.shell.return_value = "level: 50"
+        mock_client.device.side_effect = lambda serial: mock_dev_a if serial == "USB_SERIAL_A" else mock_dev_b
         mock_get_client.return_value = mock_client
 
         service = DeviceService(devices_json_path=self.canonical_json)
@@ -764,6 +767,76 @@ class TestDeviceService(unittest.TestCase):
         self.assertFalse(status_after.requires_selection)
         self.assertTrue(status_after.connected)
         self.assertEqual(status_after.serial, "USB_SERIAL_A")
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_usb_and_wifi_same_phone_are_one_device(self, mock_get_client):
+        save_devices_store({"SchemaVersion": 1, "CurrentDeviceId": None, "Devices": []}, self.canonical_json)
+        client = MagicMock()
+        client.list.return_value = [
+            SimpleNamespace(serial="USB-A", state="device"),
+            SimpleNamespace(serial="192.168.1.50:5555", state="device"),
+        ]
+        dev = MagicMock()
+        dev.getprop.return_value = "REAL-PHONE-SERIAL"
+        dev.shell.return_value = "level: 50"
+        client.device.return_value = dev
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch.object(service, "find_wireless_devices", return_value=[]):
+            status = service.get_status()
+        self.assertTrue(status.connected)
+        self.assertFalse(status.requires_selection)
+        self.assertEqual(1, len(status.available_devices))
+        cards = service.get_management_data()["cards"]
+        self.assertEqual(1, len(cards), cards)
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_unlock_prefers_pin_and_never_enters_password_text(self, mock_get_client):
+        client = MagicMock()
+        client.list.return_value = [SimpleNamespace(serial="USB-A", state="device")]
+        dev = MagicMock()
+        dev.shell.side_effect = lambda command: (
+            "Physical size: 1080x1920" if command == "wm size" else
+            '<node resource-id="com.android.systemui:id/pinEntry" />'
+            '<node resource-id="com.android.systemui:id/passwordEntry" />'
+            if command == "uiautomator dump /dev/tty" else ""
+        )
+        client.device.return_value = dev
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch("ui.services.device_service.time.sleep"):
+            result = service.unlock_device("USB-A", "1234")
+        self.assertTrue(result.success)
+        commands = [call.args[0] for call in dev.shell.call_args_list]
+        self.assertIn("input keyevent KEYCODE_WAKEUP", commands)
+        self.assertIn("input swipe 540 1536 540 480 350", commands)
+        self.assertEqual(4, len([command for command in commands if command.startswith("input keyevent KEYCODE_") and command[-1].isdigit()]))
+        self.assertFalse(any(command.startswith("input text ") for command in commands))
+
+    def test_unlock_rejects_empty_credential(self):
+        service = DeviceService(devices_json_path=self.canonical_json)
+        self.assertFalse(service.unlock_device("USB-A", "").success)
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_unlock_password_and_unknown_prompt(self, mock_get_client):
+        client = MagicMock()
+        client.list.return_value = [SimpleNamespace(serial="USB-A", state="device")]
+        dev = MagicMock()
+        client.device.return_value = dev
+        mock_get_client.return_value = client
+        service = DeviceService(devices_json_path=self.canonical_json)
+        with patch("ui.services.device_service.time.sleep"):
+            dev.shell.side_effect = lambda command: (
+                '<node resource-id="com.android.systemui:id/passwordEntry" />'
+                if command == "uiautomator dump /dev/tty" else ""
+            )
+            self.assertTrue(service.unlock_device("USB-A", "abc 123").success)
+            self.assertIn("input text abc%s123", [call.args[0] for call in dev.shell.call_args_list])
+            dev.shell.reset_mock()
+            dev.shell.return_value = ""
+            dev.shell.side_effect = None
+            self.assertFalse(service.unlock_device("USB-A", "abc123").success)
+            self.assertFalse(any(call.args[0].startswith("input text ") for call in dev.shell.call_args_list))
 
     def test_device_actions_crud(self):
         """Verifica las acciones públicas de DeviceService: rename, set_primary, disconnect, remove."""

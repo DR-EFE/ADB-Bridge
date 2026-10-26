@@ -7,8 +7,6 @@ Persiste y consulta desde la carpeta independiente 'notifications/'.
 
 from __future__ import annotations
 
-import json
-import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -19,13 +17,11 @@ import flet as ft
 from .. import theme
 from ..services.device_service import DeviceService
 from ..services.monitor_service import UiNotificationMonitor
+from ..services.notification_history import UNKNOWN_DEVICE, device_key, event_day, event_identity, load_notification_history
 from ..tasks import BackgroundTask
 
-logger = logging.getLogger("ui.notifications")
-
-MAX_DISPLAY_RECORDS = 300
+PAGE_SIZE = 20
 NOTIFICATIONS_DIR = Path("notifications")
-IMPORTANT_FILE = NOTIFICATIONS_DIR / "notificaciones_importantes.json"
 
 
 class NotificationsPage:
@@ -40,6 +36,7 @@ class NotificationsPage:
 
         # Almacén en memoria de eventos para filtros en tiempo real
         self._all_events: List[Dict[str, Any]] = []
+        self._visible_count = PAGE_SIZE
 
         # Controles superiores de encendido / configuración
         self._toggle_btn = ft.FilledButton(
@@ -101,13 +98,23 @@ class NotificationsPage:
             text_size=12,
             on_change=self._on_filter_changed,
         )
-        self._filter_date = ft.TextField(
-            label="Filtrar por fecha",
-            hint_text="YYYY-MM-DD",
-            width=150,
+        self._filter_device = ft.Dropdown(
+            label="Historial por dispositivo",
+            options=[ft.dropdown.Option("TODOS", "Todos los dispositivos")],
+            value="TODOS",
+            width=240,
             text_size=12,
-            on_change=self._on_filter_changed,
+            on_select=self._on_filter_changed,
         )
+        self._filter_date = ft.Dropdown(
+            label="Día",
+            options=[ft.dropdown.Option("TODOS", "Todos los días")],
+            value="TODOS",
+            width=170,
+            text_size=12,
+            on_select=self._on_filter_changed,
+        )
+        self._btn_more = ft.OutlinedButton("Mostrar 20 más", on_click=self._on_show_more)
         self._btn_reload = ft.IconButton(
             icon=ft.Icons.REFRESH,
             tooltip="Recargar notificaciones desde disco",
@@ -215,6 +222,7 @@ class NotificationsPage:
                                         spacing=8,
                                         controls=[
                                             self._filter_tipo,
+                                            self._filter_device,
                                             self._filter_app,
                                             self._filter_date,
                                             self._btn_reload,
@@ -273,6 +281,7 @@ class NotificationsPage:
         # Monitor configurado para guardar en carpeta independiente 'notifications'
         self._monitor = UiNotificationMonitor(
             serial=serial,
+            device_id=next((info.device_id for info in status.available_devices if info.serial == serial), None),
             logs_dir=str(NOTIFICATIONS_DIR),
             poll_interval=interval,
             use_ai=use_ai,
@@ -314,12 +323,23 @@ class NotificationsPage:
     # ----------------------------------------------------------- eventos
 
     def _on_any_notification(self, item: Any) -> None:
-        if self._event_key({"package": getattr(item, "package", ""), "titulo": getattr(item, "title", ""), "texto": getattr(item, "text", "")}) in getattr(self, "_important_keys", set()):
+        source_event = {
+            "device_serial": getattr(self._monitor, "_device_serial", None) or self._device.serial or UNKNOWN_DEVICE,
+            "device_id": getattr(self._monitor, "device_id", None),
+            "package": getattr(item, "package", ""),
+            "titulo": getattr(item, "title", ""),
+            "texto": getattr(item, "text", ""),
+            "timestamp": getattr(item, "timestamp", "") or "",
+        }
+        if self._event_key(source_event) in getattr(self, "_important_keys", set()):
             return
         self._new_count += 1
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         event = {
-            "fecha": now_str,
+            "fecha": source_event["timestamp"] or now_str,
+            "timestamp": source_event["timestamp"],
+            "device_serial": source_event["device_serial"],
+            "device_id": source_event["device_id"],
             "tipo": "NORMAL",
             "codigo": "",
             "fuente": "live",
@@ -328,8 +348,8 @@ class NotificationsPage:
             "package": getattr(item, "package", ""),
         }
         self._all_events.insert(0, event)
-        if len(self._all_events) > MAX_DISPLAY_RECORDS:
-            self._all_events.pop()
+        self._all_events.sort(key=lambda item: str(item.get("fecha") or "").replace("T", " "), reverse=True)
+        self._refresh_history_filters()
         self._update_stats()
         self._render_table()
 
@@ -339,7 +359,10 @@ class NotificationsPage:
         self._important_count += 1
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         entry = {
-            "fecha": now_str,
+            "fecha": event.get("timestamp") or now_str,
+            "timestamp": event.get("timestamp") or "",
+            "device_serial": event.get("device_serial") or self._device.serial or UNKNOWN_DEVICE,
+            "device_id": event.get("device_id"),
             "tipo": event.get("tipo", "IMPORTANTE"),
             "codigo": event.get("codigo", ""),
             "fuente": event.get("fuente", "reglas"),
@@ -349,8 +372,8 @@ class NotificationsPage:
         }
         # Insertar al inicio
         self._all_events.insert(0, entry)
-        if len(self._all_events) > MAX_DISPLAY_RECORDS:
-            self._all_events.pop()
+        self._all_events.sort(key=lambda item: str(item.get("fecha") or "").replace("T", " "), reverse=True)
+        self._refresh_history_filters()
         self._update_stats()
         self._render_featured()
         self._render_table()
@@ -358,83 +381,76 @@ class NotificationsPage:
     # ----------------------------------------------------- persistencia y carga
 
     def _load_persisted_notifications(self) -> None:
-        """Carga eventos históricos desde 'notifications/' o retrocompatible con 'logs/'."""
-        events: List[Dict[str, Any]] = []
-        self._important_keys = set()
-        important_keys = set()
-
-        # 1. Cargar importantes
-        candidate_important = [
-            NOTIFICATIONS_DIR / "notificaciones_importantes.json",
-            Path("logs/notificaciones_importantes.json"),
-        ]
-        candidate_important.extend(sorted(NOTIFICATIONS_DIR.glob("important_*.json"), reverse=True)[:7])
-        for p in candidate_important:
-            if p.exists():
-                try:
-                    data = json.loads(p.read_text(encoding="utf-8"))
-                    if isinstance(data, list):
-                        for item in data:
-                            notif = item.get("notification", {})
-                            cls = item.get("classification", {})
-                            event = {
-                                "fecha": item.get("detected_at", ""),
-                                "tipo": item.get("tipo") or cls.get("tipo") or "IMPORTANTE",
-                                "codigo": item.get("codigo") or cls.get("codigo") or "",
-                                "fuente": item.get("fuente") or cls.get("fuente") or "",
-                                "titulo": notif.get("title", ""),
-                                "texto": notif.get("text", ""),
-                                "package": notif.get("package", ""),
-                            }
-                            important_keys.add(self._event_key(event))
-                            self._important_keys.add(self._event_key(event))
-                            events.append(event)
-                        break
-                except Exception as exc:
-                    logger.debug("Error leyendo %s: %s", p, exc)
-
-        # 2. Cargar notificaciones diarias
-        daily_files = list(NOTIFICATIONS_DIR.glob("notifications_*.json"))
-        if not daily_files:
-            daily_files = list(Path("logs").glob("notifications_*.json"))
-        for df in sorted(daily_files, reverse=True)[:3]:  # Últimos 3 días
-            try:
-                d_data = json.loads(df.read_text(encoding="utf-8"))
-                if isinstance(d_data, list):
-                    for item in d_data:
-                        event = {
-                            "fecha": item.get("timestamp") or item.get("detected_at", ""),
-                            "tipo": item.get("tipo", "NORMAL"),
-                            "codigo": item.get("codigo", ""),
-                            "fuente": item.get("fuente", "diario"),
-                            "titulo": item.get("title", ""),
-                            "texto": item.get("text", ""),
-                            "package": item.get("package", ""),
-                        }
-                        if self._event_key(event) not in important_keys:
-                            events.append(event)
-            except Exception:
-                pass
-
-        # Ordenar por fecha descendente y deduplicar
-        events.sort(key=lambda x: str(x.get("fecha", "")), reverse=True)
-        self._all_events = events[:MAX_DISPLAY_RECORDS]
+        """Carga todo el historial y conserva el dispositivo de cada evento."""
+        self._all_events = load_notification_history(NOTIFICATIONS_DIR, Path("logs"))
+        self._important_keys = {
+            self._event_key(event)
+            for event in self._all_events
+            if event.get("tipo") in ("OTP", "ALERTA")
+        }
+        self._visible_count = PAGE_SIZE
+        self._refresh_history_filters()
         self._render_featured()
         self._render_table()
 
     @staticmethod
     def _event_key(event: Dict[str, Any]) -> tuple:
-        return (
-            str(event.get("package", "")),
-            str(event.get("titulo", event.get("title", ""))),
-            str(event.get("texto", event.get("text", ""))),
-        )
+        return event_identity(event)
+
+    def _refresh_history_filters(self) -> None:
+        labels: Dict[str, str] = {}
+        for event in self._all_events:
+            key = device_key(event)
+            labels.setdefault(key, str(event.get("device_serial") or key))
+        if self._device.serial and not any(event.get("device_serial") == self._device.serial for event in self._all_events):
+            labels[self._device.serial] = self._device.serial
+        self._device_labels = labels
+        devices = sorted(labels)
+        days = sorted({event_day(event) for event in self._all_events}, reverse=True)
+        device_value = self._filter_device.value or "TODOS"
+        day_value = self._filter_date.value or "TODOS"
+        self._filter_device.options = [ft.dropdown.Option("TODOS", "Todos los dispositivos")] + [
+            ft.dropdown.Option(value, labels[value]) for value in devices
+        ]
+        self._filter_date.options = [ft.dropdown.Option("TODOS", "Todos los días")] + [
+            ft.dropdown.Option(value, value) for value in days
+        ]
+        self._filter_device.value = device_value if device_value in devices else "TODOS"
+        self._filter_date.value = day_value if day_value in days else "TODOS"
+        for control in (self._filter_device, self._filter_date):
+            try:
+                control.update()
+            except Exception:
+                pass
 
     # -------------------------------------------------------------- UI
 
     def _on_filter_changed(self, _e: ft.ControlEvent) -> None:
+        self._visible_count = PAGE_SIZE
         self._render_featured()
         self._render_table()
+
+    def _on_show_more(self, _e: ft.ControlEvent) -> None:
+        self._visible_count += PAGE_SIZE
+        self._render_table()
+
+    def _filtered_events(self) -> List[Dict[str, Any]]:
+        tipo = self._filter_tipo.value or "TODOS"
+        device = self._filter_device.value or "TODOS"
+        day = self._filter_date.value or "TODOS"
+        app = (self._filter_app.value or "").strip().lower()
+        result = []
+        for event in self._all_events:
+            if tipo != "TODOS" and event.get("tipo", "NORMAL") != tipo:
+                continue
+            if device != "TODOS" and device_key(event) != device:
+                continue
+            if day != "TODOS" and event_day(event) != day:
+                continue
+            if app and app not in str(event.get("package", "")).lower() and app not in str(event.get("titulo", "")).lower():
+                continue
+            result.append(event)
+        return result
 
     def _toggle_featured_panel(self, _e: ft.ControlEvent) -> None:
         """Colapsa o expande el panel de alertas destacadas para ahorrar espacio."""
@@ -450,7 +466,7 @@ class NotificationsPage:
 
     def _render_featured(self) -> None:
         """Muestra tarjetas compactas y estilizadas para las alertas críticas y OTPs más recientes."""
-        important_items = [e for e in self._all_events if e.get("tipo") in ("OTP", "ALERTA")]
+        important_items = [e for e in self._filtered_events() if e.get("tipo") in ("OTP", "ALERTA")]
         self._featured_panel.controls.clear()
 
         if not important_items:
@@ -462,7 +478,7 @@ class NotificationsPage:
             return
 
         self._featured_container.visible = True
-        for ev in important_items[:6]:  # Últimos 6 destacados en fila horizontal
+        for ev in important_items[:3]:
             tipo = ev.get("tipo", "ALERTA")
             color = theme.OK if tipo == "OTP" else theme.WARN
             color_bg = theme.OK_LIGHT if tipo == "OTP" else theme.WARN_LIGHT
@@ -479,11 +495,12 @@ class NotificationsPage:
                 ),
                 ft.Text(f"• {app_pkg}", size=10, color=theme.TEXT_MUTED, max_lines=1),
                 ft.Container(expand=True),
-                ft.Text(str(ev.get("fecha", ""))[-8:], size=9, color=theme.TEXT_MUTED),
+                ft.Text(str(ev.get("fecha", "")).replace("T", " ")[:16], size=9, color=theme.TEXT_MUTED),
             ]
 
             card_content = [
                 ft.Row(controls=header_row, spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Text(str(ev.get("device_serial") or UNKNOWN_DEVICE), size=9, color=theme.TEXT_MUTED, max_lines=1),
             ]
 
             if codigo:
@@ -527,117 +544,80 @@ class NotificationsPage:
             pass
 
     def _render_table(self) -> None:
-        """Aplica filtros y genera la tabla navegable de notificaciones."""
-        tipo_val = self._filter_tipo.value or "TODOS"
-        app_val = (self._filter_app.value or "").strip().lower()
-        date_val = (self._filter_date.value or "").strip().lower()
-
-        filtered = []
-        for ev in self._all_events:
-            ev_tipo = ev.get("tipo", "NORMAL")
-            if tipo_val != "TODOS" and ev_tipo != tipo_val:
-                continue
-            if app_val:
-                pkg = str(ev.get("package", "")).lower()
-                tit = str(ev.get("titulo", "")).lower()
-                if app_val not in pkg and app_val not in tit:
-                    continue
-            if date_val:
-                fec = str(ev.get("fecha", "")).lower()
-                if date_val not in fec:
-                    continue
-            filtered.append(ev)
-
+        """Muestra pocos registros a la vez, separados por dispositivo y día."""
+        filtered = self._filtered_events()
+        visible = filtered[:self._visible_count]
         self._table_container.controls.clear()
-
         if not filtered:
             self._table_container.controls.append(self._empty_label)
         else:
-            columns = [
-                ft.DataColumn(ft.Text("Fecha/Hora", weight=ft.FontWeight.BOLD, size=11)),
-                ft.DataColumn(ft.Text("Tipo", weight=ft.FontWeight.BOLD, size=11)),
-                ft.DataColumn(ft.Text("Aplicación", weight=ft.FontWeight.BOLD, size=11)),
-                ft.DataColumn(ft.Text("Título / Código", weight=ft.FontWeight.BOLD, size=11)),
-                ft.DataColumn(ft.Text("Mensaje", weight=ft.FontWeight.BOLD, size=11)),
-            ]
-            rows = []
-            for ev in filtered[:150]:
-                ev_tipo = ev.get("tipo", "NORMAL")
-                tipo_color = (
-                    theme.OK if ev_tipo == "OTP"
-                    else (theme.WARN if ev_tipo == "ALERTA"
-                    else theme.TEXT_MUTED)
-                )
-
-                cod = ev.get("codigo")
-                tit_content = ev.get("titulo") or ""
-                if cod:
-                    tit_content = f"[{cod}] {tit_content}"
-
-                rows.append(
-                    ft.DataRow(
-                        cells=[
-                            ft.DataCell(ft.Text(str(ev.get("fecha", "")), size=11)),
-                            ft.DataCell(
-                                ft.Container(
-                                    content=ft.Text(ev_tipo, size=10, weight=ft.FontWeight.BOLD, color=theme.BG),
-                                    bgcolor=tipo_color,
-                                    padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-                                    border_radius=4,
-                                )
-                            ),
-                            ft.DataCell(ft.Text(str(ev.get("package", "")), size=11, color=theme.TEXT_MUTED)),
-                            ft.DataCell(
-                                ft.Text(
-                                    tit_content,
-                                    size=11,
-                                    weight=ft.FontWeight.BOLD if cod else ft.FontWeight.NORMAL,
-                                    selectable=True,
-                                    max_lines=2,
-                                    overflow=ft.TextOverflow.ELLIPSIS,
-                                )
-                            ),
-                            ft.DataCell(
-                                ft.Text(
-                                    str(ev.get("texto", "")),
-                                    size=11,
-                                    selectable=True,
-                                    max_lines=2,
-                                    overflow=ft.TextOverflow.ELLIPSIS,
-                                )
-                            ),
-                        ]
-                    )
-                )
-
-            dt = ft.DataTable(
-                columns=columns,
-                rows=rows,
-                border=ft.Border.all(1, theme.BORDER),
-                horizontal_lines=ft.BorderSide(1, theme.BORDER),
-                column_spacing=14,
-                data_row_min_height=32,
-                data_row_max_height=48,
-            )
-            count_text = ft.Text(
-                f"Mostrando {len(rows)} de {len(filtered)} notificaciones.",
+            self._table_container.controls.append(ft.Text(
+                f"Mostrando {len(visible)} de {len(filtered)} notificaciones.",
                 size=11,
                 color=theme.TEXT_MUTED,
-            )
-            self._table_container.controls.extend([
-                count_text,
-                ft.Row([dt], scroll=ft.ScrollMode.AUTO),
-            ])
+            ))
+            groups: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
+            for event in visible:
+                key = (device_key(event), event_day(event))
+                groups.setdefault(key, []).append(event)
+            for (device, day), events in groups.items():
+                self._table_container.controls.append(ft.Text(
+                    f"{day}  ·  {self._device_labels.get(device, device)}  ({len(events)} en pantalla)",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=theme.TEXT,
+                ))
+                self._table_container.controls.append(ft.Row([
+                    ft.DataTable(
+                        columns=[
+                            ft.DataColumn(ft.Text("Hora", size=11)),
+                            ft.DataColumn(ft.Text("Tipo", size=11)),
+                            ft.DataColumn(ft.Text("Aplicación", size=11)),
+                            ft.DataColumn(ft.Text("Título / Código", size=11)),
+                            ft.DataColumn(ft.Text("Mensaje", size=11)),
+                        ],
+                        rows=[self._notification_row(event) for event in events],
+                        border=ft.Border.all(1, theme.BORDER),
+                        horizontal_lines=ft.BorderSide(1, theme.BORDER),
+                        column_spacing=14,
+                        data_row_min_height=32,
+                        data_row_max_height=48,
+                    )
+                ], scroll=ft.ScrollMode.AUTO))
+            if len(filtered) > len(visible):
+                self._table_container.controls.append(self._btn_more)
 
         try:
             self._table_container.update()
         except Exception:
             pass
 
+    @staticmethod
+    def _notification_row(event: Dict[str, Any]) -> ft.DataRow:
+        tipo = str(event.get("tipo") or "NORMAL")
+        color = theme.OK if tipo == "OTP" else theme.WARN if tipo == "ALERTA" else theme.TEXT_MUTED
+        codigo = event.get("codigo")
+        title = str(event.get("titulo") or "")
+        if codigo:
+            title = f"[{codigo}] {title}"
+        return ft.DataRow(cells=[
+            ft.DataCell(ft.Text(str(event.get("fecha") or "")[11:19], size=11)),
+            ft.DataCell(ft.Container(
+                content=ft.Text(tipo, size=10, weight=ft.FontWeight.BOLD, color=theme.BG),
+                bgcolor=color,
+                padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                border_radius=4,
+            )),
+            ft.DataCell(ft.Text(str(event.get("package") or ""), size=11, color=theme.TEXT_MUTED)),
+            ft.DataCell(ft.Text(title, size=11, selectable=True, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)),
+            ft.DataCell(ft.Text(str(event.get("texto") or ""), size=11, selectable=True, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)),
+        ])
+
     # ----------------------------------------------------- apertura de archivos
 
     def _on_open_important_clicked(self, _e: ft.ControlEvent) -> None:
-        p = NOTIFICATIONS_DIR / "notificaciones_importantes.json"
+        candidates = sorted(NOTIFICATIONS_DIR.glob("important_*.json"), reverse=True)
+        p = candidates[0] if candidates else NOTIFICATIONS_DIR / "notificaciones_importantes.json"
         if not p.exists():
             p = Path("logs/notificaciones_importantes.json")
         if p.exists():

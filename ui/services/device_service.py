@@ -19,6 +19,7 @@ import ipaddress
 import logging
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -531,6 +532,20 @@ class DeviceService:
             return self._physical_hash(self._physical_identity(client.device(endpoint)))
         except Exception:
             return None
+
+    def _online_identity_hashes(self, client: Any, devices: List[Any]) -> Dict[str, str]:
+        """Identify ready transports by the same hardware identity, when readable."""
+        identities: Dict[str, str] = {}
+        for info in devices:
+            if info.state != "device":
+                continue
+            try:
+                identity = self._physical_identity(client.device(info.serial))
+                if identity:
+                    identities[info.serial] = self._physical_hash(identity)
+            except Exception:
+                pass
+        return identities
 
     def _verify_reconnect_identity(self, client: Any, endpoint: str, target: Dict[str, Any]) -> Tuple[str, Optional[str]]:
         """Devuelve verified, provisional o rejected y la huella observada."""
@@ -1118,6 +1133,8 @@ class DeviceService:
             status.error = f"Error al comunicar con ADB: {exc}"
             return status
 
+        identity_hashes = self._online_identity_hashes(client, raw_list)
+
         mdns_map: Dict[str, str] = {}
         try:
             for s in self.find_wireless_devices():
@@ -1130,6 +1147,11 @@ class DeviceService:
             is_net = is_network_serial(info.serial)
             mdns_svc = mdns_map.get(info.serial)
             matched_saved = self._match_online_to_saved(info.serial, mdns_svc, saved_records)
+            if not matched_saved and identity_hashes.get(info.serial):
+                matched_saved = next(
+                    (rec for rec in saved_records if rec.get("PhysicalIdHash") == identity_hashes[info.serial]),
+                    None,
+                )
 
             dev_id = matched_saved.get("Id") if matched_saved else None
             friendly = matched_saved.get("FriendlyName") if matched_saved else None
@@ -1174,7 +1196,18 @@ class DeviceService:
                 )
             )
 
-        status.available_devices = available_infos
+        # ADB can expose one phone through USB and Wi-Fi at the same time.
+        # Keep the active transport if present; otherwise prefer Wi-Fi.
+        groups: Dict[str, List[DeviceInfo]] = {}
+        for info in available_infos:
+            key = identity_hashes.get(info.serial) or info.device_id or info.serial
+            groups.setdefault(key, []).append(info)
+        status.available_devices = [
+            next((item for item in group if item.serial == self.serial), None)
+            or next((item for item in group if item.state == "device" and item.is_network), None)
+            or next((item for item in group if item.state == "device"), group[0])
+            for group in groups.values()
+        ]
 
         if not available_infos:
             status.adb_state = "desconectado"
@@ -1188,7 +1221,7 @@ class DeviceService:
 
         physical_groups: Dict[str, List[DeviceInfo]] = {}
         for d in devices_in_device_state:
-            key = d.device_id or d.serial
+            key = identity_hashes.get(d.serial) or d.device_id or d.serial
             physical_groups.setdefault(key, []).append(d)
 
         num_ready_physical_devices = len(physical_groups)
@@ -1340,6 +1373,8 @@ class DeviceService:
         except Exception as exc:
             logger.debug("Error listando ADB para tarjetas: %s", exc)
 
+        identity_hashes = self._online_identity_hashes(client, list(online_map.values())) if online_map else {}
+
         # Registrar automáticamente USB autorizados que nunca habían sido
         # guardados. Un dispositivo ``unauthorized`` no se persiste hasta que
         # el usuario acepta la clave RSA en el teléfono.
@@ -1351,6 +1386,20 @@ class DeviceService:
                 (item for item in saved_list if item.get("UsbSerial") == serial or item.get("LastEndpoint") == serial),
                 None,
             )
+            if not known and identity_hashes.get(serial):
+                known = next((item for item in saved_list if item.get("PhysicalIdHash") == identity_hashes[serial]), None)
+            if not known and identity_hashes.get(serial):
+                known = next(
+                    (item for item in saved_list
+                     if identity_hashes.get(item.get("LastEndpoint")) == identity_hashes[serial]),
+                    None,
+                )
+            if known and not known.get("UsbSerial"):
+                known["UsbSerial"] = serial
+                changed_store = True
+            if known and identity_hashes.get(serial) and not known.get("PhysicalIdHash"):
+                known["PhysicalIdHash"] = identity_hashes[serial]
+                changed_store = True
             if known:
                 continue
             new_id = uuid.uuid4().hex
@@ -1358,6 +1407,7 @@ class DeviceService:
                 "Id": new_id,
                 "FriendlyName": f"USB Android ({serial})",
                 "UsbSerial": serial,
+                "PhysicalIdHash": identity_hashes.get(serial),
                 "LastEndpoint": serial,
                 "Mode": "usb",
                 "IsPaired": True,
@@ -1393,6 +1443,12 @@ class DeviceService:
             provisional_online = online_map.get(provisional_ep) if provisional_ep else None
             ep_online = provisional_online or (online_map.get(last_ep) if last_ep else None)
             usb_online = online_map.get(usb) if usb else None
+            if not ep_online and identity_hashes:
+                ep_online = next(
+                    (info for serial, info in online_map.items()
+                     if identity_hashes.get(serial) and identity_hashes[serial] == s.get("PhysicalIdHash")
+                     and is_network_serial(serial)), None,
+                )
             if ep_online and ep_online.state == "device" and not s.get("PhysicalIdHash") and not usb_online:
                 self._provisional_endpoints.setdefault(device_id, ep_online.serial)
                 provisional_ep = ep_online.serial
@@ -1449,8 +1505,18 @@ class DeviceService:
                 "provisional": bool(provisional_online and provisional_online.state == "device"),
             })
 
+        unmatched_identities: Set[str] = set()
         for serial, info in online_map.items():
             if serial not in matched_online_serials:
+                if identity_hashes.get(serial) and any(
+                    identity_hashes.get(matched) == identity_hashes[serial]
+                    for matched in matched_online_serials
+                ):
+                    continue
+                if identity_hashes.get(serial) in unmatched_identities:
+                    continue
+                if identity_hashes.get(serial):
+                    unmatched_identities.add(identity_hashes[serial])
                 is_net = is_network_serial(serial)
                 cards.append({
                     "id": None,
@@ -1475,6 +1541,43 @@ class DeviceService:
             "current_device_id": current_id,
             "active_serial": self.serial,
         }
+
+    def unlock_device(self, serial: str, credential: str) -> OperationResult:
+        """Wake one selected phone, reveal its credential prompt, and enter it."""
+        if not credential:
+            return OperationResult(False, error="Introduce el PIN o la contraseña.")
+        if not re.fullmatch(r"[\x20-\x7e]+", credential):
+            return OperationResult(False, error="La entrada ADB admite contraseñas con caracteres ASCII imprimibles.")
+        try:
+            client = get_adb_client()
+            if not any(d.serial == serial and d.state == "device" for d in client.list()):
+                return OperationResult(False, error="La conexión ADB seleccionada no está lista.")
+            dev = client.device(serial)
+            dev.shell("input keyevent KEYCODE_WAKEUP")
+            time.sleep(0.4)
+            size = str(dev.shell("wm size") or "")
+            sizes = re.findall(r"(\d+)x(\d+)", size)
+            width, height = map(int, sizes[-1]) if sizes else (1080, 1920)
+            x = width // 2
+            dev.shell(f"input swipe {x} {height * 4 // 5} {x} {height // 4} 350")
+            time.sleep(0.6)
+            hierarchy = str(dev.shell("uiautomator dump /dev/tty") or "").lower()
+            pin_prompt = bool(re.search(r"pinentry|pin_entry|keyguard_pin|keyguardpinview|pininputview|:id/key[0-9]|pinview", hierarchy))
+            password_prompt = bool(re.search(r"passwordentry|password_entry|keyguard_password|keyguardpasswordview|passwordinputview|passwordview", hierarchy))
+            if pin_prompt:
+                if not credential.isascii() or not credential.isdecimal():
+                    return OperationResult(False, error="Se detectó PIN: introduce solo dígitos.")
+                for digit in credential:
+                    dev.shell(f"input keyevent KEYCODE_{digit}")
+            elif password_prompt:
+                dev.shell("input text " + shlex.quote(credential.replace(" ", "%s")))
+            else:
+                return OperationResult(False, error="No se detectó un campo de PIN o contraseña tras deslizar.")
+            dev.shell("input keyevent KEYCODE_ENTER")
+            return OperationResult(True, message=f"{'PIN' if pin_prompt else 'Contraseña'} enviado al dispositivo seleccionado.")
+        except Exception as exc:
+            logger.warning("No se pudo completar el desbloqueo de %s: %s", serial, type(exc).__name__)
+            return OperationResult(False, error="No se pudo completar el desbloqueo. Comprueba la conexión ADB.")
 
     def set_active_by_serial(self, serial: str) -> Tuple[bool, str]:
         """Establece un serial como dispositivo activo y actualiza devices.json."""
