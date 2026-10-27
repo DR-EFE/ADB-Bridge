@@ -1085,6 +1085,59 @@ class TestDeviceService(unittest.TestCase):
         self.assertIn("70G", rep.storage_phone)
         self.assertTrue(rep.storage_pc)
 
+    def test_session_credentials_lifecycle(self):
+        service = DeviceService(devices_json_path=self.canonical_json)
+        self.assertFalse(service.has_session_credential("USB-1"))
+        self.assertEqual("", service.get_session_credential("USB-1"))
+
+        service.set_session_credential("USB-1", "9876")
+        self.assertTrue(service.has_session_credential("USB-1"))
+        self.assertEqual("9876", service.get_session_credential("USB-1"))
+
+        service.clear_session_credential("USB-1")
+        self.assertFalse(service.has_session_credential("USB-1"))
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_get_screen_state_and_auto_unlock(self, mock_get_client):
+        client = MagicMock()
+        client.list.return_value = [SimpleNamespace(serial="USB-1", state="device")]
+        dev = MagicMock()
+        client.device.return_value = dev
+        mock_get_client.return_value = client
+
+        # Simular pantalla encendida y bloqueada
+        def fake_shell(cmd):
+            if cmd == "dumpsys power":
+                return "mWakefulness=Awake\nDisplay Power: state=ON"
+            elif cmd == "dumpsys trust":
+                return "device is locked=true"
+            elif cmd == "dumpsys window policy":
+                return "mShowingLockscreen=true"
+            elif cmd == "wm size":
+                return "Physical size: 1080x2400"
+            elif cmd == "uiautomator dump /dev/tty":
+                return '<node resource-id="com.android.systemui:id/pinEntry" />'
+            return ""
+
+        dev.shell.side_effect = fake_shell
+        service = DeviceService(devices_json_path=self.canonical_json)
+        service.set_session_credential("USB-1", "1234")
+
+        # Comprobar get_screen_state
+        state = service.get_screen_state("USB-1")
+        self.assertTrue(state["screen_on"])
+        self.assertTrue(state["is_locked"])
+        self.assertTrue(state["has_credential"])
+
+        # Comprobar auto_unlock_device con credencial de sesión
+        with patch("ui.services.device_service.time.sleep"):
+            res = service.auto_unlock_device("USB-1")
+        self.assertTrue(res.success)
+        commands = [call.args[0] for call in dev.shell.call_args_list]
+        self.assertIn("input swipe 540 1920 540 600 350", commands)
+        self.assertIn("input keyevent KEYCODE_1", commands)
+        self.assertIn("input keyevent KEYCODE_ENTER", commands)
+
 
 if __name__ == "__main__":
     unittest.main()

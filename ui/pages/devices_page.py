@@ -336,14 +336,15 @@ class DevicesPage:
             color=theme.TEXT_MUTED,
         )
         self._pin_input = ft.TextField(
-            label="PIN o Contraseña de desbloqueo",
-            hint_text="Introduce el PIN numérico o contraseña...",
+            label="PIN o Contraseña (Auto-guardado en sesión)",
+            hint_text="Escribe el PIN o contraseña...",
             password=True,
             can_reveal_password=True,
-            width=320,
+            width=280,
             text_size=13,
             dense=True,
-            on_submit=lambda _: self._save_session_pin(),
+            on_change=self._on_pin_input_changed,
+            on_submit=lambda _: self._trigger_auto_unlock(),
         )
         self._pin_status_badge = ft.Container(
             content=ft.Row(
@@ -1198,10 +1199,21 @@ class DevicesPage:
         self._load_specs(serial)
         self._switch_to_section("config")
 
+    def _on_pin_input_changed(self, _e: Optional[ft.ControlEvent] = None) -> None:
+        serial = self._device.serial
+        if not serial:
+            return
+        val = (self._pin_input.value or "").strip()
+        self._device.set_session_credential(serial, val)
+        self._unlock_credentials[serial] = val
+        self._update_pin_controls(serial)
+        self._render_hero_active_card_current()
+
     def _update_pin_controls(self, serial: Optional[str] = None) -> None:
         target = serial or self._device.serial or ""
-        curr_pin = self._unlock_credentials.get(target, "")
-        self._pin_input.value = curr_pin
+        curr_pin = self._device.get_session_credential(target) or self._unlock_credentials.get(target, "")
+        if self._pin_input.value != curr_pin:
+            self._pin_input.value = curr_pin
         self._pin_target_label.value = f"Dispositivo activo: {target or 'Ninguno seleccionado'}"
         is_set = bool(curr_pin)
         self._pin_status_badge.bgcolor = theme.OK_LIGHT if is_set else theme.WARN_LIGHT
@@ -1211,7 +1223,7 @@ class DevicesPage:
             tight=True,
             controls=[
                 ft.Icon(ft.Icons.LOCK_OPEN if is_set else ft.Icons.LOCK, size=13, color=theme.OK if is_set else theme.WARN),
-                ft.Text("PIN activo en sesión (••••)" if is_set else "Sin PIN en sesión", size=11, weight=ft.FontWeight.BOLD, color=theme.OK if is_set else theme.WARN),
+                ft.Text("PIN listo en sesión (••••)" if is_set else "Sin PIN en sesión", size=11, weight=ft.FontWeight.BOLD, color=theme.OK if is_set else theme.WARN),
             ],
         )
         try:
@@ -1234,19 +1246,18 @@ class DevicesPage:
             self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
             return
         val = (self._pin_input.value or "").strip()
-        if not val:
-            self._set_busy(False, "Introduce un PIN o contraseña antes de guardar.", is_error=True)
-            return
+        self._device.set_session_credential(serial, val)
         self._unlock_credentials[serial] = val
         self._update_pin_controls(serial)
         self._render_hero_active_card_current()
-        msg = f"PIN/Contraseña guardado en memoria para la sesión activa ({serial})."
+        msg = f"PIN guardado automáticamente en memoria ({serial})."
         self._log(msg, theme.OK)
         self._set_busy(False, msg)
 
     def _clear_session_pin(self) -> None:
         serial = self._device.serial
         if serial:
+            self._device.clear_session_credential(serial)
             self._unlock_credentials.pop(serial, None)
         self._pin_input.value = ""
         self._update_pin_controls(serial)
@@ -1256,27 +1267,53 @@ class DevicesPage:
         self._set_busy(False, msg)
 
     def _trigger_unlock(self, target_serial: Optional[str] = None) -> None:
+        self._trigger_auto_unlock(target_serial)
+
+    def _trigger_auto_unlock(self, target_serial: Optional[str] = None) -> None:
         serial = target_serial or self._device.serial
         if not serial:
-            self._set_busy(False, "No hay dispositivo seleccionado para desbloquear.", is_error=True)
-            return
-        credential = self._unlock_credentials.get(serial, "") or (self._pin_input.value or "").strip()
-        if not credential:
-            self._open_unlock_dialog(serial)
+            self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
             return
 
-        self._unlock_credentials[serial] = credential
+        curr_input = (self._pin_input.value or "").strip()
+        if curr_input:
+            self._device.set_session_credential(serial, curr_input)
+            self._unlock_credentials[serial] = curr_input
+
         self._update_pin_controls(serial)
         self._render_hero_active_card_current()
-        self._set_busy(True, f"Desbloqueando {serial}...")
+        self._set_busy(True, f"Preparando y desbloqueando {serial}...")
 
         def worker():
-            result = self._device.unlock_device(serial, credential)
-            message = result.message or result.error or "No se pudo desbloquear."
-            self._log(message, theme.OK if result.success else theme.ERR)
-            self._set_busy(False, message, is_error=not result.success)
+            res = self._device.auto_unlock_device(serial)
+            msg = res.message or res.error or "Operación finalizada."
+            self._log(msg, theme.OK if res.success else theme.ERR)
+            self._set_busy(False, msg, is_error=not res.success)
+            self._update_pin_controls(serial)
 
-        threading.Thread(target=worker, name="dev-unlock", daemon=True).start()
+        threading.Thread(target=worker, name="auto-unlock-worker", daemon=True).start()
+
+    def _check_screen_status(self) -> None:
+        serial = self._device.serial
+        if not serial:
+            self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
+            return
+        self._set_busy(True, f"Comprobando pantalla de {serial}...")
+        def worker():
+            state = self._device.get_screen_state(serial)
+            if not state.get("screen_on"):
+                msg = f"Estado ({serial}): Pantalla APAGADA (en reposo)."
+                clr = theme.TEXT_MUTED
+            elif state.get("is_locked"):
+                has_cred = self._device.has_session_credential(serial)
+                msg = f"Estado ({serial}): Pantalla BLOQUEADA ({'con PIN en sesión listo' if has_cred else 'sin PIN configurado'})."
+                clr = theme.ACCENT if has_cred else theme.WARN
+            else:
+                msg = f"Estado ({serial}): Pantalla ENCENDIDA y DESBLOQUEADA (lista)."
+                clr = theme.OK
+            self._set_busy(False, msg)
+            self._log(msg, clr)
+        threading.Thread(target=worker, name="screen-status-worker", daemon=True).start()
 
     def _wake_screen(self) -> None:
         serial = self._device.serial
@@ -1418,7 +1455,7 @@ class DevicesPage:
     def _build_unlock_config_card(self) -> ft.Control:
         return theme.card(
             ft.Column(
-                spacing=12,
+                spacing=10,
                 controls=[
                     ft.Row(
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -1427,84 +1464,59 @@ class DevicesPage:
                             ft.Row(
                                 spacing=8,
                                 controls=[
-                                    ft.Icon(ft.Icons.SECURITY, color=theme.ACCENT, size=20),
-                                    ft.Text("Desbloqueo de Pantalla (PIN / Contraseña)", weight=ft.FontWeight.BOLD, size=15),
+                                    ft.Icon(ft.Icons.SECURITY_ROUNDED, color=theme.ACCENT, size=20),
+                                    ft.Text("Desbloqueo Inteligente de Pantalla", weight=ft.FontWeight.BOLD, size=15),
                                 ],
                             ),
                             self._pin_status_badge,
                         ],
                     ),
-                    ft.Row(
-                        spacing=6,
-                        controls=[
-                            ft.Icon(ft.Icons.PHONE_ANDROID, size=14, color=theme.TEXT_MUTED),
-                            self._pin_target_label,
-                        ],
-                    ),
+                    self._pin_target_label,
                     ft.Text(
-                        "Configura y edita aquí el PIN numérico o contraseña de tu teléfono. "
-                        "Al guardarlo en la sesión, podrás desbloquear la pantalla instantáneamente con un solo clic.",
+                        "Escribe el PIN o contraseña del teléfono (se guarda automáticamente en la sesión). "
+                        "Al pulsar Desbloqueo Automático, el sistema detecta si la pantalla está apagada, la despierta, desliza y desbloquea el equipo.",
                         size=12,
                         color=theme.TEXT_MUTED,
                     ),
                     ft.Row(
-                        spacing=10,
+                        spacing=8,
                         wrap=True,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
                             self._pin_input,
                             ft.FilledButton(
-                                "Guardar en Sesión",
-                                icon=ft.Icons.SAVE,
-                                height=36,
-                                on_click=lambda _: self._save_session_pin(),
-                            ),
-                            ft.FilledButton(
-                                "Desbloquear Ahora",
-                                icon=ft.Icons.LOCK_OPEN,
+                                "⚡ Desbloqueo Automático",
+                                icon=ft.Icons.LOCK_OPEN_ROUNDED,
                                 bgcolor=theme.OK,
                                 color=theme.BG,
-                                height=36,
-                                on_click=lambda _: self._trigger_unlock(),
+                                height=38,
+                                on_click=lambda _: self._trigger_auto_unlock(),
                             ),
-                            ft.OutlinedButton(
-                                "Borrar PIN",
-                                icon=ft.Icons.DELETE_OUTLINE,
-                                height=36,
+                            ft.IconButton(
+                                icon=ft.Icons.BACKSPACE_OUTLINED,
+                                tooltip="Borrar PIN de la sesión activa",
+                                icon_color=theme.WARN,
                                 on_click=lambda _: self._clear_session_pin(),
                             ),
-                        ],
-                    ),
-                    ft.Row(
-                        spacing=10,
-                        wrap=True,
-                        controls=[
-                            ft.OutlinedButton(
-                                "Despertar Pantalla",
-                                icon=ft.Icons.WB_SUNNY,
-                                height=32,
-                                on_click=lambda _: self._wake_screen(),
-                            ),
-                            ft.OutlinedButton(
-                                "Deslizar Arriba (Swipe)",
-                                icon=ft.Icons.SWIPE_UP,
-                                height=32,
-                                on_click=lambda _: self._swipe_unlock_screen(),
+                            ft.IconButton(
+                                icon=ft.Icons.REFRESH,
+                                tooltip="Comprobar estado actual de pantalla (apagada / bloqueada)",
+                                on_click=lambda _: self._check_screen_status(),
                             ),
                         ],
                     ),
                     ft.Container(
-                        padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                        padding=ft.Padding.symmetric(horizontal=12, vertical=6),
                         bgcolor=theme.SURFACE_ALT,
                         border_radius=6,
                         border=ft.Border.all(1, theme.BORDER),
                         content=ft.Row(
                             spacing=6,
                             controls=[
-                                ft.Icon(ft.Icons.INFO_OUTLINE, size=14, color=theme.ACCENT),
+                                ft.Icon(ft.Icons.LOCK_CLOCK, size=14, color=theme.ACCENT),
                                 ft.Text(
-                                    "Seguridad: Esta credencial se conserva únicamente en memoria RAM durante la sesión activa "
-                                    "y se destruye al cerrar la aplicación. No se persiste en devices.json ni en disco.",
+                                    "Seguridad de sesión: La credencial solo reside en memoria RAM durante la sesión activa "
+                                    "y se destruye al cerrar la app. No se persiste en devices.json ni en disco.",
                                     size=11,
                                     color=theme.TEXT_MUTED,
                                 ),

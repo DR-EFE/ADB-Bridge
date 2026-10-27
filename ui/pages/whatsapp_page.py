@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -143,6 +145,7 @@ class WhatsAppPage:
             "Quitar auxiliar", icon=ft.Icons.DELETE_OUTLINE, on_click=self._on_remove_receiver
         )
         self._receiver_status = ft.Text("Auxiliar: estado no verificado (clic en Verificar auxiliar)", size=11, color=theme.TEXT_MUTED)
+        self._screen_lock_status = ft.Text("Pantalla: Comprobando...", size=11, color=theme.TEXT_MUTED)
         self._progress = ft.ProgressBar(value=0, bar_height=8, border_radius=4, color=theme.ACCENT, bgcolor=theme.BORDER)
         self._progress_text = ft.Text("Listo.", size=12, color=theme.TEXT_MUTED)
         self._search = ft.TextField(label="Buscar en mensajes procesados", width=300, on_change=self._refresh_processed_cards)
@@ -186,6 +189,7 @@ class WhatsAppPage:
                             self._check_receiver_btn,
                             self._install_receiver_btn, self._remove_receiver_btn,
                             self._receiver_status,
+                            self._screen_lock_status,
                         ],
                     )
                 ),
@@ -198,8 +202,94 @@ class WhatsAppPage:
                 self._log.view,
             ],
         )
+        self._refresh_device_lock_status()
 
     # ---------------------------------------------------------- acciones
+
+    def _refresh_device_lock_status(self, target_serial: Optional[str] = None) -> None:
+        """Actualiza el indicador visual de pantalla y bloqueo del teléfono."""
+        serial = target_serial or self._device.serial
+        if not serial:
+            self._screen_lock_status.value = "Pantalla: sin dispositivo"
+            self._screen_lock_status.color = theme.TEXT_MUTED
+            try:
+                self._screen_lock_status.update()
+            except Exception:
+                pass
+            return
+
+        def worker():
+            try:
+                state = self._device.get_screen_state(serial)
+                if not state.get("screen_on"):
+                    txt = f"Pantalla ({serial}): En reposo (apagada)"
+                    clr = theme.TEXT_MUTED
+                elif state.get("is_locked"):
+                    has_cred = state.get("has_credential", False)
+                    txt = f"Pantalla ({serial}): Bloqueada ({'PIN de sesión listo' if has_cred else 'Sin PIN en sesión'})"
+                    clr = theme.ACCENT if has_cred else theme.WARN
+                else:
+                    txt = f"Pantalla ({serial}): Desbloqueada y lista"
+                    clr = theme.OK
+                self._screen_lock_status.value = txt
+                self._screen_lock_status.color = clr
+                self._screen_lock_status.update()
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, name="wa-lock-check", daemon=True).start()
+
+    def _ensure_device_ready_for_whatsapp(self, serial: str) -> None:
+        """
+        Flujo automático previo a cualquier acción del bot de WhatsApp:
+        1. Identifica si la pantalla está apagada y la enciende automáticamente.
+        2. Identifica si la pantalla está bloqueada.
+        3. Si tiene credencial de sesión (o deslizamiento libre), la desbloquea automáticamente.
+        4. Si requiere contraseña y no está configurada, informa y detiene el proceso de forma clara.
+        """
+        self._set_busy(True, "Verificando pantalla y desbloqueo del teléfono...", indeterminate=True)
+        try:
+            state = self._device.get_screen_state(serial)
+        except Exception as exc:
+            logger.debug("Aviso al verificar estado de pantalla en WhatsApp bot: %s", exc)
+            return
+
+        is_screen_on = state.get("screen_on", True)
+        is_locked = state.get("is_locked", False)
+        has_credential = state.get("has_credential", False)
+
+        if not is_screen_on:
+            self._log.append(f"[WhatsApp Bot] La pantalla de {serial} está apagada. Encendiendo automáticamente...", theme.WARN)
+            wake_res = self._device.wake_device(serial)
+            if wake_res.success:
+                self._log.append("[WhatsApp Bot] Pantalla encendida exitosamente.", theme.OK)
+            time.sleep(0.5)
+            state = self._device.get_screen_state(serial)
+            is_locked = state.get("is_locked", False)
+
+        if is_locked:
+            self._log.append(f"[WhatsApp Bot] Pantalla de bloqueo detectada en {serial}...", theme.WARN)
+            if has_credential:
+                self._log.append("[WhatsApp Bot] Desbloqueando automáticamente con credencial de sesión...", theme.OK)
+                unlock_res = self._device.auto_unlock_device(serial)
+                if unlock_res.success:
+                    self._log.append(f"[WhatsApp Bot] Dispositivo desbloqueado: {unlock_res.message}", theme.OK)
+                else:
+                    self._log.append(f"[WhatsApp Bot] Aviso de desbloqueo: {unlock_res.error}", theme.WARN)
+            else:
+                self._log.append("[WhatsApp Bot] Intentando deslizamiento automático...", theme.TEXT_MUTED)
+                unlock_res = self._device.auto_unlock_device(serial)
+                if unlock_res.success:
+                    self._log.append(f"[WhatsApp Bot] Dispositivo desbloqueado: {unlock_res.message}", theme.OK)
+                else:
+                    raise RuntimeError(
+                        f"El dispositivo {serial} tiene pantalla de bloqueo activa y no cuenta con PIN configurado en la sesión.\n"
+                        "Ingresa el PIN en el Administrador de Dispositivo o desbloquea manualmente tu teléfono para continuar."
+                    )
+        else:
+            self._log.append("[WhatsApp Bot] Dispositivo encendido y desbloqueado listo.", theme.OK)
+
+        self._refresh_device_lock_status(serial)
 
     def shutdown(self) -> None:
         """Cancela trabajo local en curso y limpia el handler."""
@@ -356,6 +446,7 @@ class WhatsAppPage:
         self._set_busy(True, f"Explorando chats en {serial}...", indeterminate=True)
 
         def work(_stop) -> None:
+            self._ensure_device_ready_for_whatsapp(serial)
             client = WhatsAppClient(DeviceManager(serial=serial), auto_watchers=True)
             try:
                 with client.preserve_app_state():
@@ -580,6 +671,9 @@ class WhatsAppPage:
                 self._receiver_status.update()
             except Exception:
                 pass
+
+            # 2. Verificación y desbloqueo automático de pantalla antes de iniciar el bot
+            self._ensure_device_ready_for_whatsapp(serial)
 
             client = WhatsAppClient(DeviceManager(serial=serial), auto_watchers=True)
             try:
