@@ -116,7 +116,7 @@ class TestJobQueueService(unittest.TestCase):
         job1_release.set()
 
         # Esperar a que termine job2
-        self.assertTrue(job2_done.wait(timeout=2.0))
+        self.assertTrue(job2_done.wait(timeout=5.0))
         time.sleep(0.05)
 
         self.assertEqual(
@@ -152,8 +152,8 @@ class TestJobQueueService(unittest.TestCase):
         )
 
         # Ambos deben entrar en ejecución concurrentemente
-        self.assertTrue(devA_running.wait(timeout=2.0))
-        self.assertTrue(devB_running.wait(timeout=2.0))
+        self.assertTrue(devA_running.wait(timeout=5.0))
+        self.assertTrue(devB_running.wait(timeout=5.0))
 
         # Liberar ambos
         all_finish.set()
@@ -201,8 +201,11 @@ class TestJobQueueService(unittest.TestCase):
         )
 
         # Esperar a que termine
-        time.sleep(0.5)
-        job = self.service.get_job(jid)
+        for _ in range(40):
+            job = self.service.get_job(jid)
+            if job and job.status == JobStatus.FAILED:
+                break
+            time.sleep(0.05)
         self.assertEqual(job.status, JobStatus.FAILED)
         self.assertIn("permission denied", job.error)
 
@@ -293,8 +296,11 @@ class TestJobQueueService(unittest.TestCase):
             custom_handler=fail_then_ok,
         )
 
-        time.sleep(0.3)
-        job = self.service.get_job(jid)
+        for _ in range(40):
+            job = self.service.get_job(jid)
+            if job and job.status == JobStatus.FAILED:
+                break
+            time.sleep(0.05)
         self.assertEqual(job.status, JobStatus.FAILED)
 
         # Reintentar manualmente

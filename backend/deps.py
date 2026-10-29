@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ui.services.adb_service import AdbService
-from ui.services.backup_service import BackupService
-from ui.services.device_health_service import DeviceHealthService
-from ui.services.file_explorer_service import FileExplorerService
-from ui.services.job_queue_service import JobQueueService
-from ui.services.sync_service import SyncService
+from core.infrastructure.adb.adb_service import AdbService
+from core.services.backup_service import BackupService
+from core.services.device_health_service import DeviceHealthService
+from core.services.file_explorer_service import FileExplorerService
+from core.services.job_queue_service import JobQueueService
+from core.services.sync_service import SyncService
 
 # Instancias compartidas por defecto
 _adb_service: Optional[AdbService] = None

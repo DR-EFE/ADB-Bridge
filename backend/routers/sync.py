@@ -13,9 +13,9 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from ui.services.adb_service import AdbService
-from ui.services.sync_profiles import SyncProfile
-from ui.services.sync_service import SyncService
+from core.infrastructure.adb.adb_service import AdbService
+from core.domain.rules.sync_profiles import SyncProfile
+from core.services.sync_service import SyncService
 from ..deps import get_adb_service, get_sync_service
 
 logger = logging.getLogger("backend.routers.sync")

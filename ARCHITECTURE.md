@@ -40,7 +40,15 @@ El registro activo se guarda fuera del repositorio en `%USERPROFILE%\AndroidTool
   - `Get-AdbProperty -PropertyName <str> [-Serial <str>]`
 - Logging estructurado (`Write-AdbLog`): formato con timestamp ISO 8601 UTC, nivel, origen, serial opcional (`[Serial=...]`), comando opcional (`[Cmd=...]`), código de salida (`[ExitCode=...]`), sanitización y truncamiento defensivo contra salidas masivas.
 
-### Python: AdbService y Modelos Pydantic (ui.services)
+### Python: Arquitectura por Capas (core/ y docs/ARQUITECTURA_POR_CAPAS.md)
+- El código en Python está estructurado según la arquitectura limpia por capas:
+  - **Dominio (core/domain/)**: Modelos pydantic tipados (models/adb.py, models/jobs.py, models/backup.py, etc.) y reglas puras (
+ules/).
+  - **Infraestructura (core/infrastructure/)**: Adaptadores para db_service.py, persistencia database/sqlite.py, red 
+etwork_scan.py e IA ollama_client.py.
+  - **Servicios de Aplicación (core/services/)**: Casos de uso (device_service.py, job_queue_service.py, ackup_service.py, sync_service.py, etc.).
+  - **Presentación / API (ackend/, ui/)**: Desacopladas mediante inyección de dependencias desde core.*.
+  - **Fachada retrocompatible (ui/services/)**: Mantiene alias transparentes en sys.modules para compatibilidad 100% retroactiva.
 - Mismo contrato y semántica que PowerShell:
   - `AdbService.devices() -> List[Device]`
   - `AdbService.resolve_serial(serial=None) -> str`: misma política estricta de no asumir dispositivo cuando hay >1.

@@ -2,22 +2,22 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
-from ..services.adb_service import AdbService
-from ..services.backup_profiles import get_backup_profiles
-from ..services.backup_service import BackupService
-from ..services.device_health_service import DeviceHealthService
-from ..services.sync_service import SyncService
+from core.infrastructure.adb.adb_service import AdbService
+from core.domain.rules.backup_profiles import get_backup_profiles
+from core.services.backup_service import BackupService
+from core.services.device_health_service import DeviceHealthService
+from core.services.sync_service import SyncService
 try:
-    from ..services.file_explorer_service import FileExplorerService
-    from ..services.file_explorer_models import ExplorerFilter
+    from core.services.file_explorer_service import FileExplorerService
+    from core.domain.models.explorer import ExplorerFilter
     FILE_EXPLORER_AVAILABLE = True
 except ImportError:
     FileExplorerService = None
     ExplorerFilter = None
     FILE_EXPLORER_AVAILABLE = False
 try:
-    from ..services.automation_service import AutomationService
-    from ..services.automation_rules import (
+    from core.services.automation_service import AutomationService
+    from core.domain.rules.automation_rules import (
         ActionType, AutomationAction, AutomationCondition, AutomationRule, TriggerType,
     )
     AUTOMATION_AVAILABLE = True

@@ -11,9 +11,9 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from ui.services.adb_service import AdbService
-from ui.services.file_explorer_models import FileNode
-from ui.services.file_explorer_service import FileExplorerService
+from core.infrastructure.adb.adb_service import AdbService
+from core.domain.models.explorer import FileNode
+from core.services.file_explorer_service import FileExplorerService
 from ..deps import get_adb_service, get_file_explorer_service
 
 logger = logging.getLogger("backend.routers.explorer")
