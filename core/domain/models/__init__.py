@@ -19,3 +19,7 @@ from .sync import (
     SyncDirection, ConflictResolution, SyncRule, SyncProfile,
     SyncConflict, SyncItemStatus, SyncItemReport, SyncReport,
 )
+from .photo_metadata import (
+    PhotoMetadataRecord, MetadataCluster, MetadataAnalysisSummary,
+    EvidenceArtifact, EvidenceManifest, MetadataSessionResult,
+)

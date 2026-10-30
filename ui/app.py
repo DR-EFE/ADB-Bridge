@@ -21,6 +21,7 @@ from .pages.logs_page import LogsPage
 from .pages.notifications_page import NotificationsPage
 from .pages.operations_page import OperationsPage
 from .pages.whatsapp_page import WhatsAppPage
+from .pages.metadata_page import MetadataPage
 from .services.device_service import DeviceService
 from .services.job_queue_service import JobQueueService
 
@@ -77,6 +78,7 @@ class AndroidToolsApp:
         self.whatsapp = WhatsAppPage(self.device, job_queue=self.job_queue)
         self.explorer = ExplorerPage(self.device, page=page, on_log=self._on_custom_log)
         self.backup = BackupPage(self.device, page=page, on_log=self._on_custom_log, job_queue=self.job_queue)
+        self.metadata = MetadataPage(self.device, page=page, on_log=self._on_custom_log, job_queue=self.job_queue)
         # Comandos y Centro Operativo integrados en el Administrador de Dispositivo (mantenidos como atributos para compatibilidad)
         self.commands = getattr(self.devices, "commands", None) or CommandsPage(self.device, on_log=self._on_custom_log)
         self.operations = getattr(self.devices, "operations", None) or OperationsPage(
@@ -139,6 +141,7 @@ class AndroidToolsApp:
                 ft.Tab(label="Explorador & Transferencias", icon=ft.Icons.FOLDER_SPECIAL_OUTLINED),
                 ft.Tab(label="Backup avanzado", icon=ft.Icons.BACKUP_OUTLINED),
                 ft.Tab(label="WhatsApp Extractor", icon=ft.Icons.CHAT_OUTLINED),
+                ft.Tab(label="Metadatos & Mapa Forense", icon=ft.Icons.LOCATION_ON_OUTLINED),
                 ft.Tab(label="Monitor de Notificaciones", icon=ft.Icons.NOTIFICATIONS_ACTIVE_OUTLINED),
                 ft.Tab(label="Registro & Salida (Log)", icon=ft.Icons.RECEIPT_LONG_OUTLINED),
             ]
@@ -160,7 +163,7 @@ class AndroidToolsApp:
         )
 
         self.tabs = ft.Tabs(
-            length=6,
+            length=7,
             selected_index=0,
             expand=True,
             content=ft.Column(
@@ -197,12 +200,18 @@ class AndroidToolsApp:
                             ),
                             theme.module_view(
                                 "05",
+                                "Metadatos y Mapa Forense",
+                                "Extracción EXIF/GPS | clusters geoespaciales | visor interactivo",
+                                self.metadata.view,
+                            ),
+                            theme.module_view(
+                                "06",
                                 "Monitor de notificaciones",
                                 "Captura en vivo | alertas | filtros e historial",
                                 self.notifications.view,
                             ),
                             theme.module_view(
-                                "06",
+                                "07",
                                 "Registro y salida",
                                 "Actividad tecnica en tiempo real | filtros | exportacion",
                                 self.logs.view,
