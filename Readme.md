@@ -13,6 +13,7 @@ No es una aplicación Android instalada en el teléfono; es una herramienta de a
 | [android_file_explorer.ps1](C:/Users/pipe6/Downloads/Android/android_file_explorer.ps1) | Explorador interactivo de archivos del teléfono. Permite navegar carpetas, descargar/subir archivos, buscar elementos y consultar información. |
 | [android_list_downloadable.ps1](C:/Users/pipe6/Downloads/Android/android_list_downloadable.ps1) | Descarga carpetas completas desde Android, incluyendo capturas de pantalla, fotos, videos, documentos, música y otras rutas seleccionadas. |
 | [android_advanced_backup.ps1](C:/Users/pipe6/Downloads/Android/android_advanced_backup.ps1) | Realiza respaldos avanzados sin root de contactos, SMS, llamadas, calendario, aplicaciones, configuraciones, Wi‑Fi, Bluetooth, diccionario y portapapeles. |
+| [android_photo_metadata.ps1](android_photo_metadata.ps1) | Módulo forense de extracción de metadatos EXIF/GPS, normalización, agrupación en clusters territoriales y generación de mapa interactivo Leaflet y dashboard. |
 | [AutorizacionWeb.ps1](C:/Users/pipe6/Downloads/Android/AutorizacionWeb.ps1) | Ayuda a resolver el estado `unauthorized` usando la configuración de compatibilidad, sin una IP fija. |
 
 ## Archivos de acceso rápido
@@ -22,6 +23,7 @@ No es una aplicación Android instalada en el teléfono; es una herramienta de a
 | [SETUP.bat](C:/Users/pipe6/Downloads/Android/SETUP.bat) | Ejecuta la configuración básica por USB/Wi‑Fi. |
 | [RECONNECT.bat](C:/Users/pipe6/Downloads/Android/RECONNECT.bat) | Ejecuta la reconexión rápida. |
 | [TRANSFER.bat](C:/Users/pipe6/Downloads/Android/TRANSFER.bat) | Abre el menú de transferencia de archivos. |
+| [METADATA.bat](METADATA.bat) | Abre el menú de metadatos fotográficos, mapa geoespacial y dashboard forense. |
 | [Conectar_Android.cmd](C:/Users/pipe6/Downloads/Android/Conectar_Android.cmd) | Ejecuta el punto de entrada `setup.ps1`. |
 | [ejecuta.txt](C:/Users/pipe6/Downloads/Android/ejecuta.txt) | Contiene comandos manuales para ejecutar los scripts. |
 

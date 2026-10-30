@@ -8,4 +8,7 @@ echo Ejecutando script...
 echo.
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "setup.ps1"
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "android_reconnect.ps1"
+:: Para ejecutar el modulo forense de metadatos fotograficos:
+:: powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "android_photo_metadata.ps1"
+:: O usar el acceso directo: METADATA.bat
 pause

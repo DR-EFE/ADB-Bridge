@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard Forense de Metadatos y Geolocalización - Android Tools</title>
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <!-- MarkerCluster CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #090d16;
+      color: #e2e8f0;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      padding: 24px;
+      line-height: 1.5;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 20px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .title-area h1 {
+      font-size: 22px;
+      font-weight: 800;
+      color: #38bdf8;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .title-area p {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-top: 4px;
+    }
+    .badge-forensic {
+      background: #0369a1;
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    /* Grid KPIs */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .kpi-card {
+      background: #131b2e;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    }
+    .kpi-label { font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; letter-spacing: 0.05em; }
+    .kpi-value { font-size: 24px; font-weight: 800; color: #f8fafc; margin-top: 4px; }
+    .kpi-sub { font-size: 11px; color: #38bdf8; margin-top: 2px; }
+
+    /* Charts Grid */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: 20px;
+      margin-bottom: 24px;
+    }
+    .chart-card {
+      background: #131b2e;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    }
+    .chart-card h3 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #38bdf8;
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .chart-container {
+      position: relative;
+      height: 260px;
+      width: 100%;
+    }
+
+    /* Map Box */
+    .map-box {
+      background: #131b2e;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .map-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .map-header h3 { font-size: 15px; font-weight: 700; color: #38bdf8; }
+    #dash-map {
+      height: 420px;
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      z-index: 1;
+    }
+
+    /* Tables */
+    .table-card {
+      background: #131b2e;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .table-card h3 { font-size: 14px; font-weight: 700; color: #38bdf8; margin-bottom: 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; padding: 10px 12px; background: #1e293b; color: #94a3b8; font-weight: 700; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+    td { padding: 10px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); color: #cbd5e1; }
+    tr:hover td { background: rgba(255, 255, 255, 0.02); }
+    .tag {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+    .tag-gps { background: #065f46; color: #6ee7b7; }
+    .tag-nogps { background: #451a03; color: #fdba74; }
+    .tag-edit { background: #701a75; color: #f0abfc; }
+
+    .search-bar {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .search-bar input {
+      flex: 1;
+      padding: 8px 12px;
+      background: #1e293b;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 6px;
+      color: #fff;
+      font-size: 12px;
+    }
+    .search-bar input:focus { outline: none; border-color: #38bdf8; }
+
+    /* Links */
+    a.map-link { color: #38bdf8; text-decoration: none; font-weight: 600; }
+    a.map-link:hover { text-decoration: underline; }
+
+    .footer {
+      text-align: center;
+      padding-top: 20px;
+      color: #64748b;
+      font-size: 11px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="title-area">
+      <h1>
+        <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        Dashboard Forense de Metadatos Fotográficos
+      </h1>
+      <p id="sub-header">Módulo de Adquisición y Análisis Geoespacial - Android Tools</p>
+    </div>
+    <div>
+      <span class="badge-forensic">Evidencia Digital</span>
+    </div>
+  </div>
+
+  <!-- KPIs -->
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-label">Total Imágenes</div>
+      <div class="kpi-value" id="kpi-total">0</div>
+      <div class="kpi-sub">Archivos analizados</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Con GPS (Geolocalizadas)</div>
+      <div class="kpi-value" id="kpi-gps" style="color:#38bdf8;">0</div>
+      <div class="kpi-sub" id="kpi-gps-pct">0.0% del total</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Sin GPS / Stripped</div>
+      <div class="kpi-value" id="kpi-nogps" style="color:#f59e0b;">0</div>
+      <div class="kpi-sub">Metadatos eliminados</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Dispositivos / Cámaras</div>
+      <div class="kpi-value" id="kpi-devices">0</div>
+      <div class="kpi-sub">Modelos detectados</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Editadas por Software</div>
+      <div class="kpi-value" id="kpi-edited" style="color:#d946ef;">0</div>
+      <div class="kpi-sub">Photoshop, Snapseed...</div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts-grid">
+    <div class="chart-card">
+      <h3>Línea Temporal de Capturas (Por Año / Mes)</h3>
+      <div class="chart-container"><canvas id="chart-timeline"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Distribución por Modelo de Dispositivo</h3>
+      <div class="chart-container"><canvas id="chart-devices"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Cobertura GPS</h3>
+      <div class="chart-container"><canvas id="chart-gps-coverage"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Orientaciones EXIF Detectadas</h3>
+      <div class="chart-container"><canvas id="chart-orientation"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Interactive Map -->
+  <div class="map-box">
+    <div class="map-header">
+      <h3>Mapa Geoespacial de Ubicaciones GPS</h3>
+      <a href="map.html" target="_blank" class="map-link">Abrir mapa en pantalla completa &rarr;</a>
+    </div>
+    <div id="dash-map"></div>
+  </div>
+
+  <!-- Top Location Clusters -->
+  <div class="table-card">
+    <h3>Top 20 Ubicaciones Frecuentes (Clusters ~100 metros)</h3>
+    <table id="table-clusters">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Coordenadas Cluster (Lat, Lon)</th>
+          <th>Cantidad de Fotos</th>
+          <th>Porcentaje</th>
+          <th>Acción</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Poblado por JS -->
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Detailed File Inventory Table -->
+  <div class="table-card">
+    <h3>Inventario Detallado de Archivos</h3>
+    <div class="search-bar">
+      <input type="text" id="inventory-search" placeholder="Filtrar por nombre, modelo, fecha..." oninput="renderTable()" />
+    </div>
+    <table id="table-inventory">
+      <thead>
+        <tr>
+          <th>Archivo</th>
+          <th>Fecha Captura</th>
+          <th>Dispositivo</th>
+          <th>Estado GPS</th>
+          <th>Coordenadas</th>
+          <th>Software</th>
+        </tr>
+      </thead>
+      <tbody id="inventory-tbody">
+        <!-- Poblado por JS -->
+      </tbody>
+    </table>
+  </div>
+
+  <div class="footer">
+    Android Tools - Módulo Forense de Metadatos de Imágenes | Generado automáticamente con evidencia e integridad SHA-256
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <script>
+    // Datos inyectados por PowerShell
+    const allPhotos = /*__PHOTOS_JSON__*/ || [];
+    const summary = /*__SUMMARY_JSON__*/ || {};
+    const manifest = /*__MANIFEST_JSON__*/ || {};
+
+    // Inicializar KPIs
+    const total = allPhotos.length;
+    const withGps = allPhotos.filter(p => p.HasGPS && typeof p.Lat === 'number' && !isNaN(p.Lat));
+    const withoutGps = total - withGps.length;
+    const editedCount = allPhotos.filter(p => p.Software && p.Software.trim().length > 0).length;
+
+    const deviceMap = {};
+    allPhotos.forEach(p => {
+      const dev = ((p.Make || '') + ' ' + (p.Model || '')).trim() || 'Desconocido';
+      deviceMap[dev] = (deviceMap[dev] || 0) + 1;
+    });
+
+    document.getElementById('kpi-total').textContent = total;
+    document.getElementById('kpi-gps').textContent = withGps.length;
+    document.getElementById('kpi-gps-pct').textContent = total > 0 ? ((withGps.length / total) * 100).toFixed(1) + '% del total' : '0%';
+    document.getElementById('kpi-nogps').textContent = withoutGps;
+    document.getElementById('kpi-devices').textContent = Object.keys(deviceMap).length;
+    document.getElementById('kpi-edited').textContent = editedCount;
+
+    if (manifest.DeviceSerial || manifest.AcquisitionTime) {
+      document.getElementById('sub-header').textContent = `Dispositivo: ${manifest.DeviceSerial || 'Local'} | Sesión: ${manifest.AcquisitionTime || 'Reciente'}`;
+    }
+
+    // 1. Chart Timeline
+    const dateCounts = {};
+    allPhotos.forEach(p => {
+      if (p.DateTimeOriginal) {
+        const ym = p.DateTimeOriginal.substring(0, 7).replace(':', '-');
+        dateCounts[ym] = (dateCounts[ym] || 0) + 1;
+      } else {
+        dateCounts['Sin fecha'] = (dateCounts['Sin fecha'] || 0) + 1;
+      }
+    });
+
+    const sortedDates = Object.keys(dateCounts).sort();
+    new Chart(document.getElementById('chart-timeline'), {
+      type: 'bar',
+      data: {
+        labels: sortedDates,
+        datasets: [{
+          label: 'Fotos tomadas',
+          data: sortedDates.map(d => dateCounts[d]),
+          backgroundColor: '#38bdf8',
+          borderRadius: 4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.05)' } }
+        }
+      }
+    });
+
+    // 2. Chart Devices
+    const sortedDevs = Object.entries(deviceMap).sort((a,b) => b[1] - a[1]);
+    new Chart(document.getElementById('chart-devices'), {
+      type: 'doughnut',
+      data: {
+        labels: sortedDevs.map(d => d[0]),
+        datasets: [{
+          data: sortedDevs.map(d => d[1]),
+          backgroundColor: ['#38bdf8', '#818cf8', '#c084fc', '#f472b6', '#fb923c', '#4ade80', '#94a3b8'],
+          borderWidth: 0
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'right', labels: { color: '#e2e8f0', font: { size: 11 } } }
+        }
+      }
+    });
+
+    // 3. Chart GPS Coverage
+    new Chart(document.getElementById('chart-gps-coverage'), {
+      type: 'pie',
+      data: {
+        labels: ['Con GPS', 'Sin GPS'],
+        datasets: [{
+          data: [withGps.length, withoutGps],
+          backgroundColor: ['#10b981', '#f59e0b'],
+          borderWidth: 0
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#e2e8f0', font: { size: 11 } } }
+        }
+      }
+    });
+
+    // 4. Chart Orientation
+    const orientCounts = { '1': 0, '3': 0, '6': 0, '8': 0, 'Otras': 0 };
+    allPhotos.forEach(p => {
+      const o = String(p.Orientation || '');
+      if (orientCounts[o] !== undefined) orientCounts[o]++;
+      else if (o) orientCounts['Otras']++;
+    });
+    new Chart(document.getElementById('chart-orientation'), {
+      type: 'bar',
+      data: {
+        labels: ['1 (Normal)', '3 (180°)', '6 (90° Horario)', '8 (270°)', 'Otras'],
+        datasets: [{
+          label: 'Orientación',
+          data: [orientCounts['1'], orientCounts['3'], orientCounts['6'], orientCounts['8'], orientCounts['Otras']],
+          backgroundColor: '#818cf8',
+          borderRadius: 4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.05)' } }
+        }
+      }
+    });
+
+    // 5. Embedded Map
+    let dashMap;
+    if (withGps.length > 0) {
+      dashMap = L.map('dash-map', { center: [withGps[0].Lat, withGps[0].Lon], zoom: 12, scrollWheelZoom: false });
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap &copy; CARTO',
+        subdomains: 'abcd',
+        maxZoom: 19
+      }).addTo(dashMap);
+
+      const clusterGroup = L.markerClusterGroup({ chunkedLoading: true, maxClusterRadius: 40 });
+      withGps.forEach(p => {
+        const marker = L.marker([p.Lat, p.Lon]).bindPopup(`
+          <strong>${p.File ? p.File.split(/[\\/]/).pop() : ''}</strong><br/>
+          Fecha: ${p.DateTimeOriginal || 'N/A'}<br/>
+          Coords: ${p.Lat.toFixed(5)}, ${p.Lon.toFixed(5)}
+        `);
+        clusterGroup.addLayer(marker);
+      });
+      dashMap.addLayer(clusterGroup);
+      dashMap.fitBounds(clusterGroup.getBounds(), { padding: [30, 30], maxZoom: 15 });
+    } else {
+      document.getElementById('dash-map').innerHTML = '<div style="display:flex;height:100%;align-items:center;justify-content:center;color:#94a3b8;">No se detectaron coordenadas GPS en las imágenes analizadas.</div>';
+    }
+
+    // 6. Populate Clusters Table
+    const clusters = {};
+    withGps.forEach(p => {
+      const key = `${p.Lat.toFixed(3)}, ${p.Lon.toFixed(3)}`;
+      clusters[key] = (clusters[key] || 0) + 1;
+    });
+    const sortedClusters = Object.entries(clusters).sort((a,b) => b[1] - a[1]).slice(0, 20);
+    const clusterTableBody = document.querySelector('#table-clusters tbody');
+
+    sortedClusters.forEach((c, idx) => {
+      const parts = c[0].split(',');
+      const lat = parseFloat(parts[0]);
+      const lon = parseFloat(parts[1]);
+      const gMapsUrl = `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`;
+      const pct = withGps.length > 0 ? ((c[1] / withGps.length) * 100).toFixed(1) : 0;
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td><strong>${c[0]}</strong></td>
+        <td>${c[1]} fotos</td>
+        <td>${pct}%</td>
+        <td><a href="${gMapsUrl}" target="_blank" class="map-link">Ver en Maps &rarr;</a></td>
+      `;
+      clusterTableBody.appendChild(tr);
+    });
+
+    // 7. Inventory Table
+    function renderTable() {
+      const term = document.getElementById('inventory-search').value.toLowerCase();
+      const tbody = document.getElementById('inventory-tbody');
+      tbody.innerHTML = '';
+
+      const filtered = allPhotos.filter(p => {
+        const str = `${p.File} ${p.Make} ${p.Model} ${p.DateTimeOriginal} ${p.Software}`.toLowerCase();
+        return str.includes(term);
+      }).slice(0, 200); // mostrar primeros 200
+
+      filtered.forEach(p => {
+        const fileName = p.File ? p.File.split(/[\\/]/).pop() : '';
+        const coords = (p.HasGPS && p.Lat) ? `${p.Lat.toFixed(4)}, ${p.Lon.toFixed(4)}` : '-';
+        const gpsTag = p.HasGPS ? '<span class="tag tag-gps">GPS OK</span>' : '<span class="tag tag-nogps">Sin GPS</span>';
+        const softTag = p.Software ? `<span class="tag tag-edit">${p.Software}</span>` : '-';
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${fileName}</strong><br/><small style="color:#64748b;">${p.File || ''}</small></td>
+          <td>${p.DateTimeOriginal || 'N/A'}</td>
+          <td>${((p.Make || '') + ' ' + (p.Model || '')).trim() || 'N/A'}</td>
+          <td>${gpsTag}</td>
+          <td>${coords}</td>
+          <td>${softTag}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    renderTable();
+  </script>
+</body>
+</html>
+
