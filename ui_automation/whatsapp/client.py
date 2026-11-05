@@ -219,6 +219,15 @@ class WhatsAppClient:
             if not self.watcher_mgr.is_running():
                 self.watcher_mgr.start(interval=1.5)
 
+        # Asegurar pantalla encendida
+        try:
+            if not self.d.info.get("screenOn", True):
+                logger.info("Pantalla apagada detectada en WhatsAppClient. Encendiendo pantalla...")
+                self.d.screen_on()
+                time.sleep(0.4)
+        except Exception:
+            pass
+
         # Lanzar la app
         try:
             self.d.app_start(pkg, stop=False)

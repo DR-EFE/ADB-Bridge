@@ -27,6 +27,8 @@ def test_pause_and_resume_preserves_job_checkpoint(tmp_path):
     checkpoint.set()
     assert service.resume(job_id)
     assert finished.wait(2)
-    time.sleep(0.05)
+    deadline = time.time() + 2.0
+    while time.time() < deadline and service.get_job(job_id).status != JobStatus.COMPLETED:
+        time.sleep(0.02)
     assert service.get_job(job_id).status == JobStatus.COMPLETED
     service.shutdown()

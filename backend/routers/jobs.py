@@ -15,7 +15,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from ui.services.job_queue_service import JobItem, JobQueueService, JobStatus
+from core.domain.models.jobs import JobItem, JobStatus
+from core.services.job_queue_service import JobQueueService
 from ..deps import get_job_queue_service
 
 logger = logging.getLogger("backend.routers.jobs")

@@ -12,9 +12,9 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from ui.services.adb_models import Device, DeviceState
-from ui.services.adb_service import AdbService
-from ui.services.device_health_service import DeviceHealthService
+from core.domain.models.adb import Device, DeviceState
+from core.infrastructure.adb.adb_service import AdbService
+from core.services.device_health_service import DeviceHealthService
 from ..deps import get_adb_service, get_device_health_service
 
 logger = logging.getLogger("backend.routers.devices")

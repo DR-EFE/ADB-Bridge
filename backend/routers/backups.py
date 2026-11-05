@@ -14,10 +14,10 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from ui.services.adb_service import AdbService
-from ui.services.backup_profiles import BackupProfile, get_backup_profiles
-from ui.services.backup_service import BackupService, get_default_backup_dir
-from ui.services.job_queue_service import JobQueueService
+from core.infrastructure.adb.adb_service import AdbService
+from core.domain.rules.backup_profiles import BackupProfile, get_backup_profiles
+from core.services.backup_service import BackupService, get_default_backup_dir
+from core.services.job_queue_service import JobQueueService
 from ..deps import get_adb_service, get_backup_service, get_job_queue_service
 
 logger = logging.getLogger("backend.routers.backups")

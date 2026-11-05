@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mapa Forense de Metadatos GPS - Android Tools</title>
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <!-- MarkerCluster CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body, html { height: 100%; width: 100%; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; background: #0f172a; color: #f8fafc; }
+    #map { height: 100vh; width: 100vw; z-index: 1; }
+
+    /* Floating Panel */
+    .control-panel {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      z-index: 1000;
+      background: rgba(15, 23, 42, 0.92);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      padding: 16px;
+      width: 340px;
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+      transition: all 0.3s ease;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 8px;
+    }
+    .panel-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #38bdf8;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 9999px;
+      background: #0284c7;
+      color: #fff;
+    }
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      margin-bottom: 6px;
+      color: #94a3b8;
+    }
+    .stat-val { font-weight: 600; color: #e2e8f0; }
+
+    .control-group {
+      margin-top: 14px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .control-group label {
+      display: block;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #94a3b8;
+      margin-bottom: 6px;
+      font-weight: 700;
+    }
+    .btn-toggle {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .btn {
+      flex: 1;
+      padding: 7px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: #1e293b;
+      color: #cbd5e1;
+      font-size: 12px;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.2s;
+    }
+    .btn:hover { background: #334155; color: #fff; }
+    .btn.active { background: #0284c7; color: #fff; border-color: #38bdf8; font-weight: 600; }
+    
+    select, input[type="text"], input[type="date"] {
+      width: 100%;
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: #1e293b;
+      color: #f8fafc;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    select:focus, input:focus { outline: none; border-color: #38bdf8; }
+
+    /* Popup Custom Styling */
+    .leaflet-popup-content-wrapper {
+      background: #1e293b;
+      color: #f8fafc;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6);
+      padding: 4px;
+    }
+    .leaflet-popup-tip { background: #1e293b; }
+    .popup-card { width: 260px; font-size: 12px; line-height: 1.4; }
+    .popup-thumb {
+      width: 100%;
+      height: 150px;
+      object-fit: cover;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      background: #0f172a;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .popup-title { font-weight: 700; color: #38bdf8; font-size: 13px; margin-bottom: 4px; word-break: break-all; }
+    .popup-item { display: flex; justify-content: space-between; margin-bottom: 3px; color: #94a3b8; }
+    .popup-item span:last-child { color: #f1f5f9; font-weight: 500; text-align: right; }
+    .popup-links { margin-top: 8px; display: flex; gap: 6px; }
+    .popup-links a {
+      flex: 1;
+      text-align: center;
+      padding: 4px 6px;
+      border-radius: 4px;
+      background: #334155;
+      color: #38bdf8;
+      text-decoration: none;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .popup-links a:hover { background: #0284c7; color: #fff; }
+
+    /* Offline warning banner */
+    #offline-alert {
+      display: none;
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      z-index: 1000;
+      background: #b91c1c;
+      color: white;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <div class="control-panel">
+    <div class="panel-header">
+      <span class="panel-title">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>
+        Metadatos Forenses
+      </span>
+      <span class="badge" id="badge-total">0 fotos</span>
+    </div>
+
+    <div class="stat-row">
+      <span>Con Geolocalización GPS:</span>
+      <span class="stat-val" id="stat-gps">0</span>
+    </div>
+    <div class="stat-row">
+      <span>Dispositivos únicos:</span>
+      <span class="stat-val" id="stat-devices">0</span>
+    </div>
+    <div class="stat-row">
+      <span>Rango de fechas:</span>
+      <span class="stat-val" id="stat-dates">-</span>
+    </div>
+
+    <div class="control-group">
+      <label>Modo de visualización</label>
+      <div class="btn-toggle">
+        <button class="btn active" id="btn-cluster" onclick="setViewMode('cluster')">Clustering</button>
+        <button class="btn" id="btn-heat" onclick="setViewMode('heat')">Calor (Heatmap)</button>
+        <button class="btn" id="btn-pins" onclick="setViewMode('pins')">Puntos</button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Filtrar por Dispositivo / Modelo</label>
+      <select id="select-device" onchange="applyFilters()">
+        <option value="">Todos los dispositivos</option>
+      </select>
+
+      <label>Filtrar por búsqueda de archivo</label>
+      <input type="text" id="input-search" placeholder="Nombre o carpeta..." oninput="applyFilters()" />
+
+      <label>Desde fecha</label>
+      <input type="date" id="date-from" onchange="applyFilters()" />
+      
+      <label>Hasta fecha</label>
+      <input type="date" id="date-to" onchange="applyFilters()" />
+
+      <button class="btn" style="width:100%; margin-top:4px;" onclick="resetFilters()">Reiniciar Filtros</button>
+    </div>
+  </div>
+
+  <div id="offline-alert">
+    Aviso: Leaflet o capas de mapas requieren conexión a Internet para cargar los mosaicos visuales. Los datos locales están seguros y aislados.
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <!-- MarkerCluster JS -->
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <!-- Leaflet Heat JS -->
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+
+  <script>
+    // Inyección de datos por PowerShell
+    const rawPhotos = /*__PHOTOS_JSON__*/ || [];
+    
+    // Filtrar solo las que tengan coordenadas válidas
+    const photos = rawPhotos.filter(p => p.HasGPS && typeof p.Lat === 'number' && typeof p.Lon === 'number' && !isNaN(p.Lat) && !isNaN(p.Lon) && p.Lat >= -90 && p.Lat <= 90 && p.Lon >= -180 && p.Lon <= 180);
+
+    let map, clusterGroup, heatLayer, pinsLayer;
+    let currentMode = 'cluster';
+
+    function initMap() {
+      // Centro por defecto
+      let initialCenter = [20.0, -100.0];
+      let initialZoom = 4;
+      if (photos.length > 0) {
+        initialCenter = [photos[0].Lat, photos[0].Lon];
+        initialZoom = 12;
+      }
+
+      map = L.map('map', {
+        center: initialCenter,
+        zoom: initialZoom,
+        zoomControl: false
+      });
+
+      L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+      // CartoDB Dark Matter tile layer
+      const darkTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap &copy; CARTO',
+        subdomains: 'abcd',
+        maxZoom: 20
+      });
+
+      // OpenStreetMap standard tile layer
+      const osmTiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
+        maxZoom: 19
+      });
+
+      darkTiles.addTo(map);
+
+      L.control.layers({
+        "Modo Oscuro (Forense)": darkTiles,
+        "OpenStreetMap Estándar": osmTiles
+      }, null, { position: 'bottomleft' }).addTo(map);
+
+      clusterGroup = L.markerClusterGroup({
+        chunkedLoading: true,
+        maxClusterRadius: 50,
+        spiderfyOnMaxZoom: true,
+        showCoverageOnHover: false
+      });
+
+      pinsLayer = L.layerGroup();
+      heatLayer = null;
+
+      populateDeviceSelect();
+      updateStats(photos);
+      renderLayers(photos);
+
+      if (photos.length > 0) {
+        const bounds = L.latLngBounds(photos.map(p => [p.Lat, p.Lon]));
+        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
+      }
+    }
+
+    function createPopupContent(p) {
+      const fileName = p.File ? p.File.split(/[\\/]/).pop() : 'Desconocido';
+      const thumbSrc = p.Thumbnail ? p.Thumbnail : (p.ThumbRel ? p.ThumbRel : '');
+      const imgTag = thumbSrc ? `<img src="${thumbSrc}" class="popup-thumb" onerror="this.style.display='none'" alt="Miniatura"/>` : '';
+      const gMapsUrl = `https://www.google.com/maps/search/?api=1&query=${p.Lat},${p.Lon}`;
+      const osmUrl = `https://www.openstreetmap.org/?mlat=${p.Lat}&mlon=${p.Lon}#map=17/${p.Lat}/${p.Lon}`;
+
+      return `
+        <div class="popup-card">
+          ${imgTag}
+          <div class="popup-title">${fileName}</div>
+          <div class="popup-item"><span>Fecha Original:</span><span>${p.DateTimeOriginal || 'Sin fecha'}</span></div>
+          <div class="popup-item"><span>Dispositivo:</span><span>${(p.Make || '') + ' ' + (p.Model || '')}</span></div>
+          <div class="popup-item"><span>Latitud:</span><span>${p.Lat.toFixed(6)}°</span></div>
+          <div class="popup-item"><span>Longitud:</span><span>${p.Lon.toFixed(6)}°</span></div>
+          ${p.Altitude ? `<div class="popup-item"><span>Altitud:</span><span>${p.Altitude} m</span></div>` : ''}
+          ${p.Software ? `<div class="popup-item"><span>Software:</span><span>${p.Software}</span></div>` : ''}
+          <div class="popup-links">
+            <a href="${gMapsUrl}" target="_blank">Google Maps</a>
+            <a href="${osmUrl}" target="_blank">OpenStreetMap</a>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderLayers(filtered) {
+      clusterGroup.clearLayers();
+      pinsLayer.clearLayers();
+      if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+
+      const heatPoints = [];
+
+      filtered.forEach(p => {
+        const marker = L.marker([p.Lat, p.Lon]).bindPopup(createPopupContent(p));
+        clusterGroup.addLayer(marker);
+        pinsLayer.addLayer(L.circleMarker([p.Lat, p.Lon], {
+          radius: 5,
+          fillColor: '#38bdf8',
+          color: '#ffffff',
+          weight: 1,
+          opacity: 1,
+          fillOpacity: 0.8
+        }).bindPopup(createPopupContent(p)));
+        heatPoints.push([p.Lat, p.Lon, 1.0]);
+      });
+
+      if (window.L && L.heatLayer) {
+        heatLayer = L.heatLayer(heatPoints, { radius: 25, blur: 15, maxZoom: 17 });
+      }
+
+      applyViewMode();
+    }
+
+    function setViewMode(mode) {
+      currentMode = mode;
+      document.getElementById('btn-cluster').classList.toggle('active', mode === 'cluster');
+      document.getElementById('btn-heat').classList.toggle('active', mode === 'heat');
+      document.getElementById('btn-pins').classList.toggle('active', mode === 'pins');
+      applyViewMode();
+    }
+
+    function applyViewMode() {
+      if (!map) return;
+      map.removeLayer(clusterGroup);
+      map.removeLayer(pinsLayer);
+      if (heatLayer) map.removeLayer(heatLayer);
+
+      if (currentMode === 'cluster') {
+        map.addLayer(clusterGroup);
+      } else if (currentMode === 'heat') {
+        if (heatLayer) map.addLayer(heatLayer);
+      } else if (currentMode === 'pins') {
+        map.addLayer(pinsLayer);
+      }
+    }
+
+    function populateDeviceSelect() {
+      const select = document.getElementById('select-device');
+      const devices = new Set();
+      photos.forEach(p => {
+        const d = ((p.Make || '') + ' ' + (p.Model || '')).trim();
+        if (d) devices.add(d);
+      });
+      Array.from(devices).sort().forEach(dev => {
+        const opt = document.createElement('option');
+        opt.value = dev;
+        opt.textContent = dev;
+        select.appendChild(opt);
+      });
+    }
+
+    function updateStats(filtered) {
+      document.getElementById('badge-total').textContent = `${filtered.length} fotos`;
+      document.getElementById('stat-gps').textContent = filtered.length;
+      
+      const devices = new Set(filtered.map(p => ((p.Make || '') + ' ' + (p.Model || '')).trim()).filter(Boolean));
+      document.getElementById('stat-devices').textContent = devices.size;
+
+      const dates = filtered.map(p => p.DateTimeOriginal).filter(Boolean).sort();
+      if (dates.length > 0) {
+        const dMin = dates[0].split(' ')[0].split('T')[0];
+        const dMax = dates[dates.length - 1].split(' ')[0].split('T')[0];
+        document.getElementById('stat-dates').textContent = `${dMin} a ${dMax}`;
+      } else {
+        document.getElementById('stat-dates').textContent = 'N/A';
+      }
+    }
+
+    function applyFilters() {
+      const devVal = document.getElementById('select-device').value.toLowerCase();
+      const searchVal = document.getElementById('input-search').value.toLowerCase();
+      const fromVal = document.getElementById('date-from').value;
+      const toVal = document.getElementById('date-to').value;
+
+      const filtered = photos.filter(p => {
+        const dev = ((p.Make || '') + ' ' + (p.Model || '')).toLowerCase();
+        if (devVal && !dev.includes(devVal)) return false;
+
+        const file = (p.File || '').toLowerCase();
+        if (searchVal && !file.includes(searchVal)) return false;
+
+        if (p.DateTimeOriginal) {
+          const pDate = p.DateTimeOriginal.split(' ')[0].replace(/:/g, '-').split('T')[0];
+          if (fromVal && pDate < fromVal) return false;
+          if (toVal && pDate > toVal) return false;
+        }
+        return true;
+      });
+
+      updateStats(filtered);
+      renderLayers(filtered);
+
+      if (filtered.length > 0) {
+        const bounds = L.latLngBounds(filtered.map(p => [p.Lat, p.Lon]));
+        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
+      }
+    }
+
+    function resetFilters() {
+      document.getElementById('select-device').value = '';
+      document.getElementById('input-search').value = '';
+      document.getElementById('date-from').value = '';
+      document.getElementById('date-to').value = '';
+      applyFilters();
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      try {
+        initMap();
+      } catch (err) {
+        console.error("Error al inicializar mapa:", err);
+        document.getElementById('offline-alert').style.display = 'block';
+      }
+    });
+  </script>
+</body>
+</html>
+
