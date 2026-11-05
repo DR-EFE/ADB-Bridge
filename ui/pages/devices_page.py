@@ -15,6 +15,7 @@ import flet as ft
 from .. import theme
 from ..services.device_service import DeviceService
 from ..services.network_scan_service import NetworkHost, NetworkScanError, NetworkScanResult, NetworkScanService, ScanProfile
+from ..services.screen_session_service import ScreenPreset, ScreenSession, ScreenSessionService, ScreenSessionState
 from ..services.wireless_qr_service import WirelessQrPairingService
 from .commands_page import CommandsPage
 from .operations_page import OperationsPage
@@ -32,17 +33,40 @@ class DevicesPage:
         on_log: Optional[Callable[[str, str], None]] = None,
         on_device_changed: Optional[Callable[[str], None]] = None,
         job_queue: Optional[Any] = None,
+        screen_session_service: Optional[ScreenSessionService] = None,
     ) -> None:
         self._device = device
         self._page = page
         self._on_log = on_log
         self._on_device_changed = on_device_changed
         self._job_queue = job_queue
+        self._owns_screen_sessions = screen_session_service is None
+        self._screen_sessions = screen_session_service or ScreenSessionService()
+        self._screen_sessions.set_on_change(self._on_screen_session_change)
+        self._screen_pending: Dict[str, str] = {}
+        self._screen_pending_lock = threading.Lock()
+        self._screen_errors: Dict[str, str] = {}
         self._refresh_lock = threading.Lock()
         self._is_shutdown = False
         self._unlock_credentials: Dict[str, str] = {}
         self._active_section = "connections"
         self._last_online_items: List[Dict[str, Any]] = []
+        self._last_active_item: Optional[Dict[str, Any]] = None
+        self._last_has_any_online = False
+
+        self._screen_preset_selector = ft.Dropdown(
+            label="Calidad de pantalla",
+            width=150,
+            dense=True,
+            value=ScreenPreset.MEDIUM.value,
+            options=[
+                ft.DropdownOption(key=ScreenPreset.LOW.value, text="Baja"),
+                ft.DropdownOption(key=ScreenPreset.MEDIUM.value, text="Media"),
+                ft.DropdownOption(key=ScreenPreset.HIGH.value, text="Alta"),
+            ],
+        )
+        self._screen_stay_awake = ft.Checkbox(label="Mantener despierto", value=True)
+        self._screen_turn_off = ft.Checkbox(label="Apagar pantalla", value=False)
 
         # Instanciar módulos de diagnóstico y operaciones integrados
         self.commands = CommandsPage(self._device, on_log=self._on_log)
@@ -714,6 +738,8 @@ class DevicesPage:
             active_item = next((item for item in online_items if item["is_active"]), None)
             if not active_item and self._device.serial:
                 active_item = next((item for item in online_items if item["serial"] == self._device.serial), None)
+            self._last_active_item = active_item
+            self._last_has_any_online = bool(online_items)
             self._render_hero_active_card(active_item, has_any_online=bool(online_items))
 
             # Actualizar controles de PIN en sesión para el dispositivo activo
@@ -748,6 +774,7 @@ class DevicesPage:
             battery = active_item["battery"]
             bat_str = f" • Batería: {battery}%" if battery is not None else ""
             pin_set = bool(self._unlock_credentials.get(serial))
+            screen_controls = [self._build_screen_controls(serial, compact=False)] if active_item.get("state") == "device" else []
 
             pin_badge = ft.Container(
                 content=ft.Row(
@@ -842,6 +869,7 @@ class DevicesPage:
                                     tooltip="Ver o editar el PIN/contraseña de desbloqueo",
                                     on_click=lambda _: self._focus_pin_config(),
                                 ),
+                                *screen_controls,
                                 ft.OutlinedButton(
                                     "Ficha Técnica",
                                     icon=ft.Icons.INFO_OUTLINE,
@@ -970,6 +998,7 @@ class DevicesPage:
             )
 
         if state == "device":
+            actions.append(self._build_screen_controls(serial, compact=True))
             actions.append(
                 ft.OutlinedButton(
                     "Desbloquear",
@@ -1044,6 +1073,99 @@ class DevicesPage:
                 ],
             ),
         )
+
+    def _build_screen_controls(self, serial: str, *, compact: bool) -> ft.Control:
+        session = self._screen_sessions.get_session(serial)
+        state = session.state if session else None
+        with self._screen_pending_lock:
+            pending = self._screen_pending.get(serial)
+
+        error = session.error if session and state == ScreenSessionState.ERROR else self._screen_errors.get(serial)
+        if pending == "starting":
+            label, icon, disabled = "Iniciando…", ft.Icons.HOURGLASS_TOP, True
+        elif pending == "stopping":
+            label, icon, disabled = "Cerrando…", ft.Icons.HOURGLASS_TOP, True
+        elif state == ScreenSessionState.STARTING:
+            label, icon, disabled = "Iniciando…", ft.Icons.HOURGLASS_TOP, True
+        elif state == ScreenSessionState.RUNNING:
+            label, icon, disabled = "Cerrar pantalla", ft.Icons.STOP_SCREEN_SHARE, False
+        elif error:
+            label, icon, disabled = "Reintentar pantalla", ft.Icons.SCREEN_SHARE, False
+        else:
+            label, icon, disabled = "Abrir pantalla en vivo", ft.Icons.SCREEN_SHARE, False
+
+        button = ft.OutlinedButton(
+            label,
+            icon=icon,
+            height=32,
+            disabled=disabled,
+            tooltip=error or "Duplicar y controlar este teléfono en una ventana independiente",
+            on_click=lambda _, s=serial: self._toggle_screen_session(s),
+        )
+        controls: List[ft.Control] = [button]
+        if not compact:
+            controls.extend([self._screen_preset_selector, self._screen_stay_awake, self._screen_turn_off])
+        if error:
+            controls.append(ft.Text(error, size=11, color=theme.ERR, selectable=True, width=300))
+        elif state == ScreenSessionState.RUNNING:
+            controls.append(ft.Text("Pantalla en vivo activa", size=11, color=theme.OK))
+
+        if compact:
+            return ft.Column(spacing=2, tight=True, controls=controls)
+        return ft.Row(spacing=6, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=controls)
+
+    def _toggle_screen_session(self, serial: str) -> None:
+        if self._is_shutdown:
+            return
+        session = self._screen_sessions.get_session(serial)
+        stopping = bool(session and session.state == ScreenSessionState.RUNNING)
+        preset = self._screen_preset_selector.value or ScreenPreset.MEDIUM.value
+        stay_awake = bool(self._screen_stay_awake.value)
+        turn_screen_off = bool(self._screen_turn_off.value)
+        with self._screen_pending_lock:
+            if serial in self._screen_pending:
+                return
+            self._screen_pending[serial] = "stopping" if stopping else "starting"
+        self._refresh_screen_controls()
+
+        def worker() -> None:
+            try:
+                if stopping:
+                    self._screen_sessions.stop(serial)
+                else:
+                    self._screen_sessions.start(
+                        serial,
+                        preset,
+                        stay_awake=stay_awake,
+                        turn_screen_off=turn_screen_off,
+                    )
+                    self._screen_errors.pop(serial, None)
+            except Exception as exc:
+                self._screen_errors[serial] = str(exc)
+                logger.warning("No se pudo abrir/cerrar la pantalla de %s: %s", serial, exc)
+            finally:
+                with self._screen_pending_lock:
+                    self._screen_pending.pop(serial, None)
+                self._refresh_screen_controls()
+
+        threading.Thread(target=worker, name=f"screen-session-{serial}", daemon=True).start()
+
+    def _on_screen_session_change(self, session: ScreenSession) -> None:
+        if session.state in (ScreenSessionState.RUNNING, ScreenSessionState.STOPPED):
+            self._screen_errors.pop(session.serial, None)
+        self._refresh_screen_controls()
+
+    def _refresh_screen_controls(self) -> None:
+        if self._is_shutdown:
+            return
+        try:
+            if self._last_online_items:
+                self._online_list_col.controls = [self._build_online_card(item) for item in self._last_online_items]
+                self._online_list_col.update()
+            if self._last_active_item is not None or self._hero_active_card.content is not None:
+                self._render_hero_active_card(self._last_active_item, has_any_online=self._last_has_any_online)
+        except Exception:
+            logger.debug("No se pudieron actualizar los controles de pantalla", exc_info=True)
 
     def _build_saved_card(self, dev: Dict[str, Any]) -> ft.Control:
         dev_id = dev["id"]
@@ -2498,6 +2620,8 @@ class DevicesPage:
     def shutdown(self) -> None:
         """Cierre de la página."""
         self._is_shutdown = True
+        if self._owns_screen_sessions:
+            self._screen_sessions.shutdown()
         self._unlock_credentials.clear()
         self._guardian_stop.set()
         self._network_scan_cancel.set()

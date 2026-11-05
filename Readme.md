@@ -1,5 +1,7 @@
 Este proyecto es una colección de scripts para administrar un teléfono Android desde Windows mediante ADB. Permite conectar el celular por USB o Wi‑Fi, explorar archivos, transferir datos y generar respaldos sin necesidad de root.
 
+La GUI también permite abrir la pantalla del dispositivo conectado en una ventana independiente de scrcpy. Consulta [docs/SCREEN_SESSION.md](docs/SCREEN_SESSION.md) para los perfiles, la ubicación del ejecutable y los avisos de terceros.
+
 No es una aplicación Android instalada en el teléfono; es una herramienta de automatización para Windows basada en PowerShell y archivos `.bat`.
 
 ## Componentes principales

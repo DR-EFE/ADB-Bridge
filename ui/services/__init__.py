@@ -5,6 +5,14 @@ from .adb_models import (
     OperationResult, TransferJob as TransferJobModel, TransferJobStatus,
 )
 from .adb_service import AdbError, AdbService
+from .screen_session_service import (
+    ScreenPreset,
+    ScreenPresetConfig,
+    ScreenSession,
+    ScreenSessionError,
+    ScreenSessionService,
+    ScreenSessionState,
+)
 from .backup_service import BackupProgress, BackupService, CategoryDef, get_available_category_definitions
 from .device_service import DeviceRecord, DeviceService, DeviceStatus
 from .job_queue_service import JobItem, JobQueueService, JobStatus, JobType
@@ -49,6 +57,12 @@ __all__ = [
     "TransferJobStatus",
     "AdbService",
     "AdbError",
+    "ScreenPreset",
+    "ScreenPresetConfig",
+    "ScreenSession",
+    "ScreenSessionError",
+    "ScreenSessionService",
+    "ScreenSessionState",
     "DeviceService",
     "DeviceStatus",
     "DeviceRecord",

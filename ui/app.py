@@ -23,6 +23,7 @@ from .pages.operations_page import OperationsPage
 from .pages.whatsapp_page import WhatsAppPage
 from .services.device_service import DeviceService
 from .services.job_queue_service import JobQueueService
+from .services.screen_session_service import ScreenSessionService
 
 logger = logging.getLogger("ui.app")
 
@@ -61,6 +62,7 @@ class AndroidToolsApp:
         self.page = page
         self.device = DeviceService(serial=serial)
         self.job_queue = JobQueueService()
+        self.screen_sessions = ScreenSessionService()
 
         theme.apply_theme(page, title="Android ADB Tools - Control Center")
 
@@ -71,6 +73,7 @@ class AndroidToolsApp:
             on_log=self._on_custom_log,
             on_device_changed=lambda _: self.sidebar.refresh_now(),
             job_queue=self.job_queue,
+            screen_session_service=self.screen_sessions,
         )
         self.logs = LogsPage(page)
         self.notifications = NotificationsPage(self.device)
@@ -330,6 +333,7 @@ class AndroidToolsApp:
         self.device.stop_usb_auto_connect_monitor()
         for page in (self.devices, self.explorer, self.backup, self.whatsapp, self.notifications, self.logs):
             page.shutdown()
+        self.screen_sessions.shutdown()
         self.job_queue.shutdown()
         if self._log_handler:
             logging.getLogger().removeHandler(self._log_handler)
