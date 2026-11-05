@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import uiautomator2 as u2
 
@@ -565,13 +565,20 @@ class WhatsAppClient:
         include_media: bool = False,
         local_dir: Union[str, Path] = "./exports",
         chat_names: Optional[List[str]] = None,
+        prepare_device: Optional[Callable[[], None]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Exporta y descarga los primeros N chats más recientes de WhatsApp.
         """
         from .chats import WhatsAppChatManager
         manager = WhatsAppChatManager(self)
-        return manager.export_top_chats(n=n, include_media=include_media, local_dir=local_dir, chat_names=chat_names)
+        return manager.export_top_chats(
+            n=n,
+            include_media=include_media,
+            local_dir=local_dir,
+            chat_names=chat_names,
+            prepare_device=prepare_device,
+        )
 
     def process_chat(self, local_path: str, my_name: Optional[str] = None) -> "ChatConversation":
         """Procesa una exportación local (.txt o .zip) sin usar el dispositivo."""

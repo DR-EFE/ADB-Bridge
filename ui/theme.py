@@ -48,7 +48,12 @@ def apply_theme(page: ft.Page, title: str = "Android Tools") -> None:
     page.window.min_height = 640
 
 
-def card(content: ft.Control, padding: int = 14, expand: bool | int | None = None) -> ft.Container:
+def card(
+    content: ft.Control,
+    padding: int = 14,
+    expand: bool | int | None = None,
+    col: int | dict[str, int] | None = None,
+) -> ft.Container:
     """Contenedor estilo tarjeta limpio con bordes suaves redondeados."""
     return ft.Container(
         content=content,
@@ -57,6 +62,7 @@ def card(content: ft.Control, padding: int = 14, expand: bool | int | None = Non
         border_radius=10,
         border=ft.Border.all(1, BORDER),
         expand=expand,
+        col=col,
     )
 
 

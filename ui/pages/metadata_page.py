@@ -110,14 +110,15 @@ class MetadataPage:
         # Controles de Entrada y Selección desde la Computadora
         # ---------------------------------------------------------------------
         self._input_mode = ft.RadioGroup(
-            content=ft.Row(
-                spacing=16,
-                wrap=True,
+            content=ft.ResponsiveRow(
+                columns=12,
+                spacing=8,
+                run_spacing=0,
                 controls=[
-                    ft.Radio(value="folder", label="📁 Carpeta con imágenes en el PC (Recomendado)"),
-                    ft.Radio(value="archive", label="📦 Archivo comprimido (.zip, .rar, .tar) en el PC"),
-                    ft.Radio(value="single", label="📸 Imagen individual en el PC"),
-                    ft.Radio(value="device", label="📱 Extraer directo desde celular (ADB)"),
+                    ft.Radio(value="folder", label="Carpeta de imágenes en esta computadora (recomendado)", col={"xs": 12, "md": 6}),
+                    ft.Radio(value="archive", label="Archivo comprimido en esta computadora (.zip, .rar, .tar)", col={"xs": 12, "md": 6}),
+                    ft.Radio(value="single", label="Una imagen en esta computadora", col={"xs": 12, "md": 6}),
+                    ft.Radio(value="device", label="Teléfono conectado por ADB", col={"xs": 12, "md": 6}),
                 ],
             ),
             value="folder",
@@ -134,7 +135,7 @@ class MetadataPage:
         )
 
         self._browse_btn = ft.FilledButton(
-            "Examinar en mi PC...",
+            "Examinar en mi PC",
             icon=ft.Icons.DESKTOP_WINDOWS,
             on_click=self._on_browse_click,
         )
@@ -143,7 +144,7 @@ class MetadataPage:
         self._pc_folders_dropdown = ft.Dropdown(
             label="Carpetas detectadas en este PC",
             hint_text="Descargas del celular detectadas...",
-            width=280,
+            expand=True,
             text_size=12,
             dense=True,
             on_select=self._on_pc_folder_selected,
@@ -152,7 +153,7 @@ class MetadataPage:
         self._sessions_dropdown = ft.Dropdown(
             label="Cargar análisis previo",
             hint_text="Sesiones previas guardadas...",
-            width=260,
+            expand=True,
             text_size=12,
             dense=True,
             on_select=self._on_session_selected,
@@ -184,8 +185,9 @@ class MetadataPage:
         # Barra de Acción y Progreso
         # ---------------------------------------------------------------------
         self._start_btn = ft.FilledButton(
-            "Iniciar Análisis de Metadatos & Mapa",
+            "Iniciar análisis",
             icon=ft.Icons.TRAVEL_EXPLORE,
+            tooltip="Iniciar análisis de metadatos y generar el mapa",
             on_click=self._on_start_analysis,
         )
 
@@ -297,8 +299,10 @@ class MetadataPage:
     # UI BUILDERS
     # -------------------------------------------------------------------------
     def _build_view(self) -> ft.Control:
-        kpi_row = ft.Row(
-            spacing=12,
+        kpi_row = ft.ResponsiveRow(
+            columns=12,
+            spacing=10,
+            run_spacing=10,
             controls=[
                 theme.card(
                     ft.Column(
@@ -308,7 +312,8 @@ class MetadataPage:
                         ],
                         spacing=2,
                     ),
-                    expand=1,
+                    expand=True,
+                    col={"xs": 12, "sm": 6, "lg": 4, "xl": 2},
                     padding=10,
                 ),
                 theme.card(
@@ -319,7 +324,8 @@ class MetadataPage:
                         ],
                         spacing=2,
                     ),
-                    expand=1,
+                    expand=True,
+                    col={"xs": 12, "sm": 6, "lg": 4, "xl": 2},
                     padding=10,
                 ),
                 theme.card(
@@ -330,7 +336,8 @@ class MetadataPage:
                         ],
                         spacing=2,
                     ),
-                    expand=1,
+                    expand=True,
+                    col={"xs": 12, "sm": 6, "lg": 4, "xl": 2},
                     padding=10,
                 ),
                 theme.card(
@@ -341,7 +348,8 @@ class MetadataPage:
                         ],
                         spacing=2,
                     ),
-                    expand=1,
+                    expand=True,
+                    col={"xs": 12, "sm": 6, "lg": 4, "xl": 2},
                     padding=10,
                 ),
                 theme.card(
@@ -352,7 +360,8 @@ class MetadataPage:
                         ],
                         spacing=2,
                     ),
-                    expand=2,
+                    expand=True,
+                    col={"xs": 12, "sm": 6, "lg": 4, "xl": 4},
                     padding=10,
                 ),
             ],
@@ -360,32 +369,52 @@ class MetadataPage:
 
         controls_card = theme.card(
             ft.Column(
-                spacing=10,
+                spacing=12,
                 controls=[
-                    ft.Row(
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ft.Text("Origen de las imágenes", size=14, weight=ft.FontWeight.W_600, color=theme.TEXT),
+                    self._input_mode,
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=10,
+                        run_spacing=8,
                         controls=[
-                            self._input_mode,
-                            ft.Row([self._pc_folders_dropdown, self._sessions_dropdown], spacing=8),
+                            ft.Container(content=self._pc_folders_dropdown, col={"xs": 12, "md": 6}),
+                            ft.Container(content=self._sessions_dropdown, col={"xs": 12, "md": 6}),
                         ],
                     ),
-                    ft.Row(
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=10,
+                        run_spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            self._path_field,
-                            self._browse_btn,
+                            ft.Container(content=self._path_field, col={"xs": 12, "md": 9}),
+                            ft.Container(content=self._browse_btn, col={"xs": 12, "md": 3}),
                         ],
                     ),
                     self._preview_info_banner,
                     self._device_reuse_chk,
-                    ft.Row(
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=8,
+                        run_spacing=8,
                         controls=[
-                            ft.Row([self._start_btn, self._cancel_btn, self._download_tool_btn], spacing=8),
-                            ft.Row([self._btn_open_map, self._btn_open_dash, self._btn_open_folder], spacing=8),
+                            ft.Container(content=self._start_btn, col={"xs": 12, "sm": 6, "lg": 4}),
+                            ft.Container(content=self._cancel_btn, col={"xs": 6, "sm": 3, "lg": 2}),
+                            ft.Container(content=self._download_tool_btn, col={"xs": 12, "sm": 6, "lg": 3}),
                         ],
                     ),
-                    ft.Row([self._progress_bar], expand=True),
+                    ft.ResponsiveRow(
+                        columns=12,
+                        spacing=8,
+                        run_spacing=8,
+                        controls=[
+                            ft.Container(content=self._btn_open_map, col={"xs": 12, "sm": 6, "lg": 4}),
+                            ft.Container(content=self._btn_open_dash, col={"xs": 12, "sm": 6, "lg": 4}),
+                            ft.Container(content=self._btn_open_folder, col={"xs": 12, "sm": 6, "lg": 4}),
+                        ],
+                    ),
+                    self._progress_bar,
                     self._status_text,
                 ],
             ),

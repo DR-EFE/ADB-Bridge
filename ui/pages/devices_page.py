@@ -360,7 +360,7 @@ class DevicesPage:
             color=theme.TEXT_MUTED,
         )
         self._pin_input = ft.TextField(
-            label="PIN o Contraseña (Auto-guardado en sesión)",
+            label="PIN o contraseña del dispositivo",
             hint_text="Escribe el PIN o contraseña...",
             password=True,
             can_reveal_password=True,
@@ -376,7 +376,7 @@ class DevicesPage:
                 tight=True,
                 controls=[
                     ft.Icon(ft.Icons.LOCK, size=13, color=theme.WARN),
-                    ft.Text("Sin PIN en sesión", size=11, weight=ft.FontWeight.BOLD, color=theme.WARN),
+                    ft.Text("Sin credencial guardada", size=11, weight=ft.FontWeight.BOLD, color=theme.WARN),
                 ],
             ),
             padding=ft.Padding.symmetric(horizontal=10, vertical=6),
@@ -774,7 +774,7 @@ class DevicesPage:
             is_net = active_item["is_network"]
             battery = active_item["battery"]
             bat_str = f" • Batería: {battery}%" if battery is not None else ""
-            pin_set = bool(self._unlock_credentials.get(serial))
+            pin_set = self._device.has_session_credential(serial)
             screen_controls = [self._build_screen_controls(serial, compact=False)] if active_item.get("state") == "device" else []
 
             pin_badge = ft.Container(
@@ -853,15 +853,7 @@ class DevicesPage:
                                     bgcolor=theme.OK,
                                     color=theme.BG,
                                     height=32,
-                                    tooltip="Desbloquear pantalla usando el PIN o contraseña en sesión",
                                     on_click=lambda _, s=serial: self._trigger_unlock(s),
-                                ),
-                                ft.OutlinedButton(
-                                    "Despertar",
-                                    icon=ft.Icons.WB_SUNNY,
-                                    height=32,
-                                    tooltip="Encender la pantalla del teléfono",
-                                    on_click=lambda _: self._wake_screen(),
                                 ),
                                 ft.OutlinedButton(
                                     "Configurar PIN",
@@ -1000,14 +992,6 @@ class DevicesPage:
 
         if state == "device":
             actions.append(self._build_screen_controls(serial, compact=True))
-            actions.append(
-                ft.OutlinedButton(
-                    "Desbloquear",
-                    icon=ft.Icons.LOCK_OPEN,
-                    height=32,
-                    on_click=lambda _, s=serial: self._trigger_unlock(s),
-                )
-            )
 
         if not is_net and state == "device" and dev.get("mode") == "tcpip-5555":
             actions.append(
@@ -1325,8 +1309,13 @@ class DevicesPage:
         serial = self._device.serial
         if not serial:
             return
-        val = (self._pin_input.value or "").strip()
-        self._device.set_session_credential(serial, val)
+        val = self._pin_input.value or ""
+        try:
+            self._device.set_session_credential(serial, val)
+        except Exception as exc:
+            logger.error("No se pudo guardar la credencial del dispositivo %s: %s", serial, exc)
+            self._set_busy(False, f"No se pudo guardar la credencial cifrada: {exc}", is_error=True)
+            return
         self._unlock_credentials[serial] = val
         self._update_pin_controls(serial)
         self._render_hero_active_card_current()
@@ -1345,7 +1334,7 @@ class DevicesPage:
             tight=True,
             controls=[
                 ft.Icon(ft.Icons.LOCK_OPEN if is_set else ft.Icons.LOCK, size=13, color=theme.OK if is_set else theme.WARN),
-                ft.Text("PIN listo en sesión (••••)" if is_set else "Sin PIN en sesión", size=11, weight=ft.FontWeight.BOLD, color=theme.OK if is_set else theme.WARN),
+                ft.Text("PIN cifrado y listo (••••)" if is_set else "Sin credencial guardada", size=11, weight=ft.FontWeight.BOLD, color=theme.OK if is_set else theme.WARN),
             ],
         )
         try:
@@ -1367,12 +1356,12 @@ class DevicesPage:
         if not serial:
             self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
             return
-        val = (self._pin_input.value or "").strip()
+        val = self._pin_input.value or ""
         self._device.set_session_credential(serial, val)
         self._unlock_credentials[serial] = val
         self._update_pin_controls(serial)
         self._render_hero_active_card_current()
-        msg = f"PIN guardado automáticamente en memoria ({serial})."
+        msg = f"Credencial cifrada y guardada para este dispositivo ({serial})."
         self._log(msg, theme.OK)
         self._set_busy(False, msg)
 
@@ -1384,7 +1373,7 @@ class DevicesPage:
         self._pin_input.value = ""
         self._update_pin_controls(serial)
         self._render_hero_active_card_current()
-        msg = "Credencial eliminada de la sesión activa."
+        msg = "Credencial guardada eliminada de este dispositivo."
         self._log(msg, theme.WARN)
         self._set_busy(False, msg)
 
@@ -1397,10 +1386,14 @@ class DevicesPage:
             self._set_busy(False, "No hay dispositivo seleccionado.", is_error=True)
             return
 
-        curr_input = (self._pin_input.value or "").strip()
+        curr_input = self._pin_input.value or ""
         if curr_input:
-            self._device.set_session_credential(serial, curr_input)
-            self._unlock_credentials[serial] = curr_input
+            try:
+                self._device.set_session_credential(serial, curr_input)
+                self._unlock_credentials[serial] = curr_input
+            except Exception as exc:
+                self._set_busy(False, f"No se pudo guardar la credencial cifrada: {exc}", is_error=True)
+                return
 
         self._update_pin_controls(serial)
         self._render_hero_active_card_current()
@@ -1595,8 +1588,8 @@ class DevicesPage:
                     ),
                     self._pin_target_label,
                     ft.Text(
-                        "Escribe el PIN o contraseña del teléfono (se guarda automáticamente en la sesión). "
-                        "Al pulsar Desbloqueo Automático, el sistema detecta si la pantalla está apagada, la despierta, desliza y desbloquea el equipo.",
+                        "La credencial se guarda cifrada para este teléfono en Windows. "
+                        "Usa «Desbloquear» en la ficha del dispositivo activo para encender la pantalla, deslizar e introducir el PIN.",
                         size=12,
                         color=theme.TEXT_MUTED,
                     ),
@@ -1606,17 +1599,9 @@ class DevicesPage:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
                             self._pin_input,
-                            ft.FilledButton(
-                                "⚡ Desbloqueo Automático",
-                                icon=ft.Icons.LOCK_OPEN_ROUNDED,
-                                bgcolor=theme.OK,
-                                color=theme.BG,
-                                height=38,
-                                on_click=lambda _: self._trigger_auto_unlock(),
-                            ),
                             ft.IconButton(
                                 icon=ft.Icons.BACKSPACE_OUTLINED,
-                                tooltip="Borrar PIN de la sesión activa",
+                                tooltip="Borrar credencial guardada para este teléfono",
                                 icon_color=theme.WARN,
                                 on_click=lambda _: self._clear_session_pin(),
                             ),
@@ -1637,8 +1622,7 @@ class DevicesPage:
                             controls=[
                                 ft.Icon(ft.Icons.LOCK_CLOCK, size=14, color=theme.ACCENT),
                                 ft.Text(
-                                    "Seguridad de sesión: La credencial solo reside en memoria RAM durante la sesión activa "
-                                    "y se destruye al cerrar la app. No se persiste en devices.json ni en disco.",
+                                    "Windows protege esta credencial con DPAPI para tu cuenta y la vincula a la identidad del dispositivo.",
                                     size=11,
                                     color=theme.TEXT_MUTED,
                                 ),
@@ -1865,48 +1849,6 @@ class DevicesPage:
     # -------------------------------------------------------------------------
     # Acciones de Dispositivos (Workers Asíncronos)
     # -------------------------------------------------------------------------
-    def _open_unlock_dialog(self, serial: str) -> None:
-        page = self._page or getattr(self.view, "page", None)
-        if not page:
-            return
-        field = ft.TextField(
-            label="PIN o contraseña",
-            value=self._unlock_credentials.get(serial, ""),
-            password=True,
-            can_reveal_password=True,
-            autofocus=True,
-            width=330,
-        )
-
-        def submit(_event):
-            credential = (field.value or "").strip()
-            if not credential:
-                self._set_busy(False, "Introduce el PIN o la contraseña.", is_error=True)
-                return
-            self._unlock_credentials[serial] = credential
-            self._update_pin_controls(serial)
-            self._render_hero_active_card_current()
-            try:
-                page.pop_dialog()
-            except Exception:
-                pass
-            self._trigger_unlock(serial)
-
-        page.show_dialog(ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Desbloquear dispositivo"),
-            content=ft.Column([
-                ft.Text(f"Conexión seleccionada: {serial}", size=12, color=theme.TEXT_MUTED),
-                field,
-                ft.Text("Se detectará PIN primero y, si no aparece, contraseña. El dato se conserva solo durante esta sesión.",
-                        size=11, color=theme.TEXT_MUTED),
-            ], tight=True, width=380),
-            actions=[
-                ft.TextButton("Cancelar", on_click=lambda _: page.pop_dialog()),
-                ft.FilledButton("Desbloquear", on_click=submit),
-            ],
-        ))
-
     def _action_set_active(self, serial: str) -> None:
         self._set_busy(True, f"Cambiando dispositivo activo a {serial}...")
 

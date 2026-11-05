@@ -171,28 +171,66 @@ class WhatsAppPage:
         )
         self._log = LogView(height=300)
 
+        self._advanced_options = ft.ExpansionTile(
+            title="Opciones avanzadas",
+            subtitle="Multimedia, procesamiento y carpeta de destino",
+            leading=ft.Icons.TUNE,
+            collapsed_text_color=theme.TEXT,
+            text_color=theme.TEXT,
+            controls=[
+                ft.Container(
+                    padding=ft.Padding.only(left=16, right=16, bottom=14),
+                    content=ft.Column(
+                        spacing=12,
+                        controls=[
+                            ft.Row([self._media, self._auto_process], wrap=True, spacing=20),
+                            ft.Row([self._my_name, self._out_dir, self._open_output_btn], wrap=True, spacing=12),
+                            ft.Row([self._scan_scrolls, self._process_folder_btn, self._retry_downloads_btn], wrap=True, spacing=12),
+                        ],
+                    ),
+                )
+            ],
+        )
+        self._receiver_tools = ft.ExpansionTile(
+            title="Auxiliar Android",
+            subtitle="Instalación y verificación del receptor de exportaciones",
+            leading=ft.Icons.PHONE_ANDROID,
+            collapsed_text_color=theme.TEXT,
+            text_color=theme.TEXT,
+            controls=[
+                ft.Container(
+                    padding=ft.Padding.only(left=16, right=16, bottom=14),
+                    content=ft.Column(
+                        spacing=10,
+                        controls=[
+                            ft.Row([self._check_receiver_btn, self._install_receiver_btn, self._remove_receiver_btn], wrap=True, spacing=10),
+                            self._receiver_status,
+                            self._screen_lock_status,
+                        ],
+                    ),
+                )
+            ],
+        )
+
         self.view = ft.Column(
             expand=True,
             spacing=14,
             scroll=ft.ScrollMode.AUTO,
             controls=[
+                ft.Text("WhatsApp Extractor", size=22, weight=ft.FontWeight.W_600, color=theme.TEXT),
+                ft.Text("Explora conversaciones y guarda sus exportaciones en el equipo.", size=12, color=theme.TEXT_MUTED),
                 theme.card(
-                    ft.Row(
-                        wrap=True, spacing=24, run_spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ft.Column(
+                        spacing=14,
                         controls=[
-                            self._count, self._chat_selection, self._chat_numbers, self._media, self._auto_process,
-                            self._my_name, self._out_dir, self._open_output_btn,
-                            self._scan_scrolls, self._discover_btn, self._export_btn,
-                            self._process_folder_btn, self._cancel_btn,
-                            self._retry_downloads_btn,
-                            self._check_receiver_btn,
-                            self._install_receiver_btn, self._remove_receiver_btn,
-                            self._receiver_status,
-                            self._screen_lock_status,
+                            ft.Text("Exportar conversaciones", size=15, weight=ft.FontWeight.W_600, color=theme.TEXT),
+                            ft.Row([self._count, self._chat_selection, self._chat_numbers], wrap=True, spacing=12, run_spacing=8),
+                            ft.Row([self._discover_btn, self._export_btn, self._cancel_btn], wrap=True, spacing=10),
                         ],
                     )
                 ),
+                theme.card(self._advanced_options, padding=0),
+                theme.card(self._receiver_tools, padding=0),
                 theme.card(ft.Column([self._progress, self._progress_text], spacing=8)),
                 ft.Text("Chats procesados", size=14, weight=ft.FontWeight.W_600),
                 ft.Row([self._search, self._filter_sender, self._only_media], wrap=True),
@@ -251,41 +289,62 @@ class WhatsAppPage:
         try:
             state = self._device.get_screen_state(serial)
         except Exception as exc:
-            logger.debug("Aviso al verificar estado de pantalla en WhatsApp bot: %s", exc)
-            return
+            logger.debug("No se pudo verificar el estado de pantalla para WhatsApp: %s", exc)
+            raise RuntimeError(f"No se pudo comprobar la pantalla de {serial}: {exc}") from exc
+
+        if state.get("error"):
+            raise RuntimeError(f"No se pudo comprobar el teléfono {serial}: {state['error']}")
 
         is_screen_on = state.get("screen_on", True)
         is_locked = state.get("is_locked", False)
-        has_credential = state.get("has_credential", False)
 
         if not is_screen_on:
             self._log.append(f"[WhatsApp Bot] La pantalla de {serial} está apagada. Encendiendo automáticamente...", theme.WARN)
             wake_res = self._device.wake_device(serial)
-            if wake_res.success:
-                self._log.append("[WhatsApp Bot] Pantalla encendida exitosamente.", theme.OK)
-            time.sleep(0.5)
-            state = self._device.get_screen_state(serial)
-            is_locked = state.get("is_locked", False)
+            if not wake_res.success:
+                raise RuntimeError(f"No se pudo encender la pantalla de {serial}: {wake_res.error or 'error desconocido'}")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                time.sleep(0.3)
+                state = self._device.get_screen_state(serial)
+                if state.get("error"):
+                    raise RuntimeError(f"No se pudo comprobar la pantalla de {serial}: {state['error']}")
+                is_screen_on = state.get("screen_on", False)
+                is_locked = state.get("is_locked", False)
+                if is_screen_on:
+                    break
+            if is_screen_on:
+                self._log.append("[WhatsApp Bot] Pantalla encendida y confirmada.", theme.OK)
+
+        if not is_screen_on:
+            raise RuntimeError(f"La pantalla de {serial} no respondió al intento de encendido. Revisa la conexión e inténtalo de nuevo.")
 
         if is_locked:
             self._log.append(f"[WhatsApp Bot] Pantalla de bloqueo detectada en {serial}...", theme.WARN)
-            if has_credential:
-                self._log.append("[WhatsApp Bot] Desbloqueando automáticamente con credencial de sesión...", theme.OK)
-                unlock_res = self._device.auto_unlock_device(serial)
-                if unlock_res.success:
-                    self._log.append(f"[WhatsApp Bot] Dispositivo desbloqueado: {unlock_res.message}", theme.OK)
-                else:
-                    self._log.append(f"[WhatsApp Bot] Aviso de desbloqueo: {unlock_res.error}", theme.WARN)
-            else:
-                self._log.append("[WhatsApp Bot] Intentando deslizamiento automático...", theme.TEXT_MUTED)
-                unlock_res = self._device.auto_unlock_device(serial)
-                if unlock_res.success:
-                    self._log.append(f"[WhatsApp Bot] Dispositivo desbloqueado: {unlock_res.message}", theme.OK)
-                else:
-                    raise RuntimeError(
-                        f"El dispositivo {serial} tiene pantalla de bloqueo activa y no cuenta con PIN configurado en la sesión.\n"
-                        "Ingresa el PIN en el Administrador de Dispositivo o desbloquea manualmente tu teléfono para continuar."
-                    )
+            has_credential = self._device.has_session_credential(serial)
+            self._log.append(
+                "[WhatsApp Bot] Desbloqueando con la credencial guardada..." if has_credential
+                else "[WhatsApp Bot] Intentando desbloqueo automático; si solicita PIN se necesita una credencial guardada...",
+                theme.OK if has_credential else theme.TEXT_MUTED,
+            )
+            unlock_res = self._device.auto_unlock_device(serial)
+            if not unlock_res.success:
+                next_step = (
+                    "Revisa que el PIN guardado sea correcto en Administrador de Dispositivo."
+                    if has_credential
+                    else "Guarda el PIN en Administrador de Dispositivo o desbloquea el teléfono manualmente."
+                )
+                raise RuntimeError(f"No se pudo desbloquear {serial}: {unlock_res.error or 'falló el desbloqueo automático'}. {next_step}")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                state = self._device.get_screen_state(serial)
+                if state.get("error") or state.get("ready"):
+                    break
+                time.sleep(0.3)
+            if state.get("error") or not state.get("ready"):
+                detail = state.get("error") or "Android todavía informa la pantalla bloqueada."
+                raise RuntimeError(f"El teléfono {serial} no quedó desbloqueado: {detail}")
+            self._log.append(f"[WhatsApp Bot] Dispositivo desbloqueado y confirmado: {unlock_res.message}", theme.OK)
         else:
             self._log.append("[WhatsApp Bot] Dispositivo encendido y desbloqueado listo.", theme.OK)
 
@@ -645,6 +704,10 @@ class WhatsAppPage:
         print(f"[UI] Exportación INICIADA (n={n}, media={include_media}, serial={serial}, destino={out_dir})")
 
         def work(_stop) -> None:
+            # Despertar y desbloquear el teléfono antes de interactuar con WhatsApp
+            # o de comprobar/instalar el auxiliar.
+            self._ensure_device_ready_for_whatsapp(serial)
+
             # 1. Comprobar e intentar instalar el receptor auxiliar si falta
             self._set_busy(True, "Comprobando receptor auxiliar en el dispositivo...", indeterminate=True)
             self._receiver_status.value = "Comprobando auxiliar..."
@@ -672,9 +735,6 @@ class WhatsAppPage:
             except Exception:
                 pass
 
-            # 2. Verificación y desbloqueo automático de pantalla antes de iniciar el bot
-            self._ensure_device_ready_for_whatsapp(serial)
-
             client = WhatsAppClient(DeviceManager(serial=serial), auto_watchers=True)
             try:
                 # Si job_queue está disponible, registrar cada chat en el historial
@@ -684,6 +744,7 @@ class WhatsAppPage:
                         include_media=include_media,
                         local_dir=out_dir,
                         chat_names=selected_chats or None,
+                        prepare_device=lambda: self._ensure_device_ready_for_whatsapp(serial),
                     )
                 # Registrar historial en JobQueue si está disponible
                 if self._job_queue:

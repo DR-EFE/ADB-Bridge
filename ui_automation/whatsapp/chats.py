@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
 
 import uiautomator2 as u2
 
@@ -268,6 +268,7 @@ class WhatsAppChatManager:
         include_media: bool = False,
         local_dir: Union[str, Path] = "./exports",
         chat_names: Optional[List[str]] = None,
+        prepare_device: Optional[Callable[[], None]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Obtiene los primeros N chats y exporta cada uno de ellos descargándolo al PC
@@ -301,6 +302,11 @@ class WhatsAppChatManager:
                 f"No se pudo instalar ni verificar el auxiliar AndroidTools Receiver en el dispositivo ({receiver_status_desc}). "
                 "El proceso de exportación se ha cancelado porque el auxiliar es requerido."
             )
+
+        # El chequeo del auxiliar puede tardar lo suficiente para que la pantalla
+        # vuelva a apagarse. Prepararla justo antes de abrir WhatsApp.
+        if prepare_device is not None:
+            prepare_device()
 
         # 1. Asegurar WhatsApp abierto y obtener nombres
         if not self.client.ensure_chat_list():

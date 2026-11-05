@@ -791,7 +791,7 @@ class TestDeviceService(unittest.TestCase):
         self.assertEqual(1, len(cards), cards)
 
     @patch("ui.services.device_service.get_adb_client")
-    def test_unlock_prefers_pin_and_never_enters_password_text(self, mock_get_client):
+    def test_unlock_enters_pin_through_android_input_channel(self, mock_get_client):
         client = MagicMock()
         client.list.return_value = [SimpleNamespace(serial="USB-A", state="device")]
         dev = MagicMock()
@@ -810,15 +810,14 @@ class TestDeviceService(unittest.TestCase):
         commands = [call.args[0] for call in dev.shell.call_args_list]
         self.assertIn("input keyevent KEYCODE_WAKEUP", commands)
         self.assertIn("input swipe 540 1536 540 480 350", commands)
-        self.assertEqual(4, len([command for command in commands if command.startswith("input keyevent KEYCODE_") and command[-1].isdigit()]))
-        self.assertFalse(any(command.startswith("input text ") for command in commands))
+        self.assertIn("input text 1234", commands)
 
     def test_unlock_rejects_empty_credential(self):
         service = DeviceService(devices_json_path=self.canonical_json)
         self.assertFalse(service.unlock_device("USB-A", "").success)
 
     @patch("ui.services.device_service.get_adb_client")
-    def test_unlock_password_and_unknown_prompt(self, mock_get_client):
+    def test_unlock_password_and_oem_keyguard_without_accessible_prompt(self, mock_get_client):
         client = MagicMock()
         client.list.return_value = [SimpleNamespace(serial="USB-A", state="device")]
         dev = MagicMock()
@@ -835,8 +834,9 @@ class TestDeviceService(unittest.TestCase):
             dev.shell.reset_mock()
             dev.shell.return_value = ""
             dev.shell.side_effect = None
-            self.assertFalse(service.unlock_device("USB-A", "abc123").success)
-            self.assertFalse(any(call.args[0].startswith("input text ") for call in dev.shell.call_args_list))
+            with patch.object(service, "get_screen_state", return_value={"is_locked": True}):
+                self.assertTrue(service.unlock_device("USB-A", "abc123").success)
+            self.assertIn("input text abc123", [call.args[0] for call in dev.shell.call_args_list])
 
     def test_device_actions_crud(self):
         """Verifica las acciones públicas de DeviceService: rename, set_primary, disconnect, remove."""
@@ -1097,6 +1097,50 @@ class TestDeviceService(unittest.TestCase):
         service.clear_session_credential("USB-1")
         self.assertFalse(service.has_session_credential("USB-1"))
 
+    def test_session_credential_persists_encrypted_and_bound_to_device(self):
+        service = DeviceService(devices_json_path=self.canonical_json)
+        protect = lambda value, identity: f"{identity}|{value}".encode().hex()
+        unprotect = lambda value, identity: bytes.fromhex(value).decode().split("|", 1)[1]
+        with patch("core.services.device_service.protect_credential", side_effect=protect), \
+             patch("core.services.device_service.unprotect_credential", side_effect=unprotect):
+            service.set_session_credential("USB-1", "9876")
+            stored = read_devices_store(self.canonical_json)
+            encoded = next(iter(stored["ScreenCredentials"].values()))
+            self.assertNotIn("9876", encoded)
+
+            reloaded = DeviceService(devices_json_path=self.canonical_json)
+            self.assertEqual("9876", reloaded.get_session_credential("USB-1"))
+            self.assertEqual("", reloaded.get_session_credential("USB-2"))
+            reloaded.clear_session_credential("USB-1")
+            self.assertEqual("", reloaded.get_session_credential("USB-1"))
+
+    @patch("ui.services.device_service.get_adb_client")
+    def test_get_screen_state_samsung_off_and_locked_ignores_stale_display_on(self, mock_get_client):
+        client = MagicMock()
+        client.list.return_value = [SimpleNamespace(serial="USB-1", state="device")]
+        dev = MagicMock()
+        client.device.return_value = dev
+        mock_get_client.return_value = client
+
+        def fake_shell(cmd):
+            if cmd == "dumpsys power":
+                return "mWakefulness=Dozing\nmHoldingDisplaySuspendBlocker=true"
+            if cmd == "dumpsys display":
+                return "mState=OFF\nstate OFF, committedState OFF\nmOverrideDisplayInfo=DisplayInfo{state ON}"
+            if cmd == "dumpsys trust":
+                return 'User "Propietario" (id=0) (current): deviceLocked=1\nUser "DUAL_APP" (id=95): deviceLocked=1'
+            if cmd == "dumpsys window policy":
+                return "mKeyguardOccluded=false"
+            return ""
+
+        dev.shell.side_effect = fake_shell
+        service = DeviceService(devices_json_path=self.canonical_json)
+        state = service.get_screen_state("USB-1")
+
+        self.assertFalse(state["screen_on"])
+        self.assertTrue(state["is_locked"])
+        self.assertFalse(state["ready"])
+
     @patch("ui.services.device_service.get_adb_client")
     def test_get_screen_state_and_auto_unlock(self, mock_get_client):
         client = MagicMock()
@@ -1135,7 +1179,7 @@ class TestDeviceService(unittest.TestCase):
         self.assertTrue(res.success)
         commands = [call.args[0] for call in dev.shell.call_args_list]
         self.assertIn("input swipe 540 1920 540 600 350", commands)
-        self.assertIn("input keyevent KEYCODE_1", commands)
+        self.assertIn("input text 1234", commands)
         self.assertIn("input keyevent KEYCODE_ENTER", commands)
 
 

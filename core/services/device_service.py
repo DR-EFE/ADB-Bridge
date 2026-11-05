@@ -40,6 +40,11 @@ from ui_automation.adb_manager import (
     get_adb_executable,
     is_network_serial,
 )
+from core.services.credential_vault import (
+    CredentialProtectionError,
+    protect_credential,
+    unprotect_credential,
+)
 
 logger = logging.getLogger("ui.device_service")
 DEVICE_STORE_LOCK = threading.RLock()
@@ -1543,27 +1548,77 @@ class DeviceService:
             "active_serial": self.serial,
         }
 
+    def _credential_identity(self, serial: str) -> str:
+        """Use a saved physical device identity when available, otherwise its ADB serial."""
+        store = read_devices_store(self.devices_json)
+        for record in store.get("Devices") or []:
+            endpoints = {
+                str(record.get(key) or "")
+                for key in ("LastEndpoint", "UsbSerial", "LastIp")
+            }
+            endpoints.update(
+                str(endpoint.get("Endpoint") or endpoint.get("endpoint") or "")
+                for endpoint in (record.get("Endpoints") or [])
+                if isinstance(endpoint, dict)
+            )
+            if serial in endpoints:
+                return str(record.get("PhysicalIdHash") or record.get("Id") or serial)
+        return f"serial:{serial}"
+
     def set_session_credential(self, serial: str, credential: str) -> None:
-        """Almacena la credencial de desbloqueo únicamente en memoria RAM durante la sesión."""
+        """Keep the credential in RAM and persist only a DPAPI-protected, device-bound value."""
         if not serial:
             return
-        val = (credential or "").strip()
+        val = credential or ""
         if val:
+            identity = self._credential_identity(serial)
+            protected = protect_credential(val, identity)
+            storage_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            with DEVICE_STORE_LOCK:
+                store = read_devices_store(self.devices_json)
+                credentials = store.setdefault("ScreenCredentials", {})
+                credentials[storage_key] = protected
+                save_devices_store(store, self.devices_json)
             self._session_credentials[serial] = val
         else:
-            self._session_credentials.pop(serial, None)
+            self.clear_session_credential(serial)
 
     def get_session_credential(self, serial: Optional[str] = None) -> str:
         """Obtiene la credencial de sesión para el serial indicado o el activo."""
         target = serial or self.serial
         if not target:
             return ""
-        return self._session_credentials.get(target, "")
+        cached = self._session_credentials.get(target)
+        if cached is not None:
+            return cached
+        try:
+            identity = self._credential_identity(target)
+            storage_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            protected = (read_devices_store(self.devices_json).get("ScreenCredentials") or {}).get(storage_key)
+            if not protected:
+                return ""
+            credential = unprotect_credential(protected, identity)
+            self._session_credentials[target] = credential
+            return credential
+        except CredentialProtectionError as exc:
+            logger.warning("No se pudo recuperar la credencial de %s: %s", target, exc)
+            return ""
 
     def clear_session_credential(self, serial: Optional[str] = None) -> None:
         """Borra la credencial de sesión del serial indicado o de todos si es None."""
         if serial:
             self._session_credentials.pop(serial, None)
+            identity = self._credential_identity(serial)
+            storage_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            with DEVICE_STORE_LOCK:
+                store = read_devices_store(self.devices_json)
+                credentials = store.get("ScreenCredentials") or {}
+                if credentials.pop(storage_key, None) is not None:
+                    if credentials:
+                        store["ScreenCredentials"] = credentials
+                    else:
+                        store.pop("ScreenCredentials", None)
+                    save_devices_store(store, self.devices_json)
         else:
             self._session_credentials.clear()
 
@@ -1589,29 +1644,41 @@ class DeviceService:
                 return {"screen_on": False, "is_locked": False, "has_credential": has_cred, "ready": False, "error": "Dispositivo no listo"}
             dev = client.device(target)
 
-            # 1. Comprobar si la pantalla está encendida
+            # 1. Leer el estado actual de la pantalla integrada. El informe de
+            # display también contiene estados guardados de otras secciones;
+            # buscar "state ON" en todo el texto da falsos positivos.
             screen_on = False
             try:
                 power_out = str(dev.shell("dumpsys power") or "")
-                screen_on = bool(re.search(r"mWakefulness=Awake|Display Power:\s*state=ON|mHoldingDisplaySuspendBlocker=true", power_out, re.IGNORECASE))
-                if not screen_on:
-                    display_out = str(dev.shell("dumpsys display") or "")
-                    screen_on = bool(re.search(r"mState=ON|state ON", display_out, re.IGNORECASE))
+                display_out = str(dev.shell("dumpsys display") or "")
+                display_state = re.search(r"^\s*mState\s*=\s*(ON|OFF|DOZE|DOZE_SUSPEND)\b", display_out, re.IGNORECASE | re.MULTILINE)
+                wakefulness = re.search(r"^\s*mWakefulness\s*=\s*(\w+)\b", power_out, re.IGNORECASE | re.MULTILINE)
+                power_display_state = re.search(r"Display Power:\s*state\s*=\s*(ON|OFF)\b", power_out, re.IGNORECASE)
+                if display_state:
+                    screen_on = display_state.group(1).upper() == "ON"
+                elif wakefulness:
+                    screen_on = wakefulness.group(1).lower() == "awake"
+                elif power_display_state:
+                    screen_on = power_display_state.group(1).upper() == "ON"
             except Exception:
-                screen_on = True
+                screen_on = False
 
             # 2. Comprobar si el dispositivo está bloqueado (Keyguard activo)
             is_locked = False
             try:
                 trust_out = str(dev.shell("dumpsys trust") or "")
                 window_out = str(dev.shell("dumpsys window policy") or dev.shell("dumpsys window") or "")
-                is_locked = bool(re.search(
+                current_user = next((line for line in trust_out.splitlines() if "(current)" in line), "")
+                current_lock = re.search(r"\bdeviceLocked\s*=\s*(1|0|true|false)\b", current_user, re.IGNORECASE)
+                keyguard_showing = bool(re.search(
                     r"device is locked=true|mShowingLockscreen=true|mKeyguardShowing=true|isStatusBarKeyguard=true|mShowing=true.*keyguard",
                     trust_out + "\n" + window_out,
                     re.IGNORECASE,
                 ))
+                is_locked = keyguard_showing or bool(current_lock and current_lock.group(1).lower() in ("1", "true"))
             except Exception:
-                is_locked = False
+                # Unknown lock state cannot safely be treated as unlocked.
+                is_locked = True
 
             return {
                 "screen_on": screen_on,
@@ -1645,12 +1712,9 @@ class DeviceService:
 
     def auto_unlock_device(self, serial: Optional[str] = None, credential: Optional[str] = None) -> OperationResult:
         """
-        Flujo completamente automático de preparación y desbloqueo:
-        1. Detecta si la pantalla está apagada y la despierta.
-        2. Detecta si está bloqueada. Si ya está desbloqueada, finaliza de inmediato.
-        3. Desliza hacia arriba para desbloquear o revelar campo de credencial.
-        4. Si el deslizamiento bastó (sin PIN/patrón), confirma desbloqueo.
-        5. Si solicita PIN o contraseña, ingresa la credencial de sesión o la pasada.
+        Wake and swipe once, then type a saved PIN/password when available.
+        The no-credential path only reports success when the lock-state check
+        confirms the swipe was enough.
         """
         target = serial or self.serial
         if not target:
@@ -1660,19 +1724,16 @@ class DeviceService:
             if not any(d.serial == target and d.state == "device" for d in client.list()):
                 return OperationResult(False, error="La conexión ADB seleccionada no está lista.")
             dev = client.device(target)
+            cred = credential or self.get_session_credential(target) or ""
+            if cred:
+                # unlock_device owns the single wake/swipe/input sequence.
+                return self.unlock_device(target, cred)
 
-            # 1. Verificar y encender pantalla si está apagada
-            state = self.get_screen_state(target)
-            if not state.get("screen_on"):
-                dev.shell("input keyevent KEYCODE_WAKEUP")
-                time.sleep(0.4)
-                state = self.get_screen_state(target)
-
-            # Si ya está encendida y desbloqueada, listo
-            if state.get("screen_on") and not state.get("is_locked"):
-                return OperationResult(True, message="El dispositivo ya está encendido y desbloqueado.")
-
-            # 2. Deslizar hacia arriba
+            # Always wake and reveal the lock screen. ADB's dumpsys lock-state
+            # output varies across Android versions, so it is not safe to use it
+            # as an early-return condition here.
+            dev.shell("input keyevent KEYCODE_WAKEUP")
+            time.sleep(0.5)
             size = str(dev.shell("wm size") or "")
             sizes = re.findall(r"(\d+)x(\d+)", size)
             width, height = map(int, sizes[-1]) if sizes else (1080, 1920)
@@ -1680,20 +1741,14 @@ class DeviceService:
             dev.shell(f"input swipe {x} {height * 4 // 5} {x} {height // 4} 350")
             time.sleep(0.5)
 
-            # Comprobar si con solo deslizar quedó desbloqueado
+            # A swipe alone can unlock devices without a secure screen lock.
             post_swipe = self.get_screen_state(target)
             if post_swipe.get("screen_on") and not post_swipe.get("is_locked"):
                 return OperationResult(True, message="Dispositivo desbloqueado automáticamente con deslizamiento.")
-
-            # 3. Credencial requerida
-            cred = (credential or self.get_session_credential(target) or "").strip()
-            if not cred:
-                return OperationResult(
-                    False,
-                    error="El dispositivo requiere PIN o contraseña pero no hay ninguna credencial guardada en la sesión.",
-                )
-
-            return self.unlock_device(target, cred)
+            return OperationResult(
+                False,
+                error="La pantalla se activó. Guarda el PIN o la contraseña del dispositivo para completar el desbloqueo.",
+            )
         except Exception as exc:
             logger.warning("Fallo en auto_unlock_device para %s: %s", target, exc)
             return OperationResult(False, error=f"Fallo durante el desbloqueo automático: {exc}")
@@ -1723,12 +1778,20 @@ class DeviceService:
             if pin_prompt:
                 if not credential.isascii() or not credential.isdecimal():
                     return OperationResult(False, error="Se detectó PIN: introduce solo dígitos.")
-                for digit in credential:
-                    dev.shell(f"input keyevent KEYCODE_{digit}")
+                dev.shell("input text " + shlex.quote(credential))
             elif password_prompt:
                 dev.shell("input text " + shlex.quote(credential.replace(" ", "%s")))
             else:
-                return OperationResult(False, error="No se detectó un campo de PIN o contraseña tras deslizar.")
+                # Some OEM keyguards hide their secure input node. Only use the
+                # fallback input channel when Android still reports keyguard;
+                # never type a PIN into an arbitrary app if the phone is open.
+                state = self.get_screen_state(serial)
+                if not state.get("is_locked"):
+                    return OperationResult(
+                        False,
+                        error="La pantalla se activó, pero Android no expone un campo de desbloqueo. Revisa el teléfono y vuelve a intentar.",
+                    )
+                dev.shell("input text " + shlex.quote(credential.replace(" ", "%s")))
             dev.shell("input keyevent KEYCODE_ENTER")
             self.set_session_credential(serial, credential)
             return OperationResult(True, message=f"{'PIN' if pin_prompt else 'Contraseña'} enviado al dispositivo seleccionado.")

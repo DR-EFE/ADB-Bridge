@@ -107,9 +107,9 @@ class NotificationsPage:
             on_select=self._on_filter_changed,
         )
         self._filter_date = ft.Dropdown(
-            label="Día",
+            label="Día (hoy por defecto)",
             options=[ft.dropdown.Option("TODOS", "Todos los días")],
-            value="TODOS",
+            value=datetime.now().strftime("%Y-%m-%d"),
             width=170,
             text_size=12,
             on_select=self._on_filter_changed,
@@ -119,6 +119,24 @@ class NotificationsPage:
             icon=ft.Icons.REFRESH,
             tooltip="Recargar notificaciones desde disco",
             on_click=lambda _: self._load_persisted_notifications(),
+        )
+
+        self._history_actions = ft.ExpansionTile(
+            title="Abrir archivos de historial",
+            subtitle="Accesos directos a alertas, historial diario y carpeta",
+            leading=ft.Icons.FOLDER_OPEN,
+            collapsed_text_color=theme.TEXT,
+            text_color=theme.TEXT,
+            controls=[
+                ft.Container(
+                    padding=ft.Padding.only(left=16, right=16, bottom=12),
+                    content=ft.Row(
+                        [self._btn_open_important, self._btn_open_daily, self._btn_open_folder],
+                        wrap=True,
+                        spacing=10,
+                    ),
+                )
+            ],
         )
 
         # Vista destacada para OTP y ALERTA (Diseño compacto y colapsable)
@@ -144,7 +162,7 @@ class NotificationsPage:
                             spacing=6,
                             controls=[
                                 ft.Icon(ft.Icons.SHIELD_ROUNDED, size=15, color=theme.WARN),
-                                ft.Text("Alertas y Códigos OTP Recientes", size=12, weight=ft.FontWeight.BOLD, color=theme.TEXT),
+                                ft.Text("Alertas y códigos OTP de hoy", size=12, weight=ft.FontWeight.BOLD, color=theme.TEXT),
                             ],
                         ),
                         self._featured_toggle_btn,
@@ -175,14 +193,16 @@ class NotificationsPage:
             expand=True,
             spacing=10,
             controls=[
-                # Tarjeta de Control superior
+                ft.Text("Monitor de notificaciones", size=22, weight=ft.FontWeight.W_600, color=theme.TEXT),
+                ft.Text("Revisa los avisos del dispositivo. La vista inicia en las notificaciones de hoy.", size=12, color=theme.TEXT_MUTED),
                 theme.card(
                     ft.Column(
-                        spacing=8,
+                        spacing=12,
                         controls=[
+                            ft.Text("Monitor", size=15, weight=ft.FontWeight.W_600, color=theme.TEXT),
                             ft.Row(
                                 wrap=True,
-                                spacing=16,
+                                spacing=12,
                                 run_spacing=8,
                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 controls=[
@@ -192,19 +212,11 @@ class NotificationsPage:
                                     ft.Column([self._state_chip, self._stats], spacing=2),
                                 ],
                             ),
-                            ft.Row(
-                                wrap=True,
-                                spacing=8,
-                                controls=[
-                                    self._btn_open_important,
-                                    self._btn_open_daily,
-                                    self._btn_open_folder,
-                                ],
-                            ),
                         ],
                     ),
                     padding=12,
                 ),
+                theme.card(self._history_actions, padding=0),
                 # Panel destacado para OTP y Alertas
                 theme.card(self._featured_container, padding=10),
                 # Tarjeta de Filtros y Tabla General
@@ -406,17 +418,18 @@ class NotificationsPage:
             labels[self._device.serial] = self._device.serial
         self._device_labels = labels
         devices = sorted(labels)
-        days = sorted({event_day(event) for event in self._all_events}, reverse=True)
+        today = datetime.now().strftime("%Y-%m-%d")
+        days = sorted({event_day(event) for event in self._all_events} | {today}, reverse=True)
         device_value = self._filter_device.value or "TODOS"
-        day_value = self._filter_date.value or "TODOS"
+        day_value = self._filter_date.value or today
         self._filter_device.options = [ft.dropdown.Option("TODOS", "Todos los dispositivos")] + [
             ft.dropdown.Option(value, labels[value]) for value in devices
         ]
-        self._filter_date.options = [ft.dropdown.Option("TODOS", "Todos los días")] + [
-            ft.dropdown.Option(value, value) for value in days
+        self._filter_date.options = [ft.dropdown.Option("TODOS", "Todo el historial")] + [
+            ft.dropdown.Option(value, "Hoy" if value == today else value) for value in days
         ]
         self._filter_device.value = device_value if device_value in devices else "TODOS"
-        self._filter_date.value = day_value if day_value in days else "TODOS"
+        self._filter_date.value = day_value if day_value in days else today
         for control in (self._filter_device, self._filter_date):
             try:
                 control.update()
