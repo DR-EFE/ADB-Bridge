@@ -123,11 +123,14 @@ class AndroidToolsApp:
             on_click=self._toggle_theme,
         )
 
+        self._last_synced_device_state = None
+
         self.sidebar = Sidebar(
             self.device,
             on_status=self._on_device_status_update,
             on_log=self._on_custom_log,
             on_collapse=self._toggle_sidebar,
+            on_force_refresh=lambda: self.devices.refresh_devices() if hasattr(self, "devices") and self.devices else None,
         )
 
         # Drawer inferior transversal para la cola de trabajos
@@ -284,6 +287,30 @@ class AndroidToolsApp:
             except Exception:
                 pass
 
+        # Sincronizar automáticamente la vista del Administrador de Dispositivos cuando cambia el estado
+        current_state_key = (
+            status.connected,
+            status.serial,
+            tuple(sorted((d.serial, d.state) for d in status.available_devices)),
+        )
+        last_active = getattr(self.devices, "_last_active_item", None) if hasattr(self, "devices") else None
+        active_serial = last_active.get("serial") if last_active else None
+        desynced = (
+            hasattr(self, "devices")
+            and self.devices
+            and (
+                getattr(self.devices, "_last_has_any_online", None) != bool(status.available_devices)
+                or (status.connected and active_serial != status.serial)
+            )
+        )
+        if getattr(self, "_last_synced_device_state", None) != current_state_key or desynced:
+            self._last_synced_device_state = current_state_key
+            if hasattr(self, "devices") and self.devices:
+                try:
+                    self.devices.refresh_devices()
+                except Exception as exc:
+                    logger.debug("Error sincronizando DevicesPage: %s", exc)
+
     def _update_window_title_badge(self, active_count: int) -> None:
         """Actualiza el título de la ventana con un badge del conteo de trabajos activos."""
         base_title = "Android ADB Tools - Control Center"
@@ -325,6 +352,8 @@ class AndroidToolsApp:
                         f"Reconexión automática: {connected}/{len(reconnect_results)} dispositivo(s).",
                         theme.OK if connected else theme.WARN,
                     )
+                if connected > 0:
+                    self.sidebar.refresh_now()
 
             threading.Thread(target=reconnect_saved, name="auto-reconnect-saved", daemon=True).start()
         except Exception as exc:

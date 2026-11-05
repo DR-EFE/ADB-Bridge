@@ -777,33 +777,52 @@ class ExplorerPage:
                 if generation != self._refresh_generation or serial != self._device.serial or path != self._current_path:
                     return
 
-                self._current_entries = entries
-                self._storage_text.value = self._format_storage(df_out)
-                self._update_quick_locations([line.strip() for line in roots_out.splitlines() if line.strip()])
-                self._render_breadcrumbs()
-                self._render_entries()
+                def apply_results() -> None:
+                    if generation != self._refresh_generation or serial != self._device.serial or path != self._current_path:
+                        return
+                    self._current_entries = entries
+                    self._storage_text.value = self._format_storage(df_out)
+                    self._update_quick_locations([line.strip() for line in roots_out.splitlines() if line.strip()])
+                    self._render_breadcrumbs()
+                    self._render_entries()
 
-                self._status_text.color = theme.OK
-                try:
-                    self._files_list.update()
-                    self._status_text.update()
-                    self._storage_text.update()
-                    self._quick_locations.update()
-                    self._breadcrumbs.update()
-                except Exception:
-                    pass
+                    self._status_text.value = f"{len(entries)} elementos en {path}"
+                    self._status_text.color = theme.OK
+                    try:
+                        self._files_list.update()
+                        self._status_text.update()
+                        self._storage_text.update()
+                        self._quick_locations.update()
+                        self._breadcrumbs.update()
+                    except Exception:
+                        pass
+
+                # Los controles Flet deben modificarse desde el hilo de UI.
+                if self.page:
+                    self.page.run_thread(apply_results)
+                else:
+                    apply_results()
 
             except Exception as exc:
                 if generation != self._refresh_generation:
                     return
                 err_msg = self._friendly_remote_error(str(exc), path, serial or "dispositivo")
-                self._status_text.value = err_msg
-                self._status_text.color = theme.ERR
-                try:
-                    self._status_text.update()
-                except Exception:
-                    pass
-                self._log(err_msg, theme.ERR)
+
+                def apply_error() -> None:
+                    if generation != self._refresh_generation:
+                        return
+                    self._status_text.value = err_msg
+                    self._status_text.color = theme.ERR
+                    try:
+                        self._status_text.update()
+                    except Exception:
+                        pass
+                    self._log(err_msg, theme.ERR)
+
+                if self.page:
+                    self.page.run_thread(apply_error)
+                else:
+                    apply_error()
 
         threading.Thread(target=worker, name="explorer-list-worker", daemon=True).start()
 

@@ -25,11 +25,13 @@ class Sidebar:
         on_status: Optional[Callable[[DeviceStatus], None]] = None,
         on_log: Optional[Callable[[str, str], None]] = None,
         on_collapse: Optional[Callable[[], None]] = None,
+        on_force_refresh: Optional[Callable[[], None]] = None,
     ) -> None:
         self._device = device
         self._on_status = on_status
         self._on_log = on_log
         self._on_collapse = on_collapse
+        self._on_force_refresh = on_force_refresh
         self._stop = threading.Event()
         self._busy = threading.Lock()
 
@@ -747,6 +749,11 @@ class Sidebar:
             msg = self._device.reconnect()
             self._log_msg(f"Reconexión: {msg}", theme.TEXT)
             self.refresh_now()
+            if self._on_force_refresh:
+                try:
+                    self._on_force_refresh()
+                except Exception:
+                    pass
         self._feedback.value = msg
         self._reconnect_btn.disabled = False
         try:
